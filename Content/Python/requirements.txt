@@ -1,0 +1,101 @@
+# StoryboardTo3D Plugin - Python Dependencies
+# Production-ready OpenAI API integration requirements
+# Last updated: October 2025
+
+# ============================================================================
+# CORE DEPENDENCIES (Required)
+# ============================================================================
+
+# HTTP Requests
+requests>=2.31.0
+
+# JSON handling for LLM outputs
+json-repair>=0.25.0
+
+# Token counting for OpenAI models
+tiktoken>=0.5.0
+
+# Retry logic with exponential backoff
+tenacity>=8.2.0
+
+# Alternative retry library (optional, but recommended)
+backoff>=2.2.0
+
+# HTTP client with advanced features
+httpx>=0.24.0
+
+# ============================================================================
+# TESTING DEPENDENCIES (Development)
+# ============================================================================
+
+# Testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-timeout>=2.1.0
+pytest-benchmark>=4.0.0
+
+# Parallel test execution
+pytest-xdist>=3.3.0
+
+# Mock API responses for testing
+responses>=0.23.0
+
+# ============================================================================
+# AI PROVIDER SDKs (Optional - Direct SDK Integration)
+# ============================================================================
+
+# Official OpenAI Python SDK
+openai>=1.0.0
+
+# Anthropic Claude SDK (if using Claude)
+anthropic>=0.7.0
+
+# ============================================================================
+# UTILITY DEPENDENCIES
+# ============================================================================
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Data validation and parsing
+pydantic>=2.0.0
+
+# ============================================================================
+# IMAGE PROCESSING DEPENDENCIES (For Enhancement Features)
+# ============================================================================
+
+# Computer vision library for sketch analysis and visual markers
+opencv-python>=4.8.0
+
+# Image processing for base64 encoding/decoding
+pillow>=10.0.0
+
+# ============================================================================
+# OPTIONAL: DEPTH ESTIMATION DEPENDENCIES (For Depth-Anything-V2)
+# ============================================================================
+
+# PyTorch for deep learning (CPU version, ~200MB)
+# Note: For GPU support, install from pytorch.org with CUDA
+torch>=2.0.0
+
+# Transformers for Depth-Anything-V2 model (~150MB model download on first use)
+transformers>=4.30.0
+
+# ============================================================================
+# INSTALLATION INSTRUCTIONS
+# ============================================================================
+# 
+# Install all dependencies:
+#   pip install -r requirements.txt
+#
+# Install only production dependencies:
+#   pip install requests json-repair tiktoken tenacity httpx python-dotenv pydantic
+#
+# Install with OpenAI SDK:
+#   pip install -r requirements.txt openai
+#
+# For Unreal Engine Python environment:
+#   1. Locate your UE Python: Engine/Binaries/ThirdParty/Python3/Win64/python.exe
+#   2. Install to that Python: path/to/ue/python.exe -m pip install -r requirements.txt
+#
+# ============================================================================

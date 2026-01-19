@@ -1,0 +1,43 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "1.0.0",
+    "FriendlyName": "StoryboardTo3D",
+    "Description": "AI-powered storyboard-to-3D scene generation using vision-language models. MS Thesis research project.",
+    "Category": "Editor",
+    "CreatedBy": "Tyler Varacchi",
+    "CreatedByURL": "https://tylervaracchi.com",
+    "DocsURL": "https://github.com/tylervaracchi/storyboard-to-3d",
+    "MarketplaceURL": "",
+    "SupportURL": "https://github.com/tylervaracchi/storyboard-to-3d/issues",
+    "CanContainContent": true,
+    "IsBetaVersion": false,
+    "IsExperimentalVersion": true,
+    "Installed": false,
+    "EngineVersion": "5.4.0",
+    "Modules": [
+        {
+            "Name": "StoryboardTo3D",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "PythonScriptPlugin",
+            "Enabled": true
+        },
+        {
+            "Name": "EditorScriptingUtilities",
+            "Enabled": true
+        },
+        {
+            "Name": "SequencerScripting",
+            "Enabled": true
+        },
+        {
+            "Name": "LevelSequenceEditor",
+            "Enabled": true
+        }
+    ]
+}

@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C++ build artifacts
+Binaries/
+Intermediate/
+*.pdb
+*.lib
+*.dll
+*.exp
+
+# Unreal Engine
+DerivedDataCache/
+Saved/
+*.sln
+*.vcxproj*
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cache
+.cache/
+*.cache
+
+# Environment / API keys
+.env
+.env.local
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Test outputs
+test_results/
+metrics_output/
