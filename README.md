@@ -2,7 +2,18 @@
 
 **AI-powered storyboard-to-3D scene generation for Unreal Engine 5**
 
+[![UE5](https://img.shields.io/badge/Unreal_Engine-5.4+-0E1128?logo=unrealengine)](https://www.unrealengine.com/)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Thesis](https://img.shields.io/badge/MS_Thesis-Drexel_2025-07294D)](https://drexel.edu/)
+[![License](https://img.shields.io/badge/License-All_Rights_Reserved-red)]()
+
 An Unreal Engine plugin that automatically converts 2D storyboard panels into positioned 3D scenes using vision-language models. Developed as MS Thesis research at Drexel University.
+
+<p align="center">
+  <a href="https://vimeo.com/1152943813"><img src="docs/stb-demo-thumb.webp" alt="Watch Demo Video" width="80%"></a>
+  <br>
+  <em>▶️ <a href="https://vimeo.com/1152943813">Watch Demo Video</a></em>
+</p>
 
 <p align="center">
   <img src="docs/stb-input.webp" alt="Storyboard Input" width="45%">
@@ -28,6 +39,15 @@ This research revealed a significant **calibration gap** in vision-language mode
 <p align="center">
   <img src="docs/stb-calibration-gap.webp" alt="Calibration Gap Chart" width="80%">
 </p>
+
+---
+
+## Publications & Archives
+
+📄 **Full Thesis:**
+- [ProQuest Dissertations & Theses](https://www.proquest.com/docview/3284362822)
+- [Drexel University Research Discovery](https://researchdiscovery.drexel.edu/esploro/outputs/graduate/AI-powered-storyboard-to-3D-scene-generation/991022138782104721)
+- [PDF Download](docs/Varacchi_StoryboardTo3D_Thesis_2025.pdf)
 
 ---
 
@@ -190,7 +210,22 @@ The research contributes:
 - Comparative analysis across commercial and open-source models
 - Production-ready UE5 implementation
 
-📄 [Read the full thesis (PDF)](docs/Varacchi_StoryboardTo3D_Thesis_2025.pdf)
+---
+
+## Citation
+
+If you reference this work in academic research:
+
+```bibtex
+@mastersthesis{varacchi2025storyboard,
+  title={AI-Powered Storyboard-to-3D Scene Generation: Evaluating Vision-Language Model Spatial Reasoning Through Iterative Refinement},
+  author={Varacchi, Tyler},
+  school={Drexel University},
+  year={2025},
+  type={Master's Thesis},
+  url={https://www.proquest.com/docview/3284362822}
+}
+```
 
 ---
 
