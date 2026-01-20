@@ -30,7 +30,7 @@ This research revealed a significant **calibration gap** in vision-language mode
 
 | Model | Reported Confidence | Actual Accuracy | Calibration Error |
 |-------|---------------------|-----------------|-------------------|
-| Claude Sonnet 3.5 | 84.8% | **83.3%** | +1.5% |
+| Claude Sonnet 4.5 | 84.8% | **83.3%** | +1.5% |
 | LLaVA-13B | 84.6% | 41.7% | +42.9% |
 | GPT-4o | 83.8% | 16.7% | +67.1% |
 
