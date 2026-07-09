@@ -5,7 +5,7 @@
 [![UE5](https://img.shields.io/badge/Unreal_Engine-5.4+-0E1128?logo=unrealengine)](https://www.unrealengine.com/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Thesis](https://img.shields.io/badge/MS_Thesis-Drexel_2025-07294D)](https://drexel.edu/)
-[![License](https://img.shields.io/badge/License-All_Rights_Reserved-red)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 An Unreal Engine plugin that automatically converts 2D storyboard panels into positioned 3D scenes using vision-language models. Developed as MS Thesis research at Drexel University.
 
@@ -240,7 +240,7 @@ If you reference this work in academic research:
 
 ## License
 
-**All Rights Reserved** — This code is provided for viewing and portfolio demonstration only. See [LICENSE](LICENSE) for details.
+**MIT** — free to use, modify, and distribute with attribution. See [LICENSE](LICENSE) for details. (The thesis document in docs/ remains (c) Tyler Varacchi.)
 
 ---
 
