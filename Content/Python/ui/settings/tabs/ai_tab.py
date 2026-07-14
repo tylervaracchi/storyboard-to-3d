@@ -767,38 +767,41 @@ class AISettingsTab(QWidget):
 
     def get_settings(self):
         """Get settings from UI - WITH SEPARATE KEYS"""
-        return {
-            'ai_settings': {
-                'provider': self.provider_combo.currentText(),
+        # Copy-then-overwrite (same pattern as features_tab) so sibling keys
+        # this tab does not manage (e.g. use_optimized_prompts) survive the
+        # dialog's wholesale replacement of the ai_settings section
+        ai_settings = dict(self.settings.get('ai_settings', {}))
 
-                # LLaVA
-                'llava_url': self.llava_url_edit.text(),
+        ai_settings['provider'] = self.provider_combo.currentText()
 
-                # OpenAI (SEPARATE)
-                'openai_api_key': self.openai_api_key_edit.text(),
-                'openai_model': self.openai_model_combo.currentText(),
+        # LLaVA
+        ai_settings['llava_url'] = self.llava_url_edit.text()
 
-                # Claude (SEPARATE)
-                'claude_api_key': self.claude_api_key_edit.text(),
-                'claude_model': self.claude_model_combo.currentText(),
+        # OpenAI (SEPARATE)
+        ai_settings['openai_api_key'] = self.openai_api_key_edit.text()
+        ai_settings['openai_model'] = self.openai_model_combo.currentText()
 
-                # Gemini (SEPARATE)
-                'gemini_api_key': self.gemini_api_key_edit.text(),
-                'gemini_model': self.gemini_model_combo.currentText(),
+        # Claude (SEPARATE)
+        ai_settings['claude_api_key'] = self.claude_api_key_edit.text()
+        ai_settings['claude_model'] = self.claude_model_combo.currentText()
 
-                # Model settings
-                'temperature': self.temperature_slider.value() / 100.0,
-                'max_tokens': self.max_tokens_spin.value(),
+        # Gemini (SEPARATE)
+        ai_settings['gemini_api_key'] = self.gemini_api_key_edit.text()
+        ai_settings['gemini_model'] = self.gemini_model_combo.currentText()
 
-                # Analysis settings
-                'use_multiview': self.use_multiview_check.isChecked(),
-                'auto_analyze': self.auto_analyze_check.isChecked(),
-                'batch_analysis': self.batch_analysis_check.isChecked(),
-                'timeout': self.timeout_spin.value(),
-                'retry_on_failure': self.retry_check.isChecked(),
-                'max_retries': self.max_retries_spin.value()
-            }
-        }
+        # Model settings
+        ai_settings['temperature'] = self.temperature_slider.value() / 100.0
+        ai_settings['max_tokens'] = self.max_tokens_spin.value()
+
+        # Analysis settings
+        ai_settings['use_multiview'] = self.use_multiview_check.isChecked()
+        ai_settings['auto_analyze'] = self.auto_analyze_check.isChecked()
+        ai_settings['batch_analysis'] = self.batch_analysis_check.isChecked()
+        ai_settings['timeout'] = self.timeout_spin.value()
+        ai_settings['retry_on_failure'] = self.retry_check.isChecked()
+        ai_settings['max_retries'] = self.max_retries_spin.value()
+
+        return {'ai_settings': ai_settings}
 
     def on_settings_saved(self):
         """Called when settings are saved"""

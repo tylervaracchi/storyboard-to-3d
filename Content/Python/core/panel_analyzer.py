@@ -260,7 +260,14 @@ class PanelAnalyzer:
         if cache_file.exists():
             try:
                 with open(cache_file, 'r') as f:
-                    return json.load(f)
+                    cached = json.load(f)
+                # Ignore cached basic (filename-heuristic) results so they can
+                # never mask a real AI analysis. Guarding on read (rather than
+                # write) also neutralizes junk cached by earlier runs where the
+                # analyzer was constructed without an AI client.
+                if isinstance(cached, dict) and cached.get('analysis_type') == 'basic':
+                    return None
+                return cached
             except (json.JSONDecodeError, IOError):
                 pass
 

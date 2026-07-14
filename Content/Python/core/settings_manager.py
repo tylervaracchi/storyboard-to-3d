@@ -114,7 +114,12 @@ class SettingsManager:
                 'timeout': 30,
                 'retry_on_failure': True,
                 'max_retries': 3,
-                'use_optimized_prompts': True  # Enable 50-66% token reduction (Optimization #4)
+                # Optimization #4 (50-66% token reduction) requires
+                # core/enhanced_prompt_builder_optimized.py and
+                # core/smart_analyzer_optimized.py, which are not in the repo.
+                # Default must stay False until they exist, or every fresh
+                # launch warns about the failed import in active_panel_widget.
+                'use_optimized_prompts': False
             },
 
             # External Validation Settings (optional cross-check of VLM self-scores)

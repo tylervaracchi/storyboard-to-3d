@@ -74,7 +74,15 @@ class AIProviderFactory:
                 model = ai_settings.get('claude_model', 'claude-sonnet-4-6')
                 if api_key:
                     unreal.log(f"[AI] Trying Claude with model: {model}")
-                    claude = ClaudeProvider(api_key=api_key, model=model)
+                    # Cost toggles (Features tab). scoring_model=None keeps
+                    # the provider's built-in default when the toggle is off.
+                    use_files_api = bool(settings_mgr.get_setting('cost.use_files_api', False))
+                    scoring_model = None
+                    if settings_mgr.get_setting('cost.use_scoring_model', False):
+                        scoring_model = settings_mgr.get_setting('cost.scoring_model', 'claude-haiku-4-5')
+                    claude = ClaudeProvider(api_key=api_key, model=model,
+                                            use_files_api=use_files_api,
+                                            scoring_model=scoring_model)
                     if claude.is_available():
                         unreal.log(f"[AI]  Selected: Claude ({model})")
                         return claude
@@ -111,7 +119,15 @@ class AIProviderFactory:
             if claude_key:
                 model = ai_settings.get('claude_model', 'claude-sonnet-4-6')
                 unreal.log(f"[AI] Found Claude API key, testing with {model}...")
-                claude = ClaudeProvider(api_key=claude_key, model=model)
+                # Cost toggles (Features tab). scoring_model=None keeps
+                # the provider's built-in default when the toggle is off.
+                use_files_api = bool(settings_mgr.get_setting('cost.use_files_api', False))
+                scoring_model = None
+                if settings_mgr.get_setting('cost.use_scoring_model', False):
+                    scoring_model = settings_mgr.get_setting('cost.scoring_model', 'claude-haiku-4-5')
+                claude = ClaudeProvider(api_key=claude_key, model=model,
+                                        use_files_api=use_files_api,
+                                        scoring_model=scoring_model)
                 if claude.is_available():
                     unreal.log(f"[AI]  Auto-selected: Claude ({model})")
                     return claude

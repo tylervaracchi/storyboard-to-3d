@@ -971,6 +971,12 @@ class SceneBuilder:
             if spawned_camera:
                 self._setup_camera_cuts_spawnable(movie_scene, spawned_camera, sequence)
 
+                # Optional shot-type camera move (opt-in via
+                # 'sequence.camera_moves', default OFF; the default path
+                # is unchanged when unset)
+                self._maybe_apply_camera_move(
+                    sequence, spawned_camera, camera_config, scene_data)
+
             unreal.log(f"Sequence complete!")
             unreal.log(f"Camera: {'Yes' if spawned_camera else 'No'}")
             unreal.log(f"Lights: {len(spawned_lights)}")
@@ -989,7 +995,91 @@ class SceneBuilder:
         except Exception as e:
             unreal.log_error(f"Failed to save sequence: {e}")
 
-    def _setup_camera_cuts_spawnable(self, movie_scene: Any, camera_spawnable: Any, 
+    def _maybe_apply_camera_move(self, sequence: unreal.LevelSequence,
+                                 camera_binding: Any,
+                                 camera_config: Dict[str, Any],
+                                 scene_data: Dict[str, Any]) -> None:
+        """
+        Apply an optional shot-type camera move to the spawnable camera.
+
+        Gated by the 'sequence.camera_moves' setting (default False, so
+        behavior is unchanged unless a user opts in). This is the live
+        pipeline's counterpart of the hook in
+        core.sequence_generator._maybe_apply_camera_move: the binding
+        here is the spawnable created by _create_spawnable_actor, whose
+        transform lives in camera_config (the template is not keyed), so
+        the transform is passed along explicitly. Fully wrapped in
+        try/except: sequence assembly can never break because of a
+        camera move.
+        """
+        try:
+            enabled = self._read_optional_setting('sequence.camera_moves', False)
+            if isinstance(enabled, str):
+                enabled = enabled.strip().lower() in ('1', 'true', 'yes', 'on')
+            if not enabled:
+                return
+
+            shot_type = None
+            if isinstance(camera_config, dict):
+                shot_type = camera_config.get('shot_type')
+            if not shot_type:
+                unreal.log("[CameraMoves] Enabled but camera config carries "
+                           "no shot type; skipping")
+                return
+
+            # Key across the shot's playback range (0-90 by default)
+            start_frame, end_frame = 0, 90
+            try:
+                start_frame = int(sequence.get_playback_start())
+                end_frame = int(sequence.get_playback_end())
+            except Exception as e:
+                unreal.log(f"[CameraMoves] Could not read playback range ({e}); "
+                           f"using frames {start_frame}-{end_frame}")
+
+            # The spawnable's transform was keyed from camera_config in
+            # _create_spawnable_actor; rebuild it for the move baseline
+            current_transform = None
+            try:
+                position = camera_config.get('position')
+                rotation = camera_config.get('rotation')
+                if position is not None and rotation is not None:
+                    current_transform = unreal.Transform(
+                        location=position, rotation=rotation)
+            except Exception as e:
+                unreal.log_warning(f"[CameraMoves] Could not build the camera "
+                                   f"transform from config: {e}")
+                current_transform = None
+
+            # First positioned character doubles as the subject for
+            # push-in scaling (mirrors the sequence_generator hook)
+            subject_location = None
+            try:
+                for char_config in scene_data.get('characters') or []:
+                    if isinstance(char_config, dict) and \
+                            char_config.get('position') is not None:
+                        subject_location = char_config.get('position')
+                        break
+            except Exception:
+                subject_location = None
+
+            from core import camera_moves
+            result = camera_moves.apply_camera_move(
+                sequence,
+                camera_binding,
+                shot_type,
+                start_frame,
+                end_frame,
+                subject_location=subject_location,
+                current_transform=current_transform
+            )
+            unreal.log(
+                "[CameraMoves] {0} (shot type: {1}, move: {2}, notes: {3})".format(
+                    result.get('status'), shot_type, result.get('move'),
+                    '; '.join(result.get('notes', []))))
+        except Exception as e:
+            unreal.log_warning(f"[CameraMoves] Failed, sequence unaffected: {e}")
+
+    def _setup_camera_cuts_spawnable(self, movie_scene: Any, camera_spawnable: Any,
                                       sequence: unreal.LevelSequence) -> None:
         """
         Setup camera cuts track for spawnable camera.
@@ -1227,6 +1317,14 @@ class SceneBuilder:
         if not isinstance(description, str):
             description = None
 
+        # Only freshly generated assets may be rescued: find_best_match
+        # searches every tier, and force-accepting a fuzzy/library hit on
+        # a rejected name would defeat EntityValidator.
+        try:
+            from core.gen3d.importer import GENERATED_ASSET_PATH as generated_root
+        except Exception:
+            generated_root = '/Game/StoryboardTo3D/Generated'
+
         for name in rejected_names:
             try:
                 asset = self.asset_matcher.find_best_match(
@@ -1235,6 +1333,10 @@ class SceneBuilder:
                     continue
                 asset_path = asset.get_path_name()
                 if not asset_path:
+                    continue
+                if not str(asset_path).startswith(generated_root):
+                    unreal.log(f"[Gen3D] match for {name} came from the "
+                               f"library tiers, not generation; leaving it rejected")
                     continue
                 if self._register_rescued_asset(name, asset_path, description,
                                                 category=category):

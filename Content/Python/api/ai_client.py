@@ -37,6 +37,37 @@ except ImportError:
     print("Warning: 'requests' module not found. AI features will be limited.")
     print("Install with: pip install requests")
 
+# Magic-byte MIME sniffing - reuse the shared helper when available
+try:
+    from utils.image_prep import _sniff_media_type
+except ImportError:
+    def _sniff_media_type(data):
+        """Detect an image MIME type from magic bytes (defaults to PNG)."""
+        if data.startswith(b'\x89PNG\r\n\x1a\n'):
+            return 'image/png'
+        if data.startswith(b'\xff\xd8'):
+            return 'image/jpeg'
+        if data.startswith(b'GIF87a') or data.startswith(b'GIF89a'):
+            return 'image/gif'
+        if len(data) >= 12 and data[0:4] == b'RIFF' and data[8:12] == b'WEBP':
+            return 'image/webp'
+        return 'image/png'
+
+
+def _media_type_from_base64(image_base64):
+    """Detect the MIME type of a base64-encoded image from its decoded prefix."""
+    try:
+        sample = image_base64[:64]
+        if isinstance(sample, (bytes, bytearray)):
+            sample = bytes(sample).decode('ascii', 'ignore')
+        sample = sample[:(len(sample) // 4) * 4]
+        header = base64.b64decode(sample)
+    except Exception:
+        header = b''
+    if not header:
+        return 'image/jpeg'
+    return _sniff_media_type(header)
+
 
 class AIClient:
     """
@@ -70,6 +101,19 @@ class AIClient:
             "model": "claude-opus-4-1-20250805",
             "endpoint": "https://api.anthropic.com/v1/messages",
             "env_var": "ANTHROPIC_API_KEY"
+        },
+        "Gemini (Google)": {
+            # {model} is filled in from the resolved model name in __init__
+            "model": "gemini-2.5-flash",
+            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            "env_var": "GEMINI_API_KEY"
+        },
+        "LLaVA (Local)": {
+            # Ollama server base URL; requests go to {endpoint}/api/generate
+            "model": "llava:latest",
+            "endpoint": "http://localhost:11434",
+            "env_var": "",
+            "requires_api_key": False
         }
     }
 
@@ -83,6 +127,7 @@ class AIClient:
         """
         # Get provider and model from Unreal global settings FIRST
         self.selected_model = None
+        auto_provider = False  # True when settings say 'Auto' (log final resolution)
         if provider is None:
             try:
                 #  Use settings_manager if available
@@ -103,6 +148,29 @@ class AIClient:
                     elif 'claude' in active_provider.lower():
                         self.selected_model = get_setting('ai_settings.claude_model', 'claude-sonnet-4-6')
                         provider = "Claude 3.5 Sonnet"
+                    elif 'gemini' in active_provider.lower() or 'google' in active_provider.lower():
+                        self.selected_model = get_setting('ai_settings.gemini_model', 'gemini-2.5-flash')
+                        provider = "Gemini (Google)"
+                    elif ('llava' in active_provider.lower() or 'local' in active_provider.lower()
+                          or 'ollama' in active_provider.lower()):
+                        # No API key required; model name must contain 'llava'/':' so
+                        # downstream Ollama detection ('llava' in client.model) fires
+                        self.selected_model = (get_setting('ai_settings.llava_model', '') or
+                                               get_setting('ollama.default_vision_model', '') or
+                                               'llava:latest')
+                        provider = "LLaVA (Local)"
+                    elif active_provider.strip().lower() == 'auto':
+                        # 'Auto': keep existing fallback resolution (config/default),
+                        # but log below which provider it resolved to
+                        auto_provider = True
+                    elif active_provider.strip():
+                        error_msg = f"[AIClient] Unrecognized provider '{active_provider}'; falling back to OpenAI"
+                        try:
+                            import unreal
+                            unreal.log_error(error_msg)
+                        except ImportError:
+                            print(error_msg)
+                        provider = "OpenAI GPT-4 Vision"
 
                     if provider:
                         print(f"Loaded provider from settings: {provider} (model: {self.selected_model})")
@@ -135,6 +203,20 @@ class AIClient:
                         elif 'claude' in settings_provider.lower():
                             self.selected_model = ai_settings.get('claude_model', 'claude-sonnet-4-6')
                             provider = "Claude 3.5 Sonnet"
+                        elif 'gemini' in settings_provider.lower() or 'google' in settings_provider.lower():
+                            self.selected_model = ai_settings.get('gemini_model', 'gemini-2.5-flash')
+                            provider = "Gemini (Google)"
+                        elif ('llava' in settings_provider.lower() or 'local' in settings_provider.lower()
+                              or 'ollama' in settings_provider.lower()):
+                            self.selected_model = (ai_settings.get('llava_model', '') or
+                                                   global_settings.get('ollama', {}).get('default_vision_model', '') or
+                                                   'llava:latest')
+                            provider = "LLaVA (Local)"
+                        elif settings_provider.strip().lower() == 'auto':
+                            auto_provider = True
+                        elif settings_provider.strip():
+                            unreal.log_error(f"[AIClient] Unrecognized provider '{settings_provider}'; falling back to OpenAI")
+                            provider = "OpenAI GPT-4 Vision"
 
                         if provider:
                             print(f"Loaded provider from settings: {provider} (model: {self.selected_model})")
@@ -152,6 +234,9 @@ class AIClient:
         if self.provider not in self.PROVIDERS:
             print(f"Warning: Unknown provider {self.provider}. Using OpenAI GPT-4 Vision.")
             self.provider = "OpenAI GPT-4 Vision"
+
+        if auto_provider:
+            print(f"[AIClient] Provider 'Auto' resolved to {self.provider}")
 
         # Get API key securely - PRIORITY ORDER:
         # 1. Explicitly passed api_key parameter
@@ -176,6 +261,10 @@ class AIClient:
                     self.api_key = (get_setting('ai_settings.claude_api_key', '') or
                                    get_setting('ai.claude_api_key', '') or
                                    get_setting('ai_settings.api_key', ''))
+                elif "gemini" in self.provider.lower():
+                    self.api_key = (get_setting('ai_settings.gemini_api_key', '') or
+                                   get_setting('ai.gemini_api_key', '') or
+                                   get_setting('ai_settings.api_key', ''))
 
                 if self.api_key:
                     print(f"Loaded API key from settings_manager")
@@ -199,6 +288,8 @@ class AIClient:
                             self.api_key = global_settings.get('ai_settings', {}).get('openai_api_key', '')
                         elif "claude" in self.provider.lower():
                             self.api_key = global_settings.get('ai_settings', {}).get('claude_api_key', '')
+                        elif "gemini" in self.provider.lower():
+                            self.api_key = global_settings.get('ai_settings', {}).get('gemini_api_key', '')
 
                     if self.api_key:
                         print(f"Using API key from Unreal global settings (ai_settings)")
@@ -214,8 +305,12 @@ class AIClient:
             # Final fallback to environment variable
             if not self.api_key:
                 import os
-                env_var = self.PROVIDERS[self.provider]["env_var"]
-                self.api_key = os.environ.get(env_var, "")
+                env_var = self.PROVIDERS[self.provider].get("env_var", "")
+                if env_var:
+                    self.api_key = os.environ.get(env_var, "")
+                # Gemini: Google's SDKs read GEMINI_API_KEY or GOOGLE_API_KEY
+                if not self.api_key and "Gemini" in self.provider:
+                    self.api_key = os.environ.get("GOOGLE_API_KEY", "")
                 if self.api_key:
                     print(f"Using API key from environment variable")
 
@@ -235,6 +330,20 @@ class AIClient:
         self.endpoint = self.provider_info["endpoint"]
         # Use selected model if available, otherwise use default from provider
         self.model = self.selected_model if self.selected_model else self.provider_info["model"]
+
+        # Gemini embeds the model name in the endpoint URL
+        if "{model}" in self.endpoint:
+            self.endpoint = self.endpoint.format(model=self.model)
+
+        # LLaVA/Ollama: allow the settings dialog to override the server base URL
+        if "LLaVA" in self.provider and SETTINGS_MANAGER_AVAILABLE:
+            try:
+                llava_url = (get_setting('ai_settings.llava_url', '') or
+                             get_setting('ollama.server_url', ''))
+            except Exception:
+                llava_url = ''
+            if llava_url:
+                self.endpoint = llava_url.rstrip('/')
 
         # Request session for connection pooling
         self.session = None
@@ -258,6 +367,16 @@ class AIClient:
                 "x-api-key": self.api_key,
                 "anthropic-version": "2023-06-01"
             })
+        elif "Gemini" in self.provider:
+            self.session.headers.update({
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key
+            })
+        elif "LLaVA" in self.provider:
+            # Local Ollama server - no auth header required
+            self.session.headers.update({
+                "Content-Type": "application/json"
+            })
 
     def set_api_key(self, api_key: str):
         """Update API key and refresh headers"""
@@ -277,7 +396,7 @@ class AIClient:
         if not REQUESTS_AVAILABLE:
             return False, "requests module not installed"
 
-        if not self.api_key:
+        if not self.api_key and self.provider_info.get("requires_api_key", True):
             return False, f"No API key provided. Set {self.provider_info['env_var']} environment variable."
 
         try:
@@ -421,9 +540,18 @@ class AIClient:
             print(f"[_make_request] Payload keys: {list(payload.keys())}")
         elif "Claude" in self.provider:
             payload = self._build_claude_payload(prompt, image_base64, max_tokens)
+        elif "Gemini" in self.provider:
+            payload = self._build_gemini_payload(prompt, image_base64, max_tokens)
+        elif "LLaVA" in self.provider:
+            payload = self._build_ollama_payload(prompt, image_base64, max_tokens)
         else:
             print(f"[_make_request] Unknown provider: {self.provider}")
             return None
+
+        # LLaVA/Ollama: endpoint is the server base URL; generation lives at /api/generate
+        request_url = self.endpoint
+        if "LLaVA" in self.provider and not request_url.endswith('/api/generate'):
+            request_url = f"{request_url}/api/generate"
 
         #  CRITICAL: Add exponential backoff for retries
         for attempt in range(self.max_retries):
@@ -434,9 +562,9 @@ class AIClient:
                     print(f"[_make_request] Retry {attempt}/{self.max_retries} after {wait_time}s")
                     time.sleep(wait_time)
 
-                print(f"[_make_request] POST to {self.endpoint}")
+                print(f"[_make_request] POST to {request_url}")
                 response = self.session.post(
-                    self.endpoint,
+                    request_url,
                     json=payload,
                     timeout=self.timeout
                 )
@@ -603,6 +731,53 @@ class AIClient:
             ]
         }
 
+    def _build_gemini_payload(self, prompt: str, image_base64: Optional[str],
+                              max_tokens: int) -> Dict[str, Any]:
+        """
+        Build Gemini generateContent payload.
+
+        Request shape mirrors core/ai_providers/gemini_provider.py (verified
+        against https://ai.google.dev/api/generate-content): contents[].parts[]
+        with {"text"} and {"inline_data": {"mime_type", "data"}} entries.
+        """
+        parts = [{"text": prompt}]
+
+        if image_base64:
+            parts.append({
+                "inline_data": {
+                    "mime_type": _media_type_from_base64(image_base64),
+                    "data": image_base64
+                }
+            })
+
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": parts
+            }],
+            "generationConfig": {"max_output_tokens": max_tokens}
+        }
+
+    def _build_ollama_payload(self, prompt: str, image_base64: Optional[str],
+                              max_tokens: int) -> Dict[str, Any]:
+        """
+        Build Ollama /api/generate payload (LLaVA local models).
+
+        Request shape mirrors core/ai_providers/llava_provider.py: raw base64
+        strings in 'images' (no data URI prefix), 'stream': False.
+        """
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"num_predict": max_tokens}
+        }
+
+        if image_base64:
+            payload["images"] = [image_base64]
+
+        return payload
+
     def _parse_response(self, response_data: Dict[str, Any]) -> Optional[str]:
         """Parse API response based on provider"""
         try:
@@ -673,6 +848,14 @@ class AIClient:
                 return ''
             elif "choices" in response_data:  # GPT-4 Chat Completions API
                 return response_data['choices'][0]['message']['content']
+            elif "candidates" in response_data:  # Gemini generateContent
+                candidates = response_data.get('candidates') or []
+                if not candidates:
+                    block_reason = response_data.get('promptFeedback', {}).get('blockReason', 'unknown')
+                    print(f"[_parse_response] Gemini returned no candidates (blockReason: {block_reason})")
+                    return None
+                parts = candidates[0].get('content', {}).get('parts', [])
+                return ''.join(part.get('text', '') for part in parts if isinstance(part, dict))
             elif "content" in response_data:  # Claude
                 return response_data['content'][0]['text']
             elif "response" in response_data:  # Ollama (LLaVA, InternVL2, etc.)

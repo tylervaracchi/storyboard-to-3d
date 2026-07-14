@@ -1677,11 +1677,17 @@ class ActivePanelWidget(QWidget):
         unreal.log(f"AUTO-ITERATION ENABLED: Will loop {self.max_iterations} times")
         unreal.log("="*70)
 
+        # [StaleCapture] Record when this iteration's capture chain started so the
+        # capture-loading step can reject test_*.png files left over from previous
+        # iterations/panels (their mtime predates this timestamp).
+        self._capture_chain_started_at = time.time()
+
         # Step 1: Pilot to Scout
         self.test_pilot_to_scout()
         unreal.log("Pilot complete\n")
 
         # Step 2: Front Capture
+        front_queued_at = time.time()
         front_success = self.test_capture_front()
         if not front_success:
             unreal.log_error("Front capture failed to queue!")
@@ -1692,8 +1698,59 @@ class ActivePanelWidget(QWidget):
         unreal.log("⏳ Scheduling remaining captures (15s between each)...\n")
 
         # Schedule right view capture (starts the chain)
-        unreal.log("⏳ Scheduling Right View in 15 seconds...\n")
-        QTimer.singleShot(15000, self._capture_right_delayed)
+        # [CapturePoll] Advance as soon as test_front.png lands (max 15s, as before)
+        unreal.log("⏳ Scheduling Right View (as soon as front capture lands, max 15 seconds)...\n")
+        self._poll_for_capture(self._capture_screenshot_path('test_front.png'),
+                               front_queued_at, self._capture_right_delayed, 15000)
+
+    def _capture_screenshot_path(self, filename):
+        """[CapturePoll] Absolute path where a viewport capture PNG lands."""
+        return str(Path(unreal.Paths.project_saved_dir()) / "Screenshots" / "WindowsEditor" / filename)
+
+    def _poll_for_capture(self, expected_path, queued_at, on_ready, timeout_ms, poll_ms=250):
+        """[CapturePoll] Advance the capture chain as soon as a screenshot lands.
+
+        Checks every poll_ms whether expected_path exists with an mtime newer
+        than queued_at (the moment the capture was queued) and calls on_ready
+        immediately when satisfied. Falls through to on_ready at timeout_ms so
+        the worst case matches the original fixed wait. Never raises into the
+        Qt event loop; on any polling error it advances the chain instead of
+        stalling it.
+        """
+        import os
+        deadline = time.time() + (timeout_ms / 1000.0)
+        expected_path = str(expected_path)
+
+        def _check():
+            advance = False
+            try:
+                if not self.capture_workflow_active:
+                    # Workflow cancelled - fire on_ready now; its guard aborts,
+                    # same as the original fixed QTimer firing after cancellation.
+                    advance = True
+                else:
+                    ready = False
+                    try:
+                        ready = (os.path.exists(expected_path) and
+                                 os.path.getmtime(expected_path) > queued_at)
+                    except OSError:
+                        ready = False
+                    if ready:
+                        unreal.log("[CapturePoll] {} ready - advancing early".format(os.path.basename(expected_path)))
+                        advance = True
+                    elif time.time() >= deadline:
+                        unreal.log("[CapturePoll] Timeout waiting for {} - advancing anyway".format(os.path.basename(expected_path)))
+                        advance = True
+            except Exception as poll_err:
+                unreal.log_error("[CapturePoll] Poll error ({}) - advancing chain".format(poll_err))
+                advance = True
+
+            if advance:
+                on_ready()
+            else:
+                QTimer.singleShot(poll_ms, _check)
+
+        QTimer.singleShot(poll_ms, _check)
 
     def _cleanup_scout_delayed(self):
         """Step 8: Delete scout camera"""
@@ -1702,13 +1759,24 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  cleanup scout delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_cleanup_scout()
-        unreal.log("Scout Camera deleted\n")
+        # [CaptureChain] Never let an exception strand the chain (batch mode
+        # would stall forever) - log the failure and keep advancing.
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_cleanup_scout()
+            unreal.log("Scout Camera deleted\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Scout cleanup hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule hero pilot
-        unreal.log("⏳ Piloting to Hero Camera...\n")
-        QTimer.singleShot(1000, self._pilot_hero_delayed)
+        try:
+            # Schedule hero pilot
+            unreal.log("⏳ Piloting to Hero Camera...\n")
+            QTimer.singleShot(1000, self._pilot_hero_delayed)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule hero pilot: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _pilot_hero_delayed(self):
         """Step 9: Pilot to hero camera"""
@@ -1717,13 +1785,23 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  pilot hero delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_pilot_to_hero()
-        unreal.log("Hero Camera active\n")
+        # [CaptureChain] Never let an exception strand the chain.
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_pilot_to_hero()
+            unreal.log("Hero Camera active\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Hero pilot hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule hero shot capture
-        unreal.log("⏳ Scheduling Hero Shot in 15 seconds...\n")
-        QTimer.singleShot(15000, self._capture_hero_delayed)
+        try:
+            # Schedule hero shot capture
+            unreal.log("⏳ Scheduling Hero Shot in 15 seconds...\n")
+            QTimer.singleShot(15000, self._capture_hero_delayed)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule hero capture: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _capture_hero_delayed(self):
         """Step 10: Capture hero shot"""
@@ -1732,13 +1810,26 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  capture hero delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_capture_hero()
-        unreal.log("Hero Shot captured\n")
+        # [CaptureChain] Never let an exception strand the chain.
+        hero_queued_at = time.time()
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_capture_hero()
+            unreal.log("Hero Shot captured\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Hero capture hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule eject
-        unreal.log("⏳ Ejecting from Pilot Mode in 15 seconds...\n")
-        QTimer.singleShot(15000, self._eject_viewport_delayed)
+        try:
+            # Schedule eject
+            # [CapturePoll] Advance as soon as test_hero.png lands (max 15s, as before)
+            unreal.log("⏳ Ejecting from Pilot Mode (as soon as hero capture lands, max 15 seconds)...\n")
+            self._poll_for_capture(self._capture_screenshot_path('test_hero.png'),
+                                   hero_queued_at, self._eject_viewport_delayed, 15000)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule viewport eject: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _eject_viewport_delayed(self):
         """Step 11: Eject from pilot mode"""
@@ -1747,13 +1838,23 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  eject viewport delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_eject_viewport()
-        unreal.log("Ejected from Pilot Mode\n")
+        # [CaptureChain] Never let an exception strand the chain.
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_eject_viewport()
+            unreal.log("Ejected from Pilot Mode\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Viewport eject hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule AI analysis
-        unreal.log("⏳ Preparing to send captures to AI in 2 seconds...\n")
-        QTimer.singleShot(2000, self._send_to_ai_analysis)
+        try:
+            # Schedule AI analysis
+            unreal.log("⏳ Preparing to send captures to AI in 2 seconds...\n")
+            QTimer.singleShot(2000, self._send_to_ai_analysis)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule AI analysis: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _capture_right_delayed(self):
         """Step 3: Capture right view"""
@@ -1762,13 +1863,27 @@ class ActivePanelWidget(QWidget):
             unreal.log("Workflow cancelled - skipping right view")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_capture_right()
-        unreal.log("Right queued (2/6)\n")
+        # [CaptureChain] Never let an exception strand the chain (batch mode
+        # would stall forever) - log the failure and keep advancing.
+        right_queued_at = time.time()
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_capture_right()
+            unreal.log("Right queued (2/6)\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Right capture hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule back capture
-        unreal.log("⏳ Scheduling Back View in 15 seconds...\n")
-        QTimer.singleShot(15000, self._capture_back_delayed)
+        try:
+            # Schedule back capture
+            # [CapturePoll] Advance as soon as test_right.png lands (max 15s, as before)
+            unreal.log("⏳ Scheduling Back View (as soon as right capture lands, max 15 seconds)...\n")
+            self._poll_for_capture(self._capture_screenshot_path('test_right.png'),
+                                   right_queued_at, self._capture_back_delayed, 15000)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule back capture: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _capture_back_delayed(self):
         """Step 4: Capture back view"""
@@ -1777,13 +1892,26 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  capture back delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_capture_back()
-        unreal.log("Back queued (3/6)\n")
+        # [CaptureChain] Never let an exception strand the chain.
+        back_queued_at = time.time()
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_capture_back()
+            unreal.log("Back queued (3/6)\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Back capture hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule left capture
-        unreal.log("⏳ Scheduling Left View in 15 seconds...\n")
-        QTimer.singleShot(15000, self._capture_left_delayed)
+        try:
+            # Schedule left capture
+            # [CapturePoll] Advance as soon as test_back.png lands (max 15s, as before)
+            unreal.log("⏳ Scheduling Left View (as soon as back capture lands, max 15 seconds)...\n")
+            self._poll_for_capture(self._capture_screenshot_path('test_back.png'),
+                                   back_queued_at, self._capture_left_delayed, 15000)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule left capture: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _capture_left_delayed(self):
         """Step 5: Capture left view"""
@@ -1792,13 +1920,26 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  capture left delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_capture_left()
-        unreal.log("Left queued (4/6)\n")
+        # [CaptureChain] Never let an exception strand the chain.
+        left_queued_at = time.time()
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_capture_left()
+            unreal.log("Left queued (4/6)\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Left capture hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule top capture
-        unreal.log("⏳ Scheduling Top View in 15 seconds...\n")
-        QTimer.singleShot(15000, self._capture_top_delayed)
+        try:
+            # Schedule top capture
+            # [CapturePoll] Advance as soon as test_left.png lands (max 15s, as before)
+            unreal.log("⏳ Scheduling Top View (as soon as left capture lands, max 15 seconds)...\n")
+            self._poll_for_capture(self._capture_screenshot_path('test_left.png'),
+                                   left_queued_at, self._capture_top_delayed, 15000)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule top capture: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _capture_top_delayed(self):
         """Step 6: Capture top view"""
@@ -1807,22 +1948,37 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  capture top delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_capture_top()
+        # [CaptureChain] Never let an exception strand the chain.
+        top_queued_at = time.time()
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_capture_top()
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] Top capture hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # [AdaptiveViews] Reduced refinement iterations skip the 3/4 view and
-        # go straight to scout cleanup, then the hero capture (never skipped).
-        if getattr(self, '_adaptive_reduced_views_this_iteration', False):
-            unreal.log("Top queued (2/2 reduced)\n")
-            unreal.log("⏳ Scheduling cleanup in 15 seconds...\n")
-            QTimer.singleShot(15000, self._cleanup_scout_delayed)
-            return
+        try:
+            # [AdaptiveViews] Reduced refinement iterations skip the 3/4 view and
+            # go straight to scout cleanup, then the hero capture (never skipped).
+            if getattr(self, '_adaptive_reduced_views_this_iteration', False):
+                unreal.log("Top queued (2/2 reduced)\n")
+                # [CapturePoll] Advance as soon as test_top.png lands (max 15s, as before)
+                unreal.log("⏳ Scheduling cleanup (as soon as top capture lands, max 15 seconds)...\n")
+                self._poll_for_capture(self._capture_screenshot_path('test_top.png'),
+                                       top_queued_at, self._cleanup_scout_delayed, 15000)
+                return
 
-        unreal.log("Top queued (5/6)\n")
+            unreal.log("Top queued (5/6)\n")
 
-        # Schedule 3/4 capture
-        unreal.log("⏳ Scheduling 3/4 View in 15 seconds...\n")
-        QTimer.singleShot(15000, self._capture_three_quarter_delayed)
+            # Schedule 3/4 capture
+            # [CapturePoll] Advance as soon as test_top.png lands (max 15s, as before)
+            unreal.log("⏳ Scheduling 3/4 View (as soon as top capture lands, max 15 seconds)...\n")
+            self._poll_for_capture(self._capture_screenshot_path('test_top.png'),
+                                   top_queued_at, self._capture_three_quarter_delayed, 15000)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule next capture: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _capture_three_quarter_delayed(self):
         """Step 7: Capture 3/4 view"""
@@ -1831,13 +1987,26 @@ class ActivePanelWidget(QWidget):
             unreal.log("Capture workflow cancelled - skipping  capture three quarter delayed")
             return
 
-        unreal.log("\n" + "="*70)
-        self.test_capture_3_4()
-        unreal.log("3/4 queued (6/6)\n")
+        # [CaptureChain] Never let an exception strand the chain.
+        three_quarter_queued_at = time.time()
+        try:
+            unreal.log("\n" + "="*70)
+            self.test_capture_3_4()
+            unreal.log("3/4 queued (6/6)\n")
+        except Exception as hop_err:
+            unreal.log_error(f"[CaptureChain] 3/4 capture hop failed: {hop_err} - continuing chain")
+            import traceback
+            unreal.log_error(traceback.format_exc())
 
-        # Schedule cleanup and hero pilot
-        unreal.log("⏳ Scheduling cleanup in 15 seconds...\n")
-        QTimer.singleShot(15000, self._cleanup_scout_delayed)
+        try:
+            # Schedule cleanup and hero pilot
+            # [CapturePoll] Advance as soon as test_front_3_4.png lands (max 15s, as before)
+            unreal.log("⏳ Scheduling cleanup (as soon as 3/4 capture lands, max 15 seconds)...\n")
+            self._poll_for_capture(self._capture_screenshot_path('test_front_3_4.png'),
+                                   three_quarter_queued_at, self._cleanup_scout_delayed, 15000)
+        except Exception as sched_err:
+            unreal.log_error(f"[CaptureChain] Could not schedule scout cleanup: {sched_err} - finishing capture sequence")
+            self._finish_capture_sequence()
 
     def _get_current_scene_transforms(self):
         """Get current location, rotation, and scale of all actors in the sequence"""
@@ -2326,14 +2495,58 @@ class ActivePanelWidget(QWidget):
                 unreal.log("[AdaptiveViews] Loading reduced capture set: {}".format(list(capture_files.keys())))
 
             unreal.log("Loading captures...")
+            import os
+
+            # [ImageOpt] Route RGB capture bytes through the shared transport
+            # optimizer (downscale + JPEG re-encode) before base64 encoding,
+            # honoring the 'performance.optimize_images' setting (default: True).
+            # Depth maps are never optimized - they encode geometry in pixel
+            # values and JPEG artifacts could distort them; only the RGB
+            # captures and the storyboard go through this path.
+            _optimize_capture_bytes = None
+            try:
+                from utils.image_prep import optimize_image_for_api as _optimize_capture_bytes
+            except ImportError:
+                _optimize_capture_bytes = None
+            if _optimize_capture_bytes is not None:
+                try:
+                    from core.settings_manager import get_setting
+                    _opt_value = get_setting('performance.optimize_images', True)
+                except Exception:
+                    _opt_value = True
+                if isinstance(_opt_value, str):
+                    _opt_enabled = _opt_value.strip().lower() not in ('', 'false', 'off', '0', 'no', 'none', 'disabled')
+                else:
+                    _opt_enabled = bool(_opt_value)
+                if not _opt_enabled:
+                    _optimize_capture_bytes = None
+
+            # [StaleCapture] Files older than this iteration's capture-chain start
+            # are leftovers from a previous iteration/panel - treat them as missing.
+            capture_chain_started_at = getattr(self, '_capture_chain_started_at', None)
             missing_captures = []
             for angle, filename in capture_files.items():
                 filepath = screenshot_dir / filename
                 if filepath.exists():
+                    if capture_chain_started_at is not None:
+                        file_mtime = None
+                        try:
+                            file_mtime = os.path.getmtime(str(filepath))
+                        except OSError as mtime_err:
+                            unreal.log_warning(f"[StaleCapture] Could not read mtime for {filename}: {mtime_err}")
+                        if file_mtime is not None and file_mtime < capture_chain_started_at:
+                            unreal.log_warning(f"[StaleCapture] skipping {filename}")
+                            missing_captures.append(angle)
+                            continue
                     try:
                         with open(filepath, 'rb') as f:
                             image_data = f.read()
-                            captures[angle] = base64.b64encode(image_data).decode('utf-8')
+                        if _optimize_capture_bytes is not None:
+                            try:
+                                image_data, _opt_media_type = _optimize_capture_bytes(image_data)
+                            except Exception as opt_err:
+                                unreal.log_warning(f"[ImageOpt] {angle} optimization failed: {opt_err}; using original bytes")
+                        captures[angle] = base64.b64encode(image_data).decode('utf-8')
                         unreal.log(f"Loaded {angle}: {filename} ({len(image_data)} bytes)")
                     except Exception as e:
                         unreal.log_error(f"Failed to load {angle}: {e}")
@@ -2342,9 +2555,19 @@ class ActivePanelWidget(QWidget):
                     unreal.log_warning(f"Missing {angle}: {filename}")
                     missing_captures.append(angle)
 
-            # Check if we have critical captures
-            if len(missing_captures) > 3:
-                unreal.log_error(f"Too many missing captures ({len(missing_captures)}/7)")
+            # Check if we have critical captures.
+            # Abort if the hero shot is missing (scoring and validation depend on it),
+            # or if nearly all expected captures are missing. The threshold adapts to
+            # the actual capture list this iteration (7 full / 3 reduced), so reduced
+            # mode can still trigger the abort.
+            expected_capture_count = len(capture_files)
+            if 'hero' in missing_captures:
+                unreal.log_error(f"Hero capture missing - cannot score this iteration")
+                unreal.log_error(f"Missing: {', '.join(missing_captures)} ({len(missing_captures)}/{expected_capture_count})")
+                self._finish_capture_sequence()
+                return
+            if len(missing_captures) >= max(1, expected_capture_count - 1):
+                unreal.log_error(f"Too many missing captures ({len(missing_captures)}/{expected_capture_count})")
                 unreal.log_error(f"Missing: {', '.join(missing_captures)}")
                 self._finish_capture_sequence()
                 return
@@ -2539,7 +2762,13 @@ class ActivePanelWidget(QWidget):
                 try:
                     with open(storyboard_path, 'rb') as f:
                         storyboard_data = f.read()
-                        storyboard_b64 = base64.b64encode(storyboard_data).decode('utf-8')
+                    # [ImageOpt] Storyboard is an RGB reference image - optimize like the captures
+                    if _optimize_capture_bytes is not None:
+                        try:
+                            storyboard_data, _opt_media_type = _optimize_capture_bytes(storyboard_data)
+                        except Exception as opt_err:
+                            unreal.log_warning(f"[ImageOpt] storyboard optimization failed: {opt_err}; using original bytes")
+                    storyboard_b64 = base64.b64encode(storyboard_data).decode('utf-8')
                     unreal.log(f"Loaded storyboard: {storyboard_path.name} ({len(storyboard_data)} bytes)")
                 except Exception as e:
                     unreal.log_error(f"Failed to load storyboard: {e}")
@@ -3314,6 +3543,28 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             is_gpt5 = client.model.startswith('gpt-5') or client.model.startswith('o3') or client.model.startswith('o4')
             is_claude = 'claude' in client.model.lower() or 'anthropic' in client.model.lower()
             is_ollama = 'llava' in client.model.lower() or 'internvl' in client.model.lower() or 'bakllava' in client.model.lower() or ':' in client.model  # Ollama uses format like "llava:13b"
+            is_gemini = 'gemini' in client.model.lower() or 'gemini' in client.provider.lower() or 'google' in client.provider.lower()
+            # Keep the flags mutually exclusive (a tuned Gemini model id could
+            # contain ':' and trip the Ollama heuristic otherwise)
+            is_ollama = is_ollama and not is_gemini
+
+            # [ImageOpt] RGB captures/storyboard may be JPEG (transport optimizer)
+            # or PNG (legacy path); depth maps are always PNG. Sniff the real type
+            # from the decoded base64 header so payload declarations match the
+            # bytes. With optimization off everything is PNG, so this returns
+            # 'image/png' and the payload is unchanged.
+            def _b64_media_type(b64_data, default='image/png'):
+                try:
+                    import base64 as b64_module
+                    raw = b64_data
+                    if raw.startswith('data:'):
+                        raw = raw.split(',', 1)[1] if ',' in raw else raw
+                    prefix = raw[:24]
+                    prefix = prefix[:len(prefix) - (len(prefix) % 4)]
+                    from utils.image_prep import _sniff_media_type
+                    return _sniff_media_type(b64_module.b64decode(prefix))
+                except Exception:
+                    return default
 
             if is_ollama:
                 # Ollama local model API format (LLaVA, InternVL2, etc.)
@@ -3399,6 +3650,107 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 unreal.log(f"Images: {len(images)}")
                 unreal.log(f"Temperature: {temperature}")
                 unreal.log(f"Max tokens: 2000")
+            elif is_gemini:
+                # Gemini generateContent API format
+                unreal.log(f"\n DEBUG: Building Gemini content payload...")
+
+                # Helper function to extract raw base64 (Gemini inline_data wants raw base64)
+                def extract_base64(data_uri):
+                    if data_uri.startswith('data:'):
+                        return data_uri.split(',', 1)[1] if ',' in data_uri else data_uri
+                    return data_uri
+
+                parts = [{"text": prompt}]
+                image_count = 0
+
+                # 1. Add storyboard first (reference image)
+                parts.append({
+                    "inline_data": {
+                        "mime_type": _b64_media_type(storyboard_b64),
+                        "data": extract_base64(storyboard_b64)
+                    }
+                })
+                image_count += 1
+                unreal.log(f"Added image #{image_count}: Storyboard RGB (reference)")
+
+                # 1b. Add storyboard depth if available
+                if depth_maps and 'storyboard' in depth_maps:
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": extract_base64(depth_maps['storyboard'])
+                        }
+                    })
+                    image_count += 1
+                    unreal.log(f"Added image #{image_count}: Storyboard DEPTH (colorful Turbo)")
+                    unreal.log(f"FEATURE #1: Depth map sent to AI!")
+                else:
+                    unreal.log(f"No storyboard depth map available")
+
+                # 2. Add HERO camera second (this is what must match!)
+                if 'hero' in captures:
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": _b64_media_type(captures['hero']),
+                            "data": extract_base64(captures['hero'])
+                        }
+                    })
+                    image_count += 1
+                    unreal.log(f"Added image #{image_count}: Hero RGB (target shot)")
+
+                    # 2b. Add hero depth if available
+                    if depth_maps and 'hero' in depth_maps:
+                        parts.append({
+                            "inline_data": {
+                                "mime_type": "image/png",
+                                "data": extract_base64(depth_maps['hero'])
+                            }
+                        })
+                        image_count += 1
+                        unreal.log(f"Added image #{image_count}: Hero DEPTH")
+
+                # 3. Add scout angles
+                scout_order = ['front', 'right', 'back', 'left', 'top', 'three_quarter']
+                for angle in scout_order:
+                    if angle in captures:
+                        parts.append({
+                            "inline_data": {
+                                "mime_type": _b64_media_type(captures[angle]),
+                                "data": extract_base64(captures[angle])
+                            }
+                        })
+                        image_count += 1
+                        unreal.log(f"Added image #{image_count}: {angle.title()} RGB (scout)")
+
+                        # 3b. Add scout depth if available
+                        if depth_maps and angle in depth_maps:
+                            parts.append({
+                                "inline_data": {
+                                    "mime_type": "image/png",
+                                    "data": extract_base64(depth_maps[angle])
+                                }
+                            })
+                            image_count += 1
+                            unreal.log(f"Added image #{image_count}: {angle.title()} DEPTH")
+
+                unreal.log(f"\n    Total images in payload: {image_count}")
+
+                payload = {
+                    "contents": [{
+                        "role": "user",
+                        "parts": parts
+                    }],
+                    "generationConfig": {
+                        "max_output_tokens": 8192,
+                        "response_mime_type": "application/json"
+                    }
+                }
+
+                unreal.log("\n DEBUG: GEMINI PAYLOAD STRUCTURE")
+                unreal.log(f"Model: {client.model}")
+                unreal.log(f"Parts: {len(parts)}")
+                unreal.log(f"Max output tokens: 8192")
+                unreal.log(f"Response MIME type: application/json")
             elif is_claude:
                 # Claude/Anthropic Messages API format
                 content = [{"type": "text", "text": prompt}]
@@ -3418,7 +3770,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/png",
+                        "media_type": _b64_media_type(storyboard_b64),
                         "data": extract_base64(storyboard_b64)
                     }
                 })
@@ -3447,7 +3799,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            "media_type": _b64_media_type(captures['hero']),
                             "data": extract_base64(captures['hero'])
                         }
                     })
@@ -3475,7 +3827,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/png",
+                                "media_type": _b64_media_type(captures[angle]),
                                 "data": extract_base64(captures[angle])
                             }
                         })
@@ -3548,7 +3900,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 # 1. Add storyboard first (reference image)
                 content.append({
                     "type": "input_image",
-                    "image_url": f"data:image/png;base64,{storyboard_b64}"  # Simple string
+                    "image_url": f"data:{_b64_media_type(storyboard_b64)};base64,{storyboard_b64}"  # Simple string
                 })
                 image_count += 1
                 unreal.log(f"Added image #{image_count}: Storyboard RGB (reference)")
@@ -3569,7 +3921,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 if 'hero' in captures:
                     content.append({
                         "type": "input_image",
-                        "image_url": f"data:image/png;base64,{captures['hero']}"  # Simple string
+                        "image_url": f"data:{_b64_media_type(captures['hero'])};base64,{captures['hero']}"  # Simple string
                     })
                     image_count += 1
                     unreal.log(f"Added image #{image_count}: Hero RGB (target shot, must match storyboard)")
@@ -3589,7 +3941,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     if angle in captures:
                         content.append({
                             "type": "input_image",
-                            "image_url": f"data:image/png;base64,{captures[angle]}"  # Simple string
+                            "image_url": f"data:{_b64_media_type(captures[angle])};base64,{captures[angle]}"  # Simple string
                         })
                         image_count += 1
                         unreal.log(f"Added image #{image_count}: {angle.title()} RGB (scout)")
@@ -3622,7 +3974,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     }],
                     "reasoning": {"effort": reasoning_effort},
                     "text": {"verbosity": "medium"},
-                    "max_output_tokens": 2000
+                    "max_output_tokens": 16000
                     # Temperature not supported in GPT-5 Responses API
                 }
 
@@ -3644,7 +3996,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 content.append({
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/png;base64,{storyboard_b64}",
+                        "url": f"data:{_b64_media_type(storyboard_b64)};base64,{storyboard_b64}",
                         "detail": "low"  # $0.0002 vs $0.0018 for high
                     }
                 })
@@ -3671,7 +4023,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     content.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{captures['hero']}",
+                            "url": f"data:{_b64_media_type(captures['hero'])};base64,{captures['hero']}",
                             "detail": "low"  # Spatial positioning doesn't need high res
                         }
                     })
@@ -3698,7 +4050,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                         content.append({
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/png;base64,{captures[angle]}",
+                                "url": f"data:{_b64_media_type(captures[angle])};base64,{captures[angle]}",
                                 "detail": "low"  # Context-only, 9x cheaper
                             }
                         })
@@ -3792,6 +4144,10 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 # Ollama uses /api/generate endpoint
                 endpoint = f"{client.endpoint}/api/generate" if not client.endpoint.endswith('/api/generate') else client.endpoint
                 unreal.log(f"Sending {len(payload.get('images', []))} images to Ollama ({client.model})...")
+            elif is_gemini:
+                # Gemini REST endpoint embeds the model name; auth goes in the x-goog-api-key header
+                endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{client.model}:generateContent"
+                unreal.log(f"Sending {len(payload['contents'][0]['parts']) - 1} images to {client.provider}...")
             else:
                 endpoint = client.endpoint
                 content_items = payload.get('messages', [{}])[0].get('content', []) if 'messages' in payload else payload.get('input', [{}])[0].get('content', [])
@@ -3835,10 +4191,15 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             unreal.log(f"⏱ Timeout: {timeout_duration}s")
             unreal.log(f"Sending request to AI...")
 
+            # Gemini authenticates via the x-goog-api-key header on this endpoint;
+            # other providers keep their session-level auth headers (None = no extras)
+            request_headers = {'x-goog-api-key': client.api_key} if is_gemini else None
+
             try:
                 response = client.session.post(
                     endpoint,
                     json=payload,
+                    headers=request_headers,
                     timeout=timeout_duration
                 )
             except Exception as request_error:
@@ -3856,10 +4217,13 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 data = response.json()
                 unreal.log(f"DEBUG: Response keys: {list(data.keys())}")
 
-                # GPT-5: Poll if incomplete
-                if data.get('status') == 'incomplete' and 'id' in data:
+                # GPT-5: Poll only while the response is still processing.
+                # 'incomplete' is a TERMINAL status (e.g. truncated by max_output_tokens),
+                # not a signal to keep polling - fall through and parse the partial data.
+                # (Mirrors the fixed logic in api/ai_client.py _make_request.)
+                if data.get('status') in ('in_progress', 'queued') and 'id' in data:
                     response_id = data['id']
-                    unreal.log(f"⏳ Response incomplete, polling for result...")
+                    unreal.log(f"⏳ Response {data.get('status')}, polling for result...")
 
                     # Poll for up to 120 seconds (multi-image takes longer)
                     for poll_attempt in range(60):  # 60 attempts, 2s each = 120s max
@@ -3876,15 +4240,25 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                             if status == 'completed':
                                 unreal.log(f"Response completed after {(poll_attempt + 1) * 2}s")
                                 break
+                            elif status == 'incomplete':
+                                # Terminal: response was truncated. Log why and parse the partial output.
+                                unreal.log_warning(f"Response incomplete: {data.get('incomplete_details')}")
+                                break
                             elif status == 'failed':
                                 unreal.log_error(f"Response failed: {data.get('error')}")
                                 return None
+                            elif status not in ('in_progress', 'queued'):
+                                # Unknown terminal status - stop polling and parse what we have
+                                break
 
                             if (poll_attempt + 1) % 5 == 0:  # Log every 10s
                                 unreal.log(f"⏳ Still processing... ({(poll_attempt + 1) * 2}s elapsed)")
                         else:
                             unreal.log_error(f"Poll failed: {poll_response.status_code}")
                             break
+                elif data.get('status') == 'incomplete':
+                    # Terminal on first response: truncated output. Log why and parse partial data.
+                    unreal.log_warning(f"Response incomplete: {data.get('incomplete_details')}")
 
                 elapsed = time.time() - start_time
 
@@ -3897,6 +4271,20 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                         unreal.log_error(f"Response keys: {list(data.keys())}")
                         return None
                     unreal.log(f"Response received from Ollama in {elapsed:.1f}s")
+                elif is_gemini:
+                    # Gemini format: candidates[0].content.parts[].text
+                    result_text = ''
+                    try:
+                        gemini_candidates = data.get('candidates') or []
+                        gemini_parts = (gemini_candidates[0].get('content') or {}).get('parts') or []
+                        result_text = ''.join(p.get('text', '') for p in gemini_parts if isinstance(p, dict))
+                    except Exception as gemini_parse_err:
+                        unreal.log_error(f"Failed to parse Gemini response: {gemini_parse_err}")
+                    if not result_text:
+                        unreal.log_error(f"Empty response from Gemini")
+                        unreal.log_error(f"Response keys: {list(data.keys())}")
+                        return None
+                    unreal.log(f"Response received from Gemini in {elapsed:.1f}s")
                 else:
                     #  USE AI CLIENT'S ROBUST PARSER for OpenAI/Claude
                     result_text = client._parse_response(data)
@@ -3914,6 +4302,26 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 if is_ollama:
                     # Local model - free!
                     unreal.log(f"Iteration cost: $0.00 (local model - free!)")
+                elif is_gemini and 'usageMetadata' in data:
+                    usage = data['usageMetadata']
+                    unreal.log(f"Response received in {elapsed:.1f}s")
+
+                    # Gemini token field names
+                    input_tokens = usage.get('promptTokenCount', 0)
+                    output_tokens = usage.get('candidatesTokenCount', 0)
+                    unreal.log(f"Tokens: {input_tokens} input, {output_tokens} output")
+
+                    # Estimate cost (same generic per-token rate the other cloud branches use)
+                    input_cost = input_tokens * 0.0025 / 1000
+                    output_cost = output_tokens * 0.01 / 1000
+                    iteration_cost = input_cost + output_cost
+
+                    # Track costs
+                    self.iteration_costs.append(iteration_cost)
+                    self.total_cost += iteration_cost
+
+                    unreal.log(f"Iteration cost: ${iteration_cost:.4f} (tokens: ${input_cost + output_cost:.4f})")
+                    unreal.log(f"Total cost so far: ${self.total_cost:.4f}")
                 elif 'usage' in data:
                     usage = data['usage']
                     unreal.log(f"Response received in {elapsed:.1f}s")
@@ -5258,6 +5666,11 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             unreal.log("[AdaptiveViews] iteration {}: capturing {} of {} views".format(
                 self.current_iteration, len(self.ADAPTIVE_REDUCED_VIEWS), 7))
 
+        # [StaleCapture] Record when this iteration's capture chain started so the
+        # capture-loading step can reject test_*.png files left over from previous
+        # iterations/panels (their mtime predates this timestamp).
+        self._capture_chain_started_at = time.time()
+
         # Step 1: Pilot to Scout
         self.test_pilot_to_scout()
         unreal.log("Pilot complete\n")
@@ -5266,16 +5679,20 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         # Hero is always captured (scoring and external validation read
         # test_hero.png). Full chain below stays untouched for default runs.
         if self._adaptive_reduced_views_this_iteration:
+            right_queued_at = time.time()
             right_success = self.test_capture_right()
             if not right_success:
                 unreal.log_error("Right capture failed to queue!")
                 return
             unreal.log("Right queued (1/2 reduced)\n")
-            unreal.log("⏳ Scheduling Top View in 15 seconds...\n")
-            QTimer.singleShot(15000, self._capture_top_delayed)
+            # [CapturePoll] Advance as soon as test_right.png lands (max 15s, as before)
+            unreal.log("⏳ Scheduling Top View (as soon as right capture lands, max 15 seconds)...\n")
+            self._poll_for_capture(self._capture_screenshot_path('test_right.png'),
+                                   right_queued_at, self._capture_top_delayed, 15000)
             return
 
         # Step 2: Front Capture
+        front_queued_at = time.time()
         front_success = self.test_capture_front()
         if not front_success:
             unreal.log_error("Front capture failed to queue!")
@@ -5283,8 +5700,10 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         unreal.log("Front queued (1/6)\n")
 
         # Schedule remaining captures with 15s delays
-        unreal.log("⏳ Scheduling remaining captures (15s between each)...\n")
-        QTimer.singleShot(15000, self._capture_right_delayed)
+        # [CapturePoll] Advance as soon as test_front.png lands (max 15s, as before)
+        unreal.log("⏳ Scheduling remaining captures (as each capture lands, max 15s between each)...\n")
+        self._poll_for_capture(self._capture_screenshot_path('test_front.png'),
+                               front_queued_at, self._capture_right_delayed, 15000)
 
     def _generate_ascii_graph(self, scores, width=60, height=10):
         """

@@ -73,7 +73,6 @@ class ModernStoryboardWindow(QMainWindow):
         self.active_panel = None
 
         # Core modules - initialized without show context
-        self.analyzer = PanelAnalyzer()
         self.shows_manager = get_shows_manager()  # Use singleton
         self.episodes_manager = get_episodes_manager()  # Use singleton
         self.sequence_generator = SequenceGenerator()
@@ -84,6 +83,11 @@ class ModernStoryboardWindow(QMainWindow):
 
         # Initialize AI client
         self.setup_ai_client()
+
+        # Panel analyzer must be constructed AFTER setup_ai_client so
+        # Analyze/Analyze All use real AI analysis; without the client it
+        # silently ran filename heuristics and cached the junk results.
+        self.analyzer = PanelAnalyzer(ai_client=self.ai_client)
 
         # Undo/Redo system
         self.undo_stack = deque(maxlen=50)
@@ -451,17 +455,37 @@ class ModernStoryboardWindow(QMainWindow):
             self,
             "Import Panels",
             "",
-            "Images (*.png *.jpg *.jpeg)"
+            "Images (*.png *.jpg *.jpeg);;Storyboarder (*.storyboarder)"
         )
 
-        if files:
+        if not files:
+            return
+
+        storyboarder_files = [f for f in files if f.lower().endswith('.storyboarder')]
+        image_files = [f for f in files if not f.lower().endswith('.storyboarder')]
+
+        for sb_path in storyboarder_files:
+            try:
+                from core.importers import import_storyboarder
+                result = import_storyboarder(sb_path, self.current_show, self.current_episode)
+                unreal.log(f"Storyboarder import: {result.get('imported', 0)} panel(s) from {Path(sb_path).name}")
+                for note in result.get('notes', []):
+                    unreal.log_warning(f"Storyboarder import: {note}")
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Storyboarder Import Failed",
+                    f"Could not import {sb_path}:\n{e}"
+                )
+
+        if image_files:
             imported = self.episodes_manager.import_panels_to_episode(
                 self.current_show,
                 self.current_episode,
-                files
+                image_files
             )
-            self.load_episode_panels()
             unreal.log(f"Imported {len(imported)} panels to episode")
+
+        self.load_episode_panels()
 
     # Implement remaining required methods...
     def setup_ai_client(self):

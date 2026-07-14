@@ -146,15 +146,18 @@ class FeaturesTab(QWidget):
 
         self.files_api_check = QCheckBox("Files API image reuse (upload each panel once, Claude only)")
         self.files_api_check.setToolTip(
-            "Uploads the storyboard image once and references it by ID instead of "
-            "re-sending it every iteration. Falls back to inline images on any failure.")
+            "Uploads each image once and references it by ID instead of re-sending "
+            "base64 every call. Applies wherever the Claude provider is built via the "
+            "provider factory (auto-detect or explicit Claude selection). Falls back "
+            "to inline images on any failure.")
         self.files_api_check.stateChanged.connect(self.on_change)
         cost_layout.addWidget(self.files_api_check)
 
         self.scoring_model_check = QCheckBox("Cheap re-scoring model (per-iteration scoring on Haiku)")
         self.scoring_model_check.setToolTip(
-            "Runs the cheap per-iteration re-scoring passes on claude-haiku-4-5 while "
-            "the main model handles full analysis. Several times cheaper per iteration.")
+            "Runs scoring passes (external validation second-model checks and future "
+            "refinement-loop wiring) on claude-haiku-4-5 while the main model handles "
+            "full analysis. Does not yet apply to the main refinement loop.")
         self.scoring_model_check.stateChanged.connect(self.on_change)
         cost_layout.addWidget(self.scoring_model_check)
 

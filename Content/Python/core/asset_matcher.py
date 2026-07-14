@@ -374,31 +374,46 @@ class AssetMatcher:
         """
         Check whether semantic matching should be active.
 
-        Requires the 'semantic_matching' setting to be truthy (read via the
-        plugin's config_manager, checked under 'asset_library.semantic_matching'
-        then top-level 'semantic_matching', defaulting to False) AND an OpenAI
-        API key to be available.
+        Requires the 'semantic_matching' setting to be truthy AND an OpenAI
+        API key to be available. The Features tab persists the toggle via
+        core.settings_manager under 'asset_library.semantic_matching', so
+        that store is read first; when it carries no value, the legacy
+        config_manager lookup (checked under 'asset_library.semantic_matching'
+        then top-level 'semantic_matching', defaulting to False) applies
+        unchanged.
 
         Returns:
             True only when both the setting and the API key are present.
         """
-        enabled = False
+        enabled = None
         try:
-            from config.config_manager import get_config
-            cfg = get_config()
-            enabled = bool(cfg.get("asset_library.semantic_matching",
-                                   cfg.get("semantic_matching", False)))
-        except ImportError:
+            from core.settings_manager import get_setting
+            value = get_setting('asset_library.semantic_matching', None)
+            if value is not None:
+                enabled = bool(value)
+        except Exception as e:
+            _log_warning(f"Could not read 'asset_library.semantic_matching' "
+                         f"via settings_manager: {e}")
+            enabled = None
+
+        if enabled is None:
+            enabled = False
             try:
-                from config_manager import get_config
+                from config.config_manager import get_config
                 cfg = get_config()
                 enabled = bool(cfg.get("asset_library.semantic_matching",
                                        cfg.get("semantic_matching", False)))
             except ImportError:
+                try:
+                    from config_manager import get_config
+                    cfg = get_config()
+                    enabled = bool(cfg.get("asset_library.semantic_matching",
+                                           cfg.get("semantic_matching", False)))
+                except ImportError:
+                    enabled = False
+            except Exception as e:
+                _log_warning(f"Could not read semantic_matching setting: {e}")
                 enabled = False
-        except Exception as e:
-            _log_warning(f"Could not read semantic_matching setting: {e}")
-            enabled = False
 
         if not enabled:
             return False

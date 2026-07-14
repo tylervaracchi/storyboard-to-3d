@@ -38,6 +38,37 @@ except ImportError:
     REQUESTS_AVAILABLE = False
     print("Warning: 'requests' module not found. AI features will be limited.")
 
+# Magic-byte MIME sniffing - reuse the shared helper when available
+try:
+    from utils.image_prep import _sniff_media_type
+except ImportError:
+    def _sniff_media_type(data):
+        """Detect an image MIME type from magic bytes (defaults to PNG)."""
+        if data.startswith(b'\x89PNG\r\n\x1a\n'):
+            return 'image/png'
+        if data.startswith(b'\xff\xd8'):
+            return 'image/jpeg'
+        if data.startswith(b'GIF87a') or data.startswith(b'GIF89a'):
+            return 'image/gif'
+        if len(data) >= 12 and data[0:4] == b'RIFF' and data[8:12] == b'WEBP':
+            return 'image/webp'
+        return 'image/png'
+
+
+def _media_type_from_base64(image_base64):
+    """Detect the MIME type of a base64-encoded image from its decoded prefix."""
+    try:
+        sample = image_base64[:64]
+        if isinstance(sample, (bytes, bytearray)):
+            sample = bytes(sample).decode('ascii', 'ignore')
+        sample = sample[:(len(sample) // 4) * 4]
+        header = base64.b64decode(sample)
+    except Exception:
+        header = b''
+    if not header:
+        return 'image/jpeg'
+    return _sniff_media_type(header)
+
 
 class AnalysisCache:
     """Cache for AI analysis results to avoid redundant API calls"""
@@ -931,9 +962,10 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
             content = [{"type": "input_text", "text": prompt}]
 
             if image_base64:
+                media_type = _media_type_from_base64(image_base64)
                 content.append({
                     "type": "input_image",
-                    "image_url": f"data:image/jpeg;base64,{image_base64}"
+                    "image_url": f"data:{media_type};base64,{image_base64}"
                 })
 
             #  Pro models require "high" reasoning
@@ -954,6 +986,7 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
             messages = []
 
             if image_base64:
+                media_type = _media_type_from_base64(image_base64)
                 messages.append({
                     "role": "user",
                     "content": [
@@ -961,7 +994,7 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_base64}"
+                                "url": f"data:{media_type};base64,{image_base64}"
                             }
                         }
                     ]
@@ -989,7 +1022,8 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/jpeg",
+                    # Sniff magic bytes: a hardcoded image/jpeg 400s on PNG panels
+                    "media_type": _media_type_from_base64(image_base64),
                     "data": image_base64
                 }
             })
