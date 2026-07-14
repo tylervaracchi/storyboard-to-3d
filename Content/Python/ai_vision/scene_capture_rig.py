@@ -204,7 +204,11 @@ def make_render_target(name, width, height):
     lib = getattr(unreal, 'RenderingLibrary', None)
     if lib is not None and hasattr(lib, 'create_render_target_2d'):
         try:
-            fmt_enum = getattr(unreal, 'RenderTargetFormat', None)
+            # the enum is exposed as TextureRenderTargetFormat (RenderTargetFormat
+            # does not exist and silently yields the float default, which makes
+            # export_render_target write EXR bytes into the .png)
+            fmt_enum = getattr(unreal, 'TextureRenderTargetFormat',
+                               getattr(unreal, 'RenderTargetFormat', None))
             # RTF_RGBA8 makes export_render_target write PNG (float formats write HDR)
             fmt = getattr(fmt_enum, 'RTF_RGBA8', None) if fmt_enum is not None else None
             if fmt is not None:
