@@ -6,7 +6,7 @@ Integration Verification Test for Intelligent View Selection
 Tests that Optimization #3 is properly integrated into active_panel_widget.py
 
 Run this in Unreal Python console:
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\test_view_selection_integration.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/tests/test_view_selection_integration.py').read())
 """
 
 import unreal
@@ -165,7 +165,7 @@ def test_code_search_verification():
 
     try:
         import os
-        file_path = r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\ui\widgets\active_panel_widget.py'
+        file_path = r'YourProject/Plugins/StoryboardTo3D/Content/Python\ui\widgets\active_panel_widget.py'
 
         if not os.path.exists(file_path):
             unreal.log_error(f"FAIL: File not found: {file_path}")

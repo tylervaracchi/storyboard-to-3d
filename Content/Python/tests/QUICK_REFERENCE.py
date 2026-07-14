@@ -20,7 +20,7 @@ YOU'RE HERE BECAUSE: The green GENERATE button creates scenes but the camera
 3. Type: py
 4. Paste this:
 
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\test_generate_button_flow.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/tests/test_generate_button_flow.py').read())
 
 5. Read the output in Output Log
 6. Look for:  camera_binding: True or  camera_binding: False
@@ -31,7 +31,7 @@ exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\
 
 OPTION 1: Automatic Fix (Try this first)
 ─────────────────────────────────────────
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\fix_camera_binding.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/fix_camera_binding.py').read())
 
 
 OPTION 2: Manual Fix (Always works)
@@ -48,11 +48,11 @@ OPTION 2: Manual Fix (Always works)
 
 Full Guide:
 ───────────
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\CAMERA_BINDING_GUIDE.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/CAMERA_BINDING_GUIDE.py').read())
 
 Tests README:
 ─────────────
-D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\README.md
+YourProject/Plugins/StoryboardTo3D/Content/Python/tests/README.md
 
 
  ALL AVAILABLE TESTS
@@ -60,19 +60,19 @@ D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\README.md
 
 Test What Happens When You Click GENERATE:
 ───────────────────────────────────────────
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\test_generate_button_flow.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/tests/test_generate_button_flow.py').read())
 
 Test Which Binding Method Works:
 ─────────────────────────────────
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\test_04_camera_binding.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/tests/test_04_camera_binding.py').read())
 
 Test Complete Workflow:
 ───────────────────────
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\test_07_complete_workflow.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/tests/test_07_complete_workflow.py').read())
 
 Run ALL Tests:
 ──────────────
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\run_all_tests.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/tests/run_all_tests.py').read())
 
 
  EXPECTED RESULTS
@@ -171,7 +171,7 @@ Step 4: Manual Fix
  FILE STRUCTURE
 ═══════════════════════════════════════════════════════════════════════════════
 
-D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\
+YourProject/Plugins/StoryboardTo3D/Content/Python/
 │
 ├── tests/
 │   ├── README.md                       ← Read this first
@@ -291,7 +291,7 @@ If all checked:  You're done!
 ═══════════════════════════════════════════════════════════════════════════════
 
 To print this guide:
-exec(open(r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python\tests\QUICK_REFERENCE.py').read())
+exec(open(r'YourProject/Plugins/StoryboardTo3D/Content/Python/tests/QUICK_REFERENCE.py').read())
 
 """
 

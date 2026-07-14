@@ -146,7 +146,7 @@ def generate_report(results, workflow_details):
         unreal.log("2. Check if UE 5.6 has auto-binding when single camera exists")
         unreal.log("3. May need to use editor-specific APIs or C++ exposed methods")
 
-    if results.get('camera_cut_track') but not results.get('camera_binding'):
+    if results.get('camera_cut_track') and not results.get('camera_binding'):
         unreal.log("1. Track creation works but binding fails")
         unreal.log("2. The issue is specifically with set_camera_binding_id()")
         unreal.log("3. Consider using the manual right-click method in UI")
