@@ -168,6 +168,10 @@ class ModernStoryboardWindow(QMainWindow):
         self.panel_grid.panel_clicked.connect(self.on_panel_clicked)
         self.panel_grid.panels_reordered.connect(self.on_panels_reordered)
 
+        # Panel context menu: Analyze and Delete were previously no-ops
+        self.panel_grid.panel_analyze_requested.connect(self.on_panel_analyze_requested)
+        self.panel_grid.panel_delete_requested.connect(self.on_panel_delete_requested)
+
         # First-run welcome panel tracks whether any shows exist
         self.show_manager.shows_updated.connect(self.update_welcome_visibility)
 
@@ -285,7 +289,8 @@ class ModernStoryboardWindow(QMainWindow):
                     'characters': saved_data.get('characters', []),
                     'props': saved_data.get('props', []),
                     'location': saved_data.get('location', ''),
-                    'shot_type': saved_data.get('shot_type', '')
+                    'shot_type': saved_data.get('shot_type', ''),
+                    'sequence_path': saved_data.get('sequence_path')
                 })
 
             # Apply saved drag-and-drop order when present so reordering
@@ -373,6 +378,19 @@ class ModernStoryboardWindow(QMainWindow):
         dashboard_action.setToolTip("Generate the multi-model calibration dashboard PNG")
         dashboard_action.triggered.connect(self.show_calibration_dashboard)
         tools_menu.addAction(dashboard_action)
+
+        comparison_action = QAction("📈 Model Comparison", self)
+        comparison_action.setToolTip(
+            "Print the multi-model comparison table (needs capture runs with "
+            "model tracking this session)")
+        comparison_action.triggered.connect(self.show_model_comparison_dialog)
+        tools_menu.addAction(comparison_action)
+
+        combined_csv_action = QAction("🧾 Export Combined Model CSV", self)
+        combined_csv_action.setToolTip(
+            "Export one CSV with all tracked models side-by-side")
+        combined_csv_action.triggered.connect(self.export_combined_comparison_dialog)
+        tools_menu.addAction(combined_csv_action)
 
         batch_action = QAction("🌙 Overnight Batch...", self)
         batch_action.setToolTip("Analyze and generate every panel in an episode, unattended")
@@ -798,7 +816,10 @@ class ModernStoryboardWindow(QMainWindow):
                 'characters': panel_data.get('characters', []),
                 'props': panel_data.get('props', []),
                 'location': location,
-                'shot_type': shot_type
+                'shot_type': shot_type,
+                # Persist the generated sequence so CAPTURE/BATCH CAPTURE
+                # still find it after an editor restart
+                'sequence_path': panel_data.get('sequence_path')
             }
 
             # Save metadata
@@ -828,6 +849,10 @@ class ModernStoryboardWindow(QMainWindow):
                     self.panels[i]['location'] = saved_data.get('location', '')
                     self.panels[i]['shot_type'] = saved_data.get('shot_type', '')
                     unreal.log(f"[{i}] {p['name']}: Loaded analysis from file")
+                # Restore sequence_path only when saved (never clobber a
+                # fresher in-memory value with None)
+                if saved_data.get('sequence_path'):
+                    self.panels[i]['sequence_path'] = saved_data['sequence_path']
                 else:
                     # No saved data - keep whatever is in memory
                     pass
@@ -858,6 +883,65 @@ class ModernStoryboardWindow(QMainWindow):
                 "Panel Save Failed",
                 "Could not save panel metadata for "
                 "{0}:\n{1}".format(panel_data.get('name', '?'), e),
+                "error")
+
+    def on_panel_analyze_requested(self, panel):
+        """Context-menu Analyze: activate the panel and run the widget's analyzer"""
+        try:
+            self.on_panel_clicked(panel)
+            if hasattr(self, 'active_panel_widget'):
+                self.active_panel_widget.analyze_panel_with_ai()
+        except Exception as e:
+            self.notify_user(
+                "Analyze Failed",
+                "Could not analyze '{0}':\n{1}".format(panel.get('name', '?'), e),
+                "error")
+
+    def on_panel_delete_requested(self, panel):
+        """Context-menu Delete: remove the panel file + metadata, then reload.
+
+        The grid already confirmed with the user. Removing only the in-memory
+        entry made 'deleted' panels reappear on the next episode load.
+        """
+        try:
+            panel_name = panel.get('name', '')
+
+            # Remove the image file
+            panel_path = Path(panel.get('path', ''))
+            if panel_path.exists():
+                os.remove(str(panel_path))
+                unreal.log(f"Deleted panel image: {panel_path}")
+
+            # Remove its metadata entry (and any saved-order reference)
+            if self.current_episode_path:
+                metadata_file = self.current_episode_path / "panels_metadata.json"
+                if metadata_file.exists():
+                    with open(metadata_file, 'r') as f:
+                        panel_metadata = json.load(f)
+                    panel_metadata.pop(panel_name, None)
+                    saved_order = panel_metadata.get('__panel_order__')
+                    if isinstance(saved_order, list) and panel_name in saved_order:
+                        saved_order.remove(panel_name)
+                    with open(metadata_file, 'w') as f:
+                        json.dump(panel_metadata, f, indent=2)
+
+            # Clear the active panel if it was the one deleted
+            if self.active_panel and self.active_panel.get('name') == panel_name:
+                self.active_panel = None
+                if hasattr(self, 'active_panel_widget'):
+                    self.active_panel_widget.clear_panel()
+
+            self.load_episode_panels()
+            unreal.log(f"Deleted panel: {panel_name}")
+            try:
+                self.statusBar().showMessage(
+                    "Deleted panel: {0}".format(panel_name), 8000)
+            except Exception:
+                pass
+        except Exception as e:
+            self.notify_user(
+                "Delete Failed",
+                "Could not delete '{0}':\n{1}".format(panel.get('name', '?'), e),
                 "error")
 
     def on_panels_reordered(self):
@@ -1031,6 +1115,47 @@ class ModernStoryboardWindow(QMainWindow):
         else:
             error = result.get('error', 'Unknown error') if isinstance(result, dict) else result
             self.notify_user("USD Export Failed", str(error), "error")
+
+    def _get_multi_model_tracker(self):
+        """Multi-model tracker from the active panel widget, or None"""
+        widget = getattr(self, 'active_panel_widget', None)
+        return getattr(widget, 'multi_model_tracker', None) if widget else None
+
+    def show_model_comparison_dialog(self):
+        """Tools menu: print the multi-model comparison table"""
+        tracker = self._get_multi_model_tracker()
+        if not tracker:
+            self.notify_user(
+                "Model Comparison",
+                "No multi-model data recorded this session.\n"
+                "Run CAPTURE with model tracking first.",
+                "warning")
+            return
+        try:
+            self.active_panel_widget.show_model_comparison()
+            QMessageBox.information(
+                self, "Model Comparison",
+                "Comparison table printed to the Output Log.")
+        except Exception as e:
+            self.notify_user("Model Comparison Failed", str(e), "error")
+
+    def export_combined_comparison_dialog(self):
+        """Tools menu: export the combined multi-model CSV"""
+        tracker = self._get_multi_model_tracker()
+        if not tracker:
+            self.notify_user(
+                "Export Combined Model CSV",
+                "No multi-model data recorded this session.\n"
+                "Run CAPTURE with model tracking first.",
+                "warning")
+            return
+        try:
+            output_file = tracker.export_combined_csv()
+            QMessageBox.information(
+                self, "Export Combined Model CSV",
+                "Combined comparison exported to:\n{0}".format(output_file))
+        except Exception as e:
+            self.notify_user("Combined CSV Export Failed", str(e), "error")
 
     def show_calibration_dashboard(self):
         """Tools menu: generate and display the calibration dashboard PNG"""

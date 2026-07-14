@@ -22,14 +22,6 @@ except ImportError:
     from PySide2.QtGui import *
     USING_PYSIDE6 = False
 
-def capture_thumbnail(asset_name):
-    """Capture thumbnail for asset - placeholder function"""
-    unreal.log(f"Thumbnail capture requested for: {asset_name}")
-    unreal.log("Manual thumbnail capture: Take a screenshot using Unreal's viewport tools")
-    # Future: Implement automated thumbnail capture
-    pass
-
-
 # Content Browser asset name prefixes stripped when prettifying names
 ASSET_NAME_PREFIXES = ('SM_', 'SK_', 'BP_')
 
@@ -863,26 +855,56 @@ class AssetLibraryWidget(QWidget):
 
         category, name = self.selected_asset
 
-        reply = QMessageBox.information(
+        # Use the real thumbnail pipeline (same one the Content Browser add
+        # flow uses); the old handler called a placeholder that did nothing
+        # while promising a library refresh that never came
+        entry = self.library.library.get(category, {}).get(name, {})
+        asset_path = entry.get('asset_path', '')
+        if not asset_path:
+            QMessageBox.warning(
+                self, "No Asset Path",
+                f"'{name}' has no asset path in the library.\n\n"
+                "Edit the asset and browse to its Unreal asset first.")
+            return
+
+        reply = QMessageBox.question(
             self,
             "Capture Thumbnail",
-            f"Position '{name}' nicely in the viewport, then click OK to capture thumbnail.\n\n" +
-            "The screenshot will be ready in 30-40 seconds.",
-            QMessageBox.Ok | QMessageBox.Cancel
+            f"Generate a thumbnail for '{name}' now?\n\n"
+            f"Asset: {asset_path}",
+            QMessageBox.Yes | QMessageBox.No
         )
 
-        if reply == QMessageBox.Ok:
-            capture_thumbnail(name)
-            QMessageBox.information(
-                self,
-                "Capture Started",
-                f"Thumbnail capture started for '{name}'.\n\n" +
-                "It will be ready in 30-40 seconds.\n" +
-                "The library will auto-update when ready."
-            )
+        if reply != QMessageBox.Yes:
+            return
 
-            # Schedule refresh
-            QTimer.singleShot(45000, self.refresh_library)  # Refresh after 45 seconds
+        try:
+            from core.thumbnail_generator import (
+                generate_asset_thumbnail, safe_thumbnail_filename
+            )
+            thumb_dir = Path(self.current_show_path) / "Thumbnails"
+            out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
+            if generate_asset_thumbnail(asset_path, str(out_png)):
+                self.library.library[category][name]['thumbnail'] = {
+                    'type': 'manual',
+                    'path': str(out_png),
+                }
+                self.library.save_library()
+                self.refresh_library()
+                self.library_updated.emit()
+                QMessageBox.information(
+                    self, "Thumbnail Captured",
+                    f"Thumbnail saved for '{name}':\n{out_png}")
+            else:
+                QMessageBox.warning(
+                    self, "Thumbnail Failed",
+                    f"Could not generate a thumbnail for '{name}'.\n\n"
+                    "Check the Output Log for details (the asset may not "
+                    "load, or the render may have failed).")
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Thumbnail Failed",
+                f"Thumbnail generation errored for '{name}':\n{e}")
 
     def get_active_category(self):
         """Category of the currently selected tab, or None if unknown"""

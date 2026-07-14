@@ -781,6 +781,9 @@ NOT: "characters": ["Oat"]  ← WRONG! Missing the rabbit!
             self.load_asset_library(show_name)
 
         # Default analysis based on filename or library
+        # 'fallback': True lets the UI distinguish these library defaults
+        # from a real AI analysis instead of reporting fake success;
+        # confidence 0 keeps the confidence bar honest.
         analysis = {
             'location': 'Current',
             'location_type': 'exterior',
@@ -789,7 +792,9 @@ NOT: "characters": ["Oat"]  ← WRONG! Missing the rabbit!
             'shot_type': 'medium',
             'description': 'Scene from storyboard panel (analyzed without AI)',
             'num_characters': 1,  # Assume at least 1 character
-            'raw_detections': {}
+            'raw_detections': {},
+            'fallback': True,
+            'confidence': 0
         }
 
         # If asset library exists, populate with library defaults

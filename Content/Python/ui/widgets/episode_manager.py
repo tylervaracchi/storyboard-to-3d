@@ -75,13 +75,13 @@ class EpisodeManagerWidget(QWidget):
         btn_layout = QHBoxLayout(btn_widget)
         btn_layout.setContentsMargins(10, 5, 10, 10)
 
-        import_btn = QPushButton("")
-        import_btn.setToolTip("Import Episode")
+        import_btn = QPushButton("📥")
+        import_btn.setToolTip("Import Episode (not implemented yet)")
         import_btn.clicked.connect(self.import_episode)
         btn_layout.addWidget(import_btn)
 
-        export_btn = QPushButton("")
-        export_btn.setToolTip("Export Episode")
+        export_btn = QPushButton("📤")
+        export_btn.setToolTip("Export Episode (not implemented yet)")
         export_btn.clicked.connect(self.export_episode)
         btn_layout.addWidget(export_btn)
 
@@ -264,9 +264,39 @@ class EpisodeManagerWidget(QWidget):
                 QMessageBox.warning(self, "Error", f"Failed to delete episode '{episode['name']}'")
 
     def import_episode(self):
-        """Import episode"""
-        unreal.log("Import episode - TODO")
+        """Import episode from folder (not implemented yet)"""
+        # Honest placeholder: the old handler only wrote a log line,
+        # which looked like a broken button
+        if self.current_show:
+            episodes_dir = self.episodes_manager.shows_root / self.current_show / "Episodes"
+            QMessageBox.information(
+                self, "Import Episode",
+                "Episode import is not implemented yet.\n\n"
+                "To bring in an existing episode, copy its folder into:\n"
+                "{0}\n"
+                "then re-select the show.".format(episodes_dir))
+        else:
+            QMessageBox.information(
+                self, "Import Episode",
+                "Episode import is not implemented yet.\n\n"
+                "Select a show first, then copy the episode folder into that "
+                "show's Episodes directory.")
 
     def export_episode(self):
-        """Export episode"""
-        unreal.log("Export episode - TODO")
+        """Export episode to folder (not implemented yet)"""
+        if not self.current_episode:
+            QMessageBox.information(
+                self, "Export Episode", "Select an episode first.")
+            return
+        episode_path = ""
+        try:
+            episode_path = str(self.episodes_manager.shows_root / self.current_show /
+                               "Episodes" / self.current_episode['safe_name'])
+        except Exception:
+            pass
+        QMessageBox.information(
+            self, "Export Episode",
+            "Episode export is not implemented yet.\n\n"
+            "The episode's files (panels + metadata) live in:\n"
+            "{0}\n"
+            "Copy that folder to share or back up the episode.".format(episode_path))

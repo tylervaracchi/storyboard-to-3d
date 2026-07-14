@@ -327,6 +327,12 @@ class ActivePanelWidget(QWidget):
         self.batch_capture_mode = False  # True when running batch capture
         self.batch_capture_queue = []  # Queue of panels to process
         self.batch_capture_results = []  # Results for each panel
+        self._batch_generate_active = False  # True while batch generate loop runs
+
+        # [SeamFix] Consecutive AI-call failures during the refinement loop.
+        # After 2 in a row the run stops instead of burning hours of
+        # iterations that produce nothing (bad key / network / rate limit).
+        self._consecutive_ai_failures = 0
 
         # THESIS ENHANCEMENT: Metric validation (validates AI scores against objective SSIM/PSNR)
         self.metric_validator = None  # Initialized on first use
@@ -683,7 +689,7 @@ class ActivePanelWidget(QWidget):
         location_controls.addWidget(self.location_combo)
 
         # Add refresh button
-        refresh_locations_btn = QPushButton("")
+        refresh_locations_btn = QPushButton("↻")
         refresh_locations_btn.setMaximumWidth(30)
         refresh_locations_btn.setToolTip("Refresh locations from asset library")
         refresh_locations_btn.clicked.connect(self.force_refresh_locations)
@@ -1544,8 +1550,55 @@ class ActivePanelWidget(QWidget):
         cleanup()
         unreal.log("[test_cleanup_scout END]")
 
-    def test_positioning_phase3(self):
+    def _workflow_busy(self, action_name):
+        """[SeamFix] True (plus a Busy dialog) when a run is already active.
+
+        Guards the CAPTURE / GENERATE / batch entry points against
+        double-clicks: a second click used to re-set capture_workflow_active
+        and un-cancel still-scheduled QTimer callbacks from the first chain,
+        interleaving two capture chains over the same test_*.png files.
+        """
+        if (getattr(self, 'capture_workflow_active', False) or
+                getattr(self, 'batch_capture_mode', False) or
+                getattr(self, '_batch_generate_active', False)):
+            unreal.log_warning(
+                f"{action_name} ignored - a capture/generate workflow is already running")
+            try:
+                QMessageBox.information(
+                    self,
+                    "Busy",
+                    f"A workflow is already running.\n\n"
+                    f"{action_name} was ignored to avoid two runs interleaving.\n"
+                    "Wait for the current run to finish (or cancel it from the "
+                    "iteration progress readout) and try again."
+                )
+            except Exception:
+                pass
+            return True
+        return False
+
+    def _persist_panel_metadata(self, panel_data):
+        """[SeamFix] Save panel metadata via the main window, if reachable.
+
+        Same walk-up-the-widget-tree pattern used elsewhere in this file;
+        never raises so generation flows are unaffected by a save failure.
+        """
+        try:
+            parent = self.parent()
+            while parent and not hasattr(parent, 'save_panel_metadata'):
+                parent = parent.parent()
+            if parent and hasattr(parent, 'save_panel_metadata'):
+                parent.save_panel_metadata(panel_data)
+        except Exception as e:
+            unreal.log_warning(f"Could not persist panel metadata: {e}")
+
+    def test_positioning_phase3(self, *, _from_batch=False):
         """Auto-execute all 6 angles with 15s delay between shots: Pilot → Front → Right → Back → Left → Top → 3/4"""
+        # Re-entrancy guard (batch mode calls this internally with the
+        # batch flags already set, so it bypasses the guard)
+        if not _from_batch and self._workflow_busy("CAPTURE"):
+            return
+
         unreal.log("\n" + "="*70)
         unreal.log("CAPTURE BUTTON CLICKED - STARTING POSITIONING WORKFLOW")
         unreal.log("="*70)
@@ -1557,6 +1610,9 @@ class ActivePanelWidget(QWidget):
         # Get location and sequence from active panel
         if not self.active_panel:
             unreal.log_error("No active panel set!")
+            QMessageBox.warning(
+                self, "Cannot Capture",
+                "No active panel is selected.\n\nClick a panel first.")
             return
 
         location = self.active_panel.get('location')
@@ -1623,6 +1679,11 @@ class ActivePanelWidget(QWidget):
             if not level_loaded:
                 unreal.log_error(f"Failed to load level for location '{location}'")
                 unreal.log_error(f"Cannot continue with capture - sequence won't be visible")
+                QMessageBox.warning(
+                    self, "Cannot Capture",
+                    f"Failed to load the level for location '{location}'.\n\n"
+                    "Capture stopped - the sequence would not be visible.\n"
+                    "Check that the location exists in the asset library.")
                 return
 
             unreal.log(f"Level loaded successfully for '{location}'")
@@ -1643,6 +1704,10 @@ class ActivePanelWidget(QWidget):
 
                 if not sequence_asset:
                     unreal.log_error(f"Failed to load sequence asset: {sequence_path}")
+                    QMessageBox.warning(
+                        self, "Cannot Capture",
+                        f"Failed to load the sequence asset:\n{sequence_path}\n\n"
+                        "Try clicking GENERATE again to rebuild the scene.")
                     return
 
                 # Open in Sequencer
@@ -1662,10 +1727,16 @@ class ActivePanelWidget(QWidget):
                 unreal.log_error(f"Failed to open sequence: {e}")
                 import traceback
                 unreal.log_error(traceback.format_exc())
+                QMessageBox.warning(
+                    self, "Cannot Capture",
+                    f"Failed to open the sequence in Sequencer:\n{e}")
                 return
         else:
             unreal.log_warning("No sequence_path in panel data - cannot open sequence")
             unreal.log_warning("Generate the scene first before capturing")
+            QMessageBox.warning(
+                self, "Cannot Capture",
+                "No generated scene for this panel.\n\nClick GENERATE first.")
             return
 
         unreal.log("\n" + "="*70)
@@ -1674,6 +1745,9 @@ class ActivePanelWidget(QWidget):
 
         # CRITICAL: Activate workflow flag to allow delayed callbacks
         self.capture_workflow_active = True
+
+        # [SeamFix] Fresh run: forget AI failures from any previous run
+        self._consecutive_ai_failures = 0
 
         # Enable auto-iteration for 10 loops
         unreal.log("\n Setting up auto-iteration...")
@@ -2932,6 +3006,9 @@ class ActivePanelWidget(QWidget):
                 unreal.log(f"\n   Received result: {type(result)}, length: {len(result) if result else 0}")
 
                 if result is not None:
+                    # [SeamFix] AI reachable again - reset the failure streak
+                    self._consecutive_ai_failures = 0
+
                     unreal.log("\nAI ANALYSIS COMPLETE!")
                     unreal.log("="*70)
                     unreal.log("DEBUG: Raw AI response (first 500 chars):")
@@ -3016,6 +3093,26 @@ class ActivePanelWidget(QWidget):
                 else:
                     unreal.log_error("AI request returned None")
                     unreal.log_error("Check API key, network connection, and API limits")
+                    # [SeamFix] Stop the run after 2 consecutive AI failures
+                    # instead of silently burning N iterations x 7 screenshots
+                    # that produce nothing (bad key / network / rate limit).
+                    self._consecutive_ai_failures = getattr(
+                        self, '_consecutive_ai_failures', 0) + 1
+                    if self._consecutive_ai_failures >= 2:
+                        unreal.log_error(
+                            "2 consecutive AI call failures - stopping iterations")
+                        self.auto_iterate = False
+                        if getattr(self, 'batch_capture_mode', False):
+                            self.batch_capture_mode = False
+                            self.batch_capture_queue = []
+                        try:
+                            QMessageBox.critical(
+                                self,
+                                "AI Unavailable",
+                                "Iterations stopped: 2 consecutive AI call "
+                                "failures.\n\nCheck API key / network in Settings.")
+                        except Exception:
+                            pass
 
             except ImportError as e:
                 unreal.log_error(f"Could not import AI client: {e}")
@@ -5241,6 +5338,18 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             # into the live progress readout. Display only; loop unchanged.
             self._iteration_progress_record_iteration()
 
+            # [SeamFix] Also surface the score on the basic match readout so
+            # progress is visible even without the sparkline widget.
+            try:
+                self.comparison_result.show()
+                self.match_label.setText(
+                    "Iteration {0}/{1}: {2}/100".format(
+                        self.current_iteration, self.max_iterations,
+                        self.last_match_score))
+                self.match_progress.setValue(int(self.last_match_score or 0))
+            except Exception:
+                pass
+
         unreal.log("\n" + "="*70)
         unreal.log("CAPTURE ITERATION COMPLETE!")
         unreal.log("="*70)
@@ -5396,7 +5505,10 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         unreal.log("ALL ITERATIONS COMPLETE!")
         unreal.log("="*70)
         unreal.log("Screenshots saved to:")
-        unreal.log("D:\\PythonStoryboardToUE\\Saved\\Screenshots\\WindowsEditor\\")
+        try:
+            unreal.log(str(Path(unreal.Paths.project_saved_dir()) / "Screenshots" / "WindowsEditor"))
+        except Exception:
+            unreal.log("<project>/Saved/Screenshots/WindowsEditor/")
         unreal.log("- test_front.png")
         unreal.log("- test_right.png")
         unreal.log("- test_back.png")
@@ -6067,6 +6179,10 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
     def generate_scene_from_panel(self):
         """Generate 3D scene from storyboard panel"""
+        # Re-entrancy guard: don't rebuild while a capture/batch runs
+        if self._workflow_busy("GENERATE"):
+            return
+
         unreal.log("\n" + "="*70)
         unreal.log("GENERATE BUTTON CLICKED")
         unreal.log("="*70)
@@ -6202,6 +6318,9 @@ Shot Type: {panel_info['shot_type']}"""
                 if scene_data.get('sequence') and scene_data['sequence'].get('path'):
                     self.active_panel['sequence_path'] = scene_data['sequence']['path']
                     unreal.log(f"Updated active_panel with sequence_path: {scene_data['sequence']['path']}")
+                    # [SeamFix] Persist immediately so BATCH CAPTURE still
+                    # finds the generated scene after an editor restart
+                    self._persist_panel_metadata(self.active_panel)
 
                 # Schedule getting the camera after build completes
                 QTimer.singleShot(3000, self._get_camera_from_builder)
@@ -6405,8 +6524,15 @@ Shot Type: {panel_info['shot_type']}"""
                     self.shot_type_combo.setCurrentIndex(index)
 
                 # Update status and description
-                self.analysis_status_label.setText(" AI Analyzed")
-                self.analysis_status_label.setStyleSheet("color: #00AA00;")
+                # [SeamFix] Distinguish real AI analysis from the analyzer's
+                # library-defaults fallback (Ollama down / no AI reachable)
+                used_fallback = bool(result.get('fallback'))
+                if used_fallback:
+                    self.analysis_status_label.setText(" Defaults (no AI)")
+                    self.analysis_status_label.setStyleSheet("color: #F59E0B;")
+                else:
+                    self.analysis_status_label.setText(" AI Analyzed")
+                    self.analysis_status_label.setStyleSheet("color: #00AA00;")
 
                 description = result.get('description', result.get('raw_description', 'Scene analyzed'))
                 if description:
@@ -6448,7 +6574,25 @@ Shot Type: {panel_info['shot_type']}"""
                 char_summary = ', '.join(characters) if characters else 'None (add manually)'
                 prop_summary = ', '.join(props) if props else 'None (add manually)'
 
-                results_text = f"""AI Analysis Complete!
+                if used_fallback:
+                    # [SeamFix] No AI ran - say so instead of reporting success
+                    QMessageBox.warning(
+                        self,
+                        "AI Unavailable",
+                        "AI unavailable - used library defaults. "
+                        "Check Ollama or AI Settings.\n\n"
+                        " Defaults applied:\n"
+                        f"• Characters: {char_summary}\n"
+                        f"• Props: {prop_summary}\n"
+                        f"• Location: {location}\n"
+                        f"• Shot Type: {shot_type}\n\n"
+                        "These are first-in-library placeholders, not an "
+                        "analysis of your drawing. Edit them manually or fix "
+                        "the AI connection and re-run Analyze."
+                    )
+                    unreal.log_warning("Panel populated from library defaults (no AI)")
+                else:
+                    results_text = f"""AI Analysis Complete!
 
  Description:
 {description}
@@ -6463,13 +6607,13 @@ Shot Type: {panel_info['shot_type']}"""
 These elements have been added to your panel.
 You can edit them before generating the scene.{available_info}"""
 
-                QMessageBox.information(
-                    self,
-                    "Analysis Complete",
-                    results_text
-                )
+                    QMessageBox.information(
+                        self,
+                        "Analysis Complete",
+                        results_text
+                    )
 
-                unreal.log("Panel analyzed and UI populated successfully")
+                    unreal.log("Panel analyzed and UI populated successfully")
 
             else:
                 QMessageBox.warning(
@@ -7055,6 +7199,9 @@ You can edit them before generating the scene.{available_info}"""
                 if scene_data.get('sequence') and scene_data['sequence'].get('path'):
                     panel_data['sequence_path'] = scene_data['sequence']['path']
                     unreal.log(f"Saved sequence_path to panel: {scene_data['sequence']['path']}")
+                    # [SeamFix] Persist immediately so BATCH CAPTURE still
+                    # finds the generated scene after an editor restart
+                    self._persist_panel_metadata(panel_data)
 
             # Save thesis generation info
             self._save_generation_thesis_info(panel_info, panel_index, success)
@@ -7069,6 +7216,10 @@ You can edit them before generating the scene.{available_info}"""
 
     def batch_generate_all_panels(self):
         """Generate 3D scenes for all panels in the current episode"""
+        # Re-entrancy guard: one batch/workflow at a time
+        if self._workflow_busy("BATCH GENERATE"):
+            return
+
         unreal.log("\n" + "="*70)
         unreal.log("BATCH GENERATE - STARTING")
         unreal.log("="*70)
@@ -7134,8 +7285,7 @@ You can edit them before generating the scene.{available_info}"""
             self,
             "Batch Generate Confirmation",
             f"Generate 3D scenes for {len(analyzed_panels)} analyzed panels?\n\n" +
-            f"This will process each panel in order.\n" +
-            f"You can monitor progress in the Output Log.",
+            f"This will process each panel in order.",
             QMessageBox.Yes | QMessageBox.No
         )
 
@@ -7147,39 +7297,63 @@ You can edit them before generating the scene.{available_info}"""
         unreal.log(f"\n Processing {len(analyzed_panels)} panels...")
         successful = 0
         failed = 0
+        cancelled = False
 
-        for i, panel in enumerate(analyzed_panels, 1):
-            unreal.log("\n" + "="*70)
-            unreal.log(f"BATCH GENERATE: Panel {i}/{len(analyzed_panels)}")
-            unreal.log(f"File: {panel.get('name', 'unknown')}")
-            unreal.log("="*70)
+        # [SeamFix] Visible progress + cancel for the synchronous loop; the
+        # per-panel work itself is unchanged.
+        progress = QProgressDialog(
+            "Generating scenes...", "Cancel", 0, len(analyzed_panels), self)
+        progress.setWindowTitle("Batch Generate")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
 
-            try:
-                # Set this panel as active (updates UI widgets)
-                self.set_panel(panel)
-
-                # Give UI time to update
+        self._batch_generate_active = True
+        try:
+            for i, panel in enumerate(analyzed_panels, 1):
+                progress.setValue(i - 1)
+                progress.setLabelText("Generating panel {0}/{1}: {2}".format(
+                    i, len(analyzed_panels), panel.get('name', 'unknown')))
                 QApplication.processEvents()
+                if progress.wasCanceled():
+                    cancelled = True
+                    unreal.log("Batch generate cancelled by user mid-run")
+                    break
 
-                # Generate scene for this panel (without confirmation prompt)
-                success = self._generate_scene_internal(panel)
+                unreal.log("\n" + "="*70)
+                unreal.log(f"BATCH GENERATE: Panel {i}/{len(analyzed_panels)}")
+                unreal.log(f"File: {panel.get('name', 'unknown')}")
+                unreal.log("="*70)
 
-                if success:
-                    successful += 1
-                    unreal.log(f"Panel {i}/{len(analyzed_panels)} generated successfully")
-                else:
+                try:
+                    # Set this panel as active (updates UI widgets)
+                    self.set_panel(panel)
+
+                    # Give UI time to update
+                    QApplication.processEvents()
+
+                    # Generate scene for this panel (without confirmation prompt)
+                    success = self._generate_scene_internal(panel)
+
+                    if success:
+                        successful += 1
+                        unreal.log(f"Panel {i}/{len(analyzed_panels)} generated successfully")
+                    else:
+                        failed += 1
+                        unreal.log_warning(f"Panel {i}/{len(analyzed_panels)} generation failed")
+
+                    # Brief pause between panels
+                    import time
+                    time.sleep(0.5)
+
+                except Exception as e:
                     failed += 1
-                    unreal.log_warning(f"Panel {i}/{len(analyzed_panels)} generation failed")
-
-                # Brief pause between panels
-                import time
-                time.sleep(0.5)
-
-            except Exception as e:
-                failed += 1
-                unreal.log_error(f"Error generating panel {i}: {e}")
-                import traceback
-                unreal.log_error(traceback.format_exc())
+                    unreal.log_error(f"Error generating panel {i}: {e}")
+                    import traceback
+                    unreal.log_error(traceback.format_exc())
+        finally:
+            self._batch_generate_active = False
+            progress.setValue(len(analyzed_panels))
+            progress.close()
 
         # Show results
         unreal.log("\n" + "="*70)
@@ -7189,17 +7363,20 @@ You can edit them before generating the scene.{available_info}"""
         unreal.log(f"Failed: {failed}/{len(analyzed_panels)}")
         unreal.log("="*70 + "\n")
 
-        QMessageBox.information(
-            self,
-            "Batch Generate Complete",
-            f"Batch generation finished!\n\n" +
-            f" Successful: {successful}\n" +
-            f" Failed: {failed}\n" +
-            f"Total: {len(analyzed_panels)} panels"
-        )
+        summary = (f"Batch generation finished!\n\n" +
+                   f" Successful: {successful}\n" +
+                   f" Failed: {failed}\n" +
+                   f"Total: {len(analyzed_panels)} panels")
+        if cancelled:
+            summary += "\n\n(Cancelled before all panels were processed)"
+        QMessageBox.information(self, "Batch Generate Complete", summary)
 
     def batch_capture_all_panels(self):
         """Run iterative positioning for all panels in the current episode - SEQUENTIAL"""
+        # Re-entrancy guard: one batch/workflow at a time
+        if self._workflow_busy("BATCH CAPTURE"):
+            return
+
         unreal.log("\n" + "="*70)
         unreal.log("BATCH CAPTURE - STARTING SEQUENTIAL PROCESSING")
         unreal.log("="*70)
@@ -7456,7 +7633,9 @@ You can edit them before generating the scene.{available_info}"""
             # Start positioning workflow for this panel
             # When it completes, _finalize_metrics will check batch_capture_mode
             # and call _process_next_batch_panel again
-            self.test_positioning_phase3()
+            # (_from_batch bypasses the double-click busy guard, which the
+            # batch's own flags would otherwise trip)
+            self.test_positioning_phase3(_from_batch=True)
 
         except Exception as e:
             # Panel failed - log error and record result

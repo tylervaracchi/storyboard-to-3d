@@ -47,7 +47,8 @@ def initialize_core_systems():
     qt_available = check_qt_availability()
     if not qt_available:
         unreal.log_error("Qt not available - UI will not work")
-        unreal.log("Please run: pip install PySide6")
+        unreal.log_error("Please run: {0}".format(_qt_install_command()))
+        _notify_qt_missing()
         return False
 
     # Initialize core modules
@@ -66,10 +67,55 @@ def initialize_core_systems():
     return True
 
 
+def _qt_install_command():
+    """
+    Build the exact pip command that installs the plugin's Python
+    requirements into the engine's embedded Python.
+
+    Returns:
+        str: A copy-pasteable command line.
+    """
+    requirements = plugin_path / "requirements.txt"
+    python_exe = "<UE engine Python>"
+    try:
+        engine_python = (Path(unreal.Paths.engine_dir()) / "Binaries" /
+                         "ThirdParty" / "Python3" / "Win64" / "python.exe")
+        if engine_python.exists():
+            python_exe = str(engine_python)
+    except Exception:
+        pass
+    return '"{0}" -m pip install -r "{1}"'.format(python_exe, requirements)
+
+
+def _notify_qt_missing():
+    """
+    Surface the missing-Qt failure in an editor dialog (no Qt needed).
+
+    Without this, a fresh install with no PySide6 fails invisibly unless
+    the user has the Output Log open. unreal.EditorDialog draws with
+    Slate, so it works precisely when Qt does not. Never raises.
+    """
+    message = (
+        "The StoryboardTo3D window needs PySide6, which is not installed "
+        "for Unreal's Python.\n\n"
+        "Run this in a terminal, then restart Unreal:\n\n"
+        "{0}".format(_qt_install_command())
+    )
+    try:
+        if hasattr(unreal, "EditorDialog") and hasattr(unreal.EditorDialog, "show_message"):
+            unreal.EditorDialog.show_message(
+                "StoryboardTo3D - PySide6 Required",
+                message,
+                unreal.AppMsgType.OK
+            )
+    except Exception as e:
+        unreal.log_warning(f"Could not show missing-Qt dialog: {e}")
+
+
 def check_qt_availability():
     """
     Check which Qt version is available.
-    
+
     Returns:
         str or None: "PySide6", "PySide2", or None if unavailable.
     """
@@ -172,6 +218,8 @@ def show_window():
     qt_version = check_qt_availability()
     if not qt_version:
         unreal.log_error("Qt not available. Please install PySide6 or PySide2")
+        unreal.log_error("Run: {0}".format(_qt_install_command()))
+        _notify_qt_missing()
         return None
 
     # Import Qt

@@ -172,6 +172,15 @@ class FeaturesTab(QWidget):
         self.reduced_views_check.stateChanged.connect(self.on_change)
         perf_layout.addWidget(self.reduced_views_check)
 
+        self.optimized_prompts_check = QCheckBox(
+            "Optimized prompts (50-66% fewer tokens) (takes effect after editor restart)")
+        self.optimized_prompts_check.setToolTip(
+            "Uses the compressed prompt builder and analyzer for AI calls. The flag "
+            "is read once at module import, so toggling it requires restarting the "
+            "editor (or reloading the plugin's Python) to apply.")
+        self.optimized_prompts_check.stateChanged.connect(self.on_change)
+        perf_layout.addWidget(self.optimized_prompts_check)
+
         perf_group.setLayout(perf_layout)
         layout.addWidget(perf_group)
 
@@ -246,6 +255,11 @@ class FeaturesTab(QWidget):
         self.optimize_images_check.setChecked(bool(performance.get('optimize_images', True)))
         self.reduced_views_check.setChecked(bool(performance.get('reduced_refinement_views', False)))
 
+        # ai_settings.use_optimized_prompts lives in the AI tab's section but
+        # is owned by this checkbox; read-only access here cannot clobber
+        ai_settings = self.settings.get('ai_settings', {})
+        self.optimized_prompts_check.setChecked(bool(ai_settings.get('use_optimized_prompts', False)))
+
         self.files_api_check.setChecked(bool(cost.get('use_files_api', False)))
         self.scoring_model_check.setChecked(bool(cost.get('use_scoring_model', False)))
 
@@ -294,5 +308,21 @@ class FeaturesTab(QWidget):
         }
 
     def on_settings_saved(self):
-        """Called after settings are saved"""
-        pass
+        """Called after settings are saved.
+
+        Writes ai_settings.use_optimized_prompts here via set_setting rather
+        than returning an 'ai_settings' section from get_settings: the dialog
+        merges tab sections with dict.update(), so two tabs returning the
+        same top-level section would clobber each other wholesale (this tab
+        runs after ai_tab and would wipe its freshly saved keys, or vice
+        versa). set_setting mutates exactly one nested key on the settings
+        manager's already-saved dict and auto-saves, so ai_tab's sibling keys
+        provably survive.
+        """
+        try:
+            from core.settings_manager import set_setting
+            set_setting('ai_settings.use_optimized_prompts',
+                        self.optimized_prompts_check.isChecked())
+        except Exception as e:
+            unreal.log_warning(
+                f"Could not save ai_settings.use_optimized_prompts: {e}")

@@ -25,6 +25,10 @@ class PanelGrid(QWidget):
 
     panel_clicked = Signal(object)
     panels_reordered = Signal()
+    # Context-menu requests handled by the main window (which owns the
+    # analyzer and the on-disk episode data)
+    panel_analyze_requested = Signal(object)
+    panel_delete_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -136,9 +140,9 @@ class PanelGrid(QWidget):
             }
         """)
 
-        # Add actions
+        # Add actions ("Duplicate" removed until actually implemented -
+        # it was a silent no-op)
         analyze_action = menu.addAction(" Analyze")
-        duplicate_action = menu.addAction(" Duplicate")
         menu.addSeparator()
         delete_action = menu.addAction(" Delete")
 
@@ -148,29 +152,26 @@ class PanelGrid(QWidget):
         # Handle actions
         if action == analyze_action:
             self.analyze_panel(panel)
-        elif action == duplicate_action:
-            self.duplicate_panel(panel)
         elif action == delete_action:
             self.delete_panel(panel)
 
     def analyze_panel(self, panel):
-        """Analyze a panel"""
-        unreal.log(f"Analyzing panel: {panel['name']}")
-
-    def duplicate_panel(self, panel):
-        """Duplicate a panel"""
-        unreal.log(f"Duplicating panel: {panel['name']}")
+        """Analyze a panel: delegate to the main window's analyzer"""
+        unreal.log(f"Analyze requested from context menu: {panel['name']}")
+        self.panel_analyze_requested.emit(panel)
 
     def delete_panel(self, panel):
-        """Delete a panel"""
+        """Delete a panel (file + metadata, via the main window)"""
         reply = QMessageBox.question(
             self,
             "Delete Panel",
-            f"Are you sure you want to delete '{panel['name']}'?",
+            f"Are you sure you want to delete '{panel['name']}'?\n\n"
+            "This removes the panel image from the episode's Panels folder.",
             QMessageBox.Yes | QMessageBox.No
         )
 
         if reply == QMessageBox.Yes:
-            self.panels.remove(panel)
-            self.set_panels(self.panels)
-            unreal.log(f"Deleted panel: {panel['name']}")
+            # The main window removes the file and metadata entry, then
+            # reloads; removing only from the in-memory list made the panel
+            # reappear on the next episode load
+            self.panel_delete_requested.emit(panel)

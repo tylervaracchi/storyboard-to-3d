@@ -293,10 +293,21 @@ class OllamaSettingsTab(QWidget):
             self.pull_model(model_name)
 
     def pull_model(self, model_name):
-        """Pull a model from Ollama"""
+        """Pull a model from Ollama.
+
+        Parses the streamed JSON status lines so cancel and mid-stream
+        errors no longer fall through to a fake 'Success' dialog, and the
+        busy dialog shows real percent progress from completed/total bytes.
+        """
+        import json as _json
+
         progress = QProgressDialog(f"Pulling {model_name}...", "Cancel", 0, 0, self)
         progress.setWindowModality(Qt.WindowModal)
         progress.show()
+
+        cancelled = False
+        error_msg = None
+        saw_success = False
 
         try:
             url = self.server_url_edit.text()
@@ -307,15 +318,64 @@ class OllamaSettingsTab(QWidget):
             )
 
             for line in response.iter_lines():
-                if line:
-                    # Update progress if needed
-                    QApplication.processEvents()
-                    if progress.wasCanceled():
-                        break
+                if not line:
+                    continue
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    cancelled = True
+                    break
+
+                try:
+                    if isinstance(line, bytes):
+                        line = line.decode('utf-8', 'ignore')
+                    payload = _json.loads(line)
+                except ValueError:
+                    continue
+
+                # Ollama reports stream errors as JSON lines
+                if payload.get('error'):
+                    error_msg = str(payload['error'])
+                    break
+
+                status = str(payload.get('status', ''))
+                if status == 'success':
+                    saw_success = True
+
+                # Real percentage when the layer sizes are known
+                total = payload.get('total')
+                completed = payload.get('completed')
+                if total and completed is not None:
+                    try:
+                        pct = int(int(completed) * 100 / int(total))
+                        progress.setRange(0, 100)
+                        progress.setValue(pct)
+                        progress.setLabelText(
+                            f"Pulling {model_name}... {pct}%"
+                            + (f" ({status})" if status else ""))
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+                elif status:
+                    progress.setLabelText(f"Pulling {model_name}... {status}")
 
             progress.close()
-            self.refresh_models()
-            QMessageBox.information(self, "Success", f"Model {model_name} pulled successfully!")
+
+            if cancelled:
+                QMessageBox.information(
+                    self, "Cancelled",
+                    f"Pull of {model_name} was cancelled.\n\n"
+                    "Ollama may keep partial layers; pulling again resumes.")
+            elif error_msg:
+                QMessageBox.warning(
+                    self, "Error", f"Failed to pull model: {error_msg}")
+            elif saw_success:
+                self.refresh_models()
+                QMessageBox.information(
+                    self, "Success", f"Model {model_name} pulled successfully!")
+            else:
+                QMessageBox.warning(
+                    self, "Incomplete",
+                    f"The pull of {model_name} ended without Ollama reporting "
+                    "success. Check the Ollama server logs and try again.")
 
         except Exception as e:
             progress.close()

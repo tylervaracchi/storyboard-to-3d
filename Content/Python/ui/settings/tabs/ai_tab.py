@@ -373,13 +373,13 @@ class AISettingsTab(QWidget):
         layout.addStretch()
 
     def toggle_key_visibility(self, line_edit, button, checked):
-        """Toggle API key visibility"""
+        """Toggle API key visibility (both branches used to blank the icon)"""
         if checked:
             line_edit.setEchoMode(QLineEdit.Normal)
-            button.setText("")
+            button.setText("🙈")
         else:
             line_edit.setEchoMode(QLineEdit.Password)
-            button.setText("")
+            button.setText("👁")
 
     def on_change(self):
         """Handle any change"""

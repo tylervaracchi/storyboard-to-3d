@@ -235,6 +235,30 @@ class EnhancedAIClient:
             env_var = self.PROVIDERS[self.provider]["env_var"]
             self.api_key = os.environ.get(env_var, "")
 
+        # Fallback: keys typed into the Settings dialog land in the
+        # settings manager ('ai_settings.*'), which the config manager
+        # never consults. Mirror api/ai_client.py's lookup so a key saved
+        # in Settings actually reaches this client too.
+        if not self.api_key and SETTINGS_MANAGER_AVAILABLE:
+            try:
+                if "gpt" in self.provider.lower() or "openai" in self.provider.lower():
+                    self.api_key = (get_setting('ai_settings.openai_api_key', '') or
+                                    get_setting('ai.openai_api_key', '') or
+                                    get_setting('ai_settings.api_key', ''))
+                elif "claude" in self.provider.lower():
+                    self.api_key = (get_setting('ai_settings.claude_api_key', '') or
+                                    get_setting('ai.claude_api_key', '') or
+                                    get_setting('ai_settings.api_key', ''))
+                elif "gemini" in self.provider.lower():
+                    self.api_key = (get_setting('ai_settings.gemini_api_key', '') or
+                                    get_setting('ai.gemini_api_key', '') or
+                                    get_setting('ai_settings.api_key', ''))
+
+                if self.api_key:
+                    print("Loaded API key from settings_manager (ai_settings)")
+            except Exception as e:
+                print(f"Settings-manager key lookup failed: {e}")
+
         # Configuration
         if CONFIG_AVAILABLE:
             config = get_config()
