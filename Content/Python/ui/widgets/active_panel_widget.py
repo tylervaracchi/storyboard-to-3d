@@ -4848,7 +4848,56 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
         # Check if we should continue iterating
         # Stop if: reached max iterations OR score > 80 (success threshold) OR oscillation detected
-        should_stop_early = (self.last_match_score and self.last_match_score > 80) or oscillation_detected
+        #
+        # EXTERNAL VALIDATION (SIGGRAPH 2026 finding): VLM self-scores are not
+        # a reliable stop signal (~84/100 self-reported regardless of actual
+        # quality). When 'validation.external_validation' is enabled, a
+        # would-be self-score early stop is cross-checked with an external
+        # validator and gated on the conservative min(self, external) score.
+        # Off by default: effective_score then stays equal to last_match_score
+        # and the accept decision below is unchanged.
+        effective_score = self.last_match_score
+        if self.last_match_score and self.last_match_score > 80:
+            try:
+                try:
+                    from core.external_validator import ExternalValidator
+                except ImportError as import_error:
+                    ExternalValidator = None
+                    unreal.log_warning(f"[ExternalValidation] Module unavailable: {import_error}")
+
+                validator = ExternalValidator.get_configured() if ExternalValidator is not None else None
+                if validator is not None:
+                    storyboard_path = None
+                    if self.active_panel and 'path' in self.active_panel:
+                        storyboard_path = self.active_panel['path']
+
+                    hero_capture_path = None
+                    if hasattr(unreal, 'Paths') and hasattr(unreal.Paths, 'project_saved_dir'):
+                        screenshot_dir = Path(unreal.Paths.project_saved_dir()) / "Screenshots" / "WindowsEditor"
+                        hero_capture_path = screenshot_dir / "test_hero.png"
+                    else:
+                        unreal.log_warning("[ExternalValidation] unreal.Paths.project_saved_dir unavailable; cannot locate hero capture")
+
+                    if storyboard_path and hero_capture_path is not None:
+                        validation_result = validator.validate(str(storyboard_path), str(hero_capture_path))
+                        external_score = None
+                        if isinstance(validation_result, dict):
+                            external_score = validation_result.get('score')
+
+                        if external_score is not None:
+                            effective_score = min(float(self.last_match_score), float(external_score))
+                            unreal.log(f"[ExternalValidation] self={float(self.last_match_score):.0f} external={float(external_score):.0f} effective={effective_score:.0f}")
+                            if effective_score <= 80:
+                                unreal.log("[ExternalValidation] Conservative score at or below 80 threshold; early stop blocked, iterations continue")
+                        else:
+                            unreal.log_warning("[ExternalValidation] No external score produced; falling back to self-score only")
+                    else:
+                        unreal.log_warning("[ExternalValidation] Storyboard or hero capture path unavailable; skipping external validation")
+            except Exception as validation_error:
+                unreal.log_warning(f"[ExternalValidation] Skipped due to error: {validation_error}")
+                effective_score = self.last_match_score
+
+        should_stop_early = (effective_score and effective_score > 80) or oscillation_detected
 
         if should_stop_early:
             if oscillation_detected:

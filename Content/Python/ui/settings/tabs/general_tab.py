@@ -150,6 +150,24 @@ class GeneralTab(QWidget):
         defaults_group.setLayout(defaults_layout)
         layout.addWidget(defaults_group)
 
+        # Validation
+        validation_group = QGroupBox("Validation")
+        validation_layout = QVBoxLayout()
+
+        # External validation strategy (cross-checks VLM self-scores during
+        # iteration; see core/external_validator.py for the research motivation)
+        external_validation_layout = QHBoxLayout()
+        external_validation_layout.addWidget(QLabel("External validation:"))
+        self.external_validation_combo = QComboBox()
+        self.external_validation_combo.addItems(["off", "opencv", "second_model", "both"])
+        self.external_validation_combo.currentTextChanged.connect(self.on_change)
+        external_validation_layout.addWidget(self.external_validation_combo)
+        external_validation_layout.addStretch()
+        validation_layout.addLayout(external_validation_layout)
+
+        validation_group.setLayout(validation_layout)
+        layout.addWidget(validation_group)
+
         layout.addStretch()
 
     def on_change(self):
@@ -162,6 +180,7 @@ class GeneralTab(QWidget):
         ui_prefs = self.settings.get('ui_preferences', {})
         performance = self.settings.get('performance', {})
         defaults = self.settings.get('defaults', {})
+        validation = self.settings.get('validation', {})
 
         # UI Preferences
         self.theme_combo.setCurrentText(ui_prefs.get('theme', 'Dark'))
@@ -188,6 +207,10 @@ class GeneralTab(QWidget):
         self.default_duration_spin.setValue(defaults.get('panel_duration', 3.0))
         self.default_shot_combo.setCurrentText(defaults.get('shot_type', 'Auto'))
 
+        # Validation (unknown stored values leave the combo at 'off')
+        self.external_validation_combo.setCurrentText(
+            str(validation.get('external_validation', 'off')))
+
     def get_settings(self):
         """Get settings from UI"""
         # Parse thumbnail size
@@ -198,6 +221,12 @@ class GeneralTab(QWidget):
             thumb_size = 120
         else:
             thumb_size = 160
+
+        # Preserve sibling validation keys (e.g. second_model_provider): the
+        # settings dialog's update_settings() replaces top-level sections
+        # wholesale, so returning only external_validation would drop them.
+        validation = dict(self.settings.get('validation', {}))
+        validation['external_validation'] = self.external_validation_combo.currentText()
 
         return {
             'general': {
@@ -219,7 +248,8 @@ class GeneralTab(QWidget):
             'defaults': {
                 'panel_duration': self.default_duration_spin.value(),
                 'shot_type': self.default_shot_combo.currentText()
-            }
+            },
+            'validation': validation
         }
 
     def on_settings_saved(self):

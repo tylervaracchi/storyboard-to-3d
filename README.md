@@ -85,9 +85,18 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 - **Multi-Model Support** — Claude, GPT-4o, LLaVA (local via Ollama)
 - **7-Camera Spatial Validation** — Catches depth/positioning errors
 - **Iterative Refinement** — Automatic convergence with configurable thresholds
+- **External Validation** — Optional independent check on the AI's self-score (see below)
 - **Show/Episode Organization** — Production-oriented asset management
-- **Level Sequence Integration** — Exports to UE5 Sequencer
-- **Metrics Tracking** — Logs accuracy, iterations, confidence per model
+- **Level Sequence Integration** — Exports to UE5 Sequencer with per-panel durations
+- **Animatic Rendering** — Movie Render Queue render of the master sequence (`core/animatic_renderer.py`)
+- **USD Export** — Level export for Houdini/Maya/Omniverse pipelines (`core/usd_exporter.py`)
+- **Importers** — Wonder Unit Storyboarder (`.storyboarder`) files and image folders (ComfyUI output) (`core/importers/`)
+- **Script Breakdown** — Text-only LLM pass turning a script into a numbered shot list (`core/script_breakdown.py`)
+- **Headless Batch Mode** — Single-pass analyze+generate over a whole episode from the UE Python console (`core/batch_runner.py`)
+- **Semantic Asset Matching** — Optional embedding-based matching so "canine" finds the dog asset (off by default; `asset_library.semantic_matching`)
+- **Cost Controls** — Pre-run cost estimates (`utils/cost_estimator.py`), cheap-model re-scoring, Files API image reuse, and a 50%-off Batch API client
+- **A/B Provider Comparison** — Same panel through two providers with transform snapshot/restore (`core/ab_comparison.py`)
+- **Metrics Tracking** — Logs accuracy, iterations, confidence per model, plus a calibration dashboard chart (`analysis/calibration_dashboard.py`)
 
 ### External validation (recommended)
 
@@ -101,7 +110,7 @@ result = validator.validate("storyboard.png", "hero_capture.png")
 print(result["score"], result["details"], validator.agrees_with_self_score(self_score=84))
 ```
 
-Enable it globally via the `validation.external_validation` setting (default `off`; options `off`, `opencv`, `second_model`, `both`). `ExternalValidator.get_configured()` reads that setting, so pipeline and UI wiring can pick it up without touching the iteration loop.
+Enable it globally via the `validation.external_validation` setting (default `off`; options `off`, `opencv`, `second_model`, `both`), or from the Settings dialog (General tab). When enabled, the iteration loop cross-checks any would-be early stop (self-score above 80) against the external validator and gates acceptance on the conservative `min(self, external)` score, logged as `[ExternalValidation] self=NN external=NN effective=NN`. When off, behavior is unchanged.
 
 ---
 
@@ -200,10 +209,12 @@ Registered tools:
 | `list_asset_library` | Returns the character / prop / location library (with descriptions) as JSON |
 | `analyze_storyboard_panel` | Runs the AI panel analysis on an image file and returns the scene description JSON |
 | `generate_scene_from_panel` | Full pipeline: analyzes a panel, then builds the 3D scene in the current level and returns a summary of placed actors |
-| `capture_scene_views` | Triggers the 7-view capture and returns the capture file paths (files are written asynchronously) |
+| `capture_scene_views` | Triggers the 7-view capture and returns the capture file paths; with `include_images=True` it also embeds base64 PNGs so the client can *see* the scene |
+| `validate_scene` | Runs the external validator (opencv / second_model / both) on the storyboard vs the newest hero capture and returns the independent score |
+| `render_animatic` | Kicks off a Movie Render Queue render of the master sequence |
 | `get_project_info` | Plugin version, engine version, and the configured AI provider |
 
-Notes: tool calls run on the editor's game thread, so long operations (scene generation, AI analysis) block the editor while they run. `capture_scene_views` queues screenshots that land in `Saved/Screenshots/WindowsEditor/` a few seconds after the call returns.
+Notes: tool calls run on the editor's game thread, so long operations (scene generation, AI analysis) block the editor while they run. `capture_scene_views` queues screenshots that land in `Saved/Screenshots/WindowsEditor/` a few seconds after the call returns — to get fresh embedded images, call it once to queue, wait, then call again with `include_images=True`.
 
 ---
 

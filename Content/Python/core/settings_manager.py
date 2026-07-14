@@ -133,6 +133,19 @@ class SettingsManager:
                 'second_model_provider': 'auto'
             },
 
+            # Cost Optimization Settings (Anthropic API)
+            # use_files_api: upload each image once via the Files API and
+            #   reference it by file_id instead of re-sending base64 on every
+            #   refinement iteration (ClaudeProvider(use_files_api=True)).
+            # use_scoring_model / scoring_model: route cheap per-iteration
+            #   re-scoring calls through ClaudeProvider.score_images() using a
+            #   smaller model instead of the main analysis model.
+            'cost': {
+                'use_files_api': False,
+                'scoring_model': 'claude-haiku-4-5',
+                'use_scoring_model': False
+            },
+
             # Default Panel Settings
             'panel_defaults': {
                 'duration': 3.0,

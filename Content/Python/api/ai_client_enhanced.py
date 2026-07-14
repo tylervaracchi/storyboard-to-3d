@@ -800,12 +800,15 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
         Analyze image with prompt (for Phase 1 testing)
 
         Args:
-            image_base64: Base64 encoded image
+            image_base64: Base64 encoded image (raw bytes also accepted
+                and encoded here; PanelAnalyzer passes raw file bytes)
             prompt: Analysis prompt
 
         Returns:
             AI response as string
         """
+        if isinstance(image_base64, (bytes, bytearray)):
+            image_base64 = base64.b64encode(bytes(image_base64)).decode("utf-8")
         return self._make_request(prompt, image_base64=image_base64)
 
     def _mock_script_analysis(self) -> Dict[str, Any]:

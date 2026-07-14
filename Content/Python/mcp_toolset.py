@@ -16,18 +16,26 @@ exist, so importing this module is a clean no-op apart from one log line.
 HONESTY NOTE ABOUT TESTABILITY: this module was written against Epic's
 published 5.8 API surface and cannot be executed on engines below 5.8.
 The tool bodies only wrap existing plugin functionality (asset library,
-panel analyzer, scene builder, multi-view capture), but the registration
+panel analyzer, scene builder, multi-view capture, external validation,
+optional animatic rendering), but the registration
 surface itself (ToolsetDefinition subclassing and the
 toolset_registry.tool_call decorator) is untestable outside 5.8. All
 registration code is therefore wrapped in defensive guards, and every
 tool returns a JSON error string instead of raising.
 """
 
+import base64
 import json
 import sys
 from pathlib import Path
 
-import unreal
+# unreal only exists inside the editor. Guarded so this module can be
+# imported (or at least parsed by tooling) outside UE without raising;
+# it then degrades to the same no-op as on engines below 5.8.
+try:
+    import unreal
+except ImportError:
+    unreal = None
 
 _SKIP_MESSAGE = (
     "MCP toolset requires UE 5.8+ (Epic ModelContextProtocol plugin); "
@@ -39,9 +47,11 @@ def _toolset_api_available():
     """Check for the UE 5.8 MCP Python surface without assuming any of it exists.
 
     Returns:
-        bool: True only if both unreal.ToolsetDefinition and
-              unreal.toolset_registry.tool_call are present.
+        bool: True only if unreal imported and both unreal.ToolsetDefinition
+              and unreal.toolset_registry.tool_call are present.
     """
+    if unreal is None:
+        return False
     if not hasattr(unreal, "ToolsetDefinition"):
         return False
     registry = getattr(unreal, "toolset_registry", None)
@@ -53,8 +63,12 @@ def _toolset_api_available():
 
 
 if not _toolset_api_available():
-    # UE < 5.8 (or MCP plugin disabled): single log line, define nothing else.
-    unreal.log(_SKIP_MESSAGE)
+    # UE < 5.8 (or MCP plugin disabled, or outside UE entirely): single
+    # log line, define nothing else.
+    if unreal is not None and hasattr(unreal, "log"):
+        unreal.log(_SKIP_MESSAGE)
+    else:
+        print(_SKIP_MESSAGE)
 else:
     # Make sure the plugin's Python root is importable regardless of whether
     # main.py or Epic's MCP auto-discovery imported this module first. The
@@ -151,6 +165,122 @@ else:
                 "position": _vector_to_list(config.get("position")),
             })
         return summaries
+
+    # Per-image size cap for base64 embedding (raw PNG bytes, ~1.5 MB).
+    # Base64 inflates by ~33%, so the on-wire payload per image is ~2 MB.
+    _MAX_IMAGE_BYTES = 1500000
+    _MAX_EMBEDDED_IMAGES = 7
+
+    def _resolve_screenshots_dir():
+        """Return (Path_or_None, error_or_None) for the editor screenshot dir.
+
+        Windows editor writes to Saved/Screenshots/WindowsEditor; other
+        platforms use a different subfolder name.
+        """
+        try:
+            if not hasattr(unreal, "Paths"):
+                return None, "unreal.Paths unavailable on this engine version"
+            return (Path(unreal.Paths.project_saved_dir())
+                    / "Screenshots" / "WindowsEditor"), None
+        except Exception as e:
+            return None, "Could not resolve screenshot dir: {0}".format(e)
+
+    def _downscale_png_bytes(image_path, max_bytes):
+        """Downscale a PNG with PIL until its encoded size fits max_bytes.
+
+        Returns:
+            tuple: (png_bytes_or_None, note_string). PIL (pillow) is in the
+            plugin's requirements.txt; if it is missing, returns None with
+            a note instead of raising.
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            return None, "PIL (pillow) not installed; cannot downscale"
+        import io
+        try:
+            with Image.open(str(image_path)) as img:
+                img.load()
+                current = img
+                for _ in range(8):
+                    width, height = current.size
+                    new_w = max(1, int(width * 0.7))
+                    new_h = max(1, int(height * 0.7))
+                    if new_w < 64 or new_h < 64:
+                        break
+                    current = current.resize((new_w, new_h))
+                    buffer = io.BytesIO()
+                    current.save(buffer, format="PNG")
+                    data = buffer.getvalue()
+                    if len(data) <= max_bytes:
+                        return data, "downscaled to {0}x{1}".format(new_w, new_h)
+            return None, "could not downscale under {0} bytes".format(max_bytes)
+        except Exception as e:
+            return None, "downscale failed: {0}".format(e)
+
+    def _encode_capture_images(capture_files):
+        """Base64-encode capture PNGs, downscaling any over the size cap.
+
+        Args:
+            capture_files: list of {"view": str, "path": str, ...} dicts,
+                newest first. At most _MAX_EMBEDDED_IMAGES are encoded.
+
+        Returns:
+            tuple: (images_list, warnings_list). Each image entry carries
+            base64 PNG data the MCP client can decode with base64.b64decode.
+        """
+        images = []
+        warnings = []
+        for item in capture_files[:_MAX_EMBEDDED_IMAGES]:
+            file_path = item.get("path")
+            try:
+                raw = Path(file_path).read_bytes()
+            except (OSError, TypeError, ValueError) as e:
+                warnings.append("{0}: could not read ({1})".format(file_path, e))
+                continue
+            note = None
+            if len(raw) > _MAX_IMAGE_BYTES:
+                raw, note = _downscale_png_bytes(file_path, _MAX_IMAGE_BYTES)
+                if raw is None:
+                    warnings.append("{0}: skipped ({1})".format(file_path, note))
+                    continue
+            entry = {
+                "view": item.get("view", ""),
+                "path": str(file_path),
+                "mimeType": "image/png",
+                "data": base64.b64encode(raw).decode("ascii"),
+            }
+            if note:
+                entry["note"] = note
+            images.append(entry)
+        return images, warnings
+
+    def _find_newest_hero_capture():
+        """Locate the most recent hero capture PNG in the screenshot dir.
+
+        Returns:
+            tuple: (Path_or_None, error_string_or_None)
+        """
+        shots_dir, dir_error = _resolve_screenshots_dir()
+        if shots_dir is None:
+            return None, dir_error
+        try:
+            if not shots_dir.exists():
+                return None, ("Screenshot directory does not exist yet: {0}. "
+                              "Run capture_scene_views first.".format(shots_dir))
+            candidates = [p for p in shots_dir.glob("*.png")
+                          if "hero" in p.name.lower()]
+        except OSError as e:
+            return None, "Could not scan screenshot dir: {0}".format(e)
+        if not candidates:
+            return None, ("No hero capture found in {0}. Run "
+                          "capture_scene_views first and wait for the async "
+                          "screenshot to be written.".format(shots_dir))
+        try:
+            newest = max(candidates, key=lambda p: p.stat().st_mtime)
+        except OSError as e:
+            return None, "Could not stat hero captures: {0}".format(e)
+        return newest, None
 
     # Bind the decorator once so a rename in a future engine revision fails
     # here (inside the try below) with a clear log instead of at class body.
@@ -278,7 +408,7 @@ else:
                 return _json_ok(summary)
 
             @_tool_call
-            def capture_scene_views(self) -> str:
+            def capture_scene_views(self, include_images: bool = False) -> str:
                 """Trigger the multi-view capture and return the capture file paths.
 
                 Queues the plugin's 7-view capture set (front, right, back,
@@ -288,9 +418,30 @@ else:
                 the editor renders new frames. Check the returned paths a few
                 seconds later.
 
+                Args:
+                    include_images: When True, base64-encode up to 7 of the
+                        newest capture PNGs that already exist on disk into
+                        an 'images_base64' payload key (each capped at about
+                        1.5 MB of PNG data, downscaled with PIL when larger).
+                        Default False keeps payloads small. Because captures
+                        are written asynchronously, images returned by the
+                        same call that queued them are usually from the
+                        PREVIOUS capture round: call once to queue, wait a
+                        few seconds, then call again with include_images=True.
+
                 Returns:
                     JSON string listing each view with its queue status,
-                    expected output path, and whether the file exists yet.
+                    expected output path, and whether the file exists yet,
+                    plus 'newest_capture_files' (existing files, newest
+                    first) and, when requested, 'images_base64'.
+
+                Note on native MCP images: the MCP spec (2025-11-25)
+                supports image content blocks in tool results ({"type":
+                "image", "data": "<base64>", "mimeType": "image/png"}), but
+                how Epic's toolset registry maps Python return values to
+                those blocks is undocumented. Images therefore ride inside
+                the JSON payload for now; replace 'images_base64' with
+                native MCP image blocks once Epic documents the mapping.
                 """
                 try:
                     from tests.positioning import test_individual_captures as cap
@@ -307,15 +458,12 @@ else:
                 except Exception as e:
                     return _json_error("Scout camera setup failed: {0}".format(e))
 
-                shots_dir = None
-                try:
-                    # Windows editor writes to Saved/Screenshots/WindowsEditor;
-                    # other platforms use a different subfolder name.
-                    shots_dir = (Path(unreal.Paths.project_saved_dir())
-                                 / "Screenshots" / "WindowsEditor")
-                except Exception as e:
-                    unreal.log_warning(
-                        "[MCP] Could not resolve screenshot dir: {0}".format(e))
+                shots_dir, dir_error = _resolve_screenshots_dir()
+                if dir_error:
+                    try:
+                        unreal.log_warning("[MCP] {0}".format(dir_error))
+                    except Exception:
+                        pass
 
                 angle_functions = [
                     ("front", getattr(cap, "test_front", None)),
@@ -343,8 +491,29 @@ else:
                             entry["error"] = str(e)
                     captures.append(entry)
 
-                return _json_ok({
+                # Gather the newest capture files that already exist on disk
+                # (usually the previous capture round, given async writes).
+                existing_files = []
+                for entry in captures:
+                    expected = entry.get("expected_path")
+                    if not expected:
+                        continue
+                    try:
+                        expected_path = Path(expected)
+                        if expected_path.exists():
+                            existing_files.append({
+                                "view": entry.get("view", ""),
+                                "path": str(expected_path),
+                                "modified_time": expected_path.stat().st_mtime,
+                            })
+                    except OSError:
+                        continue
+                existing_files.sort(
+                    key=lambda item: item["modified_time"], reverse=True)
+
+                payload = {
                     "captures": captures,
+                    "newest_capture_files": existing_files,
                     "note": (
                         "Screenshots are written asynchronously after this "
                         "call returns; poll expected_path until the files "
@@ -355,7 +524,122 @@ else:
                         "UI. The hero view additionally requires an open "
                         "Level Sequence."
                     ),
+                }
+
+                if include_images:
+                    # images_base64: base64-encoded PNG strings the MCP
+                    # client can decode with base64.b64decode. This is a
+                    # stopgap until Epic documents how Python return values
+                    # map to native MCP image content blocks (see docstring).
+                    images, image_warnings = _encode_capture_images(
+                        existing_files)
+                    payload["images_base64"] = images
+                    payload["images_note"] = (
+                        "Each entry's 'data' field is a base64-encoded PNG; "
+                        "decode with base64.b64decode to recover the image "
+                        "bytes. Native MCP image content blocks should "
+                        "replace this once Epic documents the mapping."
+                    )
+                    if image_warnings:
+                        payload["images_warnings"] = image_warnings
+
+                return _json_ok(payload)
+
+            @_tool_call
+            def validate_scene(self, storyboard_path: str, strategy: str = "opencv") -> str:
+                """Externally validate the newest hero capture against a storyboard panel.
+
+                Runs core.external_validator.ExternalValidator on the given
+                storyboard image versus the most recent hero capture found in
+                the editor screenshot directory. This is the external
+                judgment loop the calibration study recommends: VLM
+                self-scores were found to be unreliable stop signals (all
+                models reported roughly 84/100 regardless of quality), so an
+                independent signal should gate accept/stop decisions.
+
+                Args:
+                    storyboard_path: Absolute path to the storyboard panel
+                        image (.png, .jpg, .jpeg, or .webp).
+                    strategy: 'opencv' (local PIL/numpy comparison, zero API
+                        cost, the default), 'second_model' (a different
+                        provider scores the match; needs a configured API
+                        key), or 'both' (conservative min of the two).
+                        Unknown values fall back to 'opencv' with a logged
+                        warning.
+
+                Returns:
+                    JSON string with the storyboard path, the hero capture
+                    path that was scored, and the validator result dict
+                    {'score': 0-100 or null, 'strategy': ..., 'details':
+                    ...}. A null score means validation failed; the reason
+                    is in details.error.
+                """
+                path_error = _validate_image_path(storyboard_path)
+                if path_error:
+                    return _json_error(path_error)
+
+                hero_path, hero_error = _find_newest_hero_capture()
+                if hero_error:
+                    return _json_error(hero_error)
+
+                try:
+                    from core.external_validator import ExternalValidator
+                except Exception as e:
+                    return _json_error(
+                        "ExternalValidator unavailable: {0}".format(e))
+
+                strategy_clean = str(strategy or "opencv").strip().lower()
+
+                try:
+                    validator = ExternalValidator(strategy=strategy_clean)
+                    result = validator.validate(
+                        str(storyboard_path), str(hero_path))
+                except Exception as e:
+                    return _json_error(
+                        "External validation failed: {0}".format(e))
+
+                return _json_ok({
+                    "storyboard_path": str(storyboard_path),
+                    "capture_path": str(hero_path),
+                    "validation": result,
                 })
+
+            @_tool_call
+            def render_animatic(self) -> str:
+                """Render an animatic from the current scene, if the module exists.
+
+                Lazily imports core.animatic_renderer (an optional module
+                that may not be present in this build) and calls its
+                render_animatic() entry point. When the module is absent
+                this tool reports that cleanly instead of raising, so the
+                toolset works with or without the animatic feature.
+
+                Returns:
+                    JSON string: {"success": true, "result": ...} from the
+                    renderer, or {"success": false, "error": "animatic
+                    module not available"} when the module or its entry
+                    point is missing.
+                """
+                try:
+                    from core import animatic_renderer
+                except ImportError:
+                    return _json_error("animatic module not available")
+                except Exception as e:
+                    return _json_error(
+                        "animatic module failed to import: {0}".format(e))
+
+                render_func = getattr(animatic_renderer, "render_animatic", None)
+                if not callable(render_func):
+                    return _json_error(
+                        "animatic module not available "
+                        "(render_animatic entry point missing)")
+
+                try:
+                    result = render_func()
+                except Exception as e:
+                    return _json_error("Animatic render failed: {0}".format(e))
+
+                return _json_ok({"result": result})
 
             @_tool_call
             def get_project_info(self) -> str:
@@ -437,9 +721,10 @@ else:
         STORYBOARD_TOOLSET = StoryboardTo3DToolset
 
         unreal.log(
-            "[MCP] StoryboardTo3DToolset registered (5 tools: "
+            "[MCP] StoryboardTo3DToolset registered (7 tools: "
             "list_asset_library, analyze_storyboard_panel, "
-            "generate_scene_from_panel, capture_scene_views, get_project_info)"
+            "generate_scene_from_panel, capture_scene_views, "
+            "validate_scene, render_animatic, get_project_info)"
         )
 
     except Exception as registration_error:

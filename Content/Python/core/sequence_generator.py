@@ -188,23 +188,33 @@ class SequenceGenerator:
         sequence.add_possessable(actor)
         unreal.log(f"Actor {actor.get_name()} added to sequence")
 
-    def create_master_sequence(self, sequences: List[unreal.LevelSequence]) -> Optional[unreal.LevelSequence]:
+    def create_master_sequence(
+        self,
+        sequences: List[unreal.LevelSequence],
+        durations: Optional[List[Optional[float]]] = None
+    ) -> Optional[unreal.LevelSequence]:
         """
         Create master sequence combining multiple shot sequences.
-        
+
         Creates a sequence with a subsequence track containing all provided
         sequences in order. Useful for assembling multiple shots into a
         continuous playback.
-        
+
         Args:
             sequences: List of Level Sequences to combine.
-        
+            durations: Optional list of per-shot durations in seconds,
+                parallel to sequences (e.g. each panel's stored 'duration'
+                metadata). When provided, entry i overrides the length of
+                shot i in the master. Entries that are None (or a too-short
+                list) fall back to that shot's own playback range, which is
+                the historical behavior when durations is omitted.
+
         Returns:
             Master Level Sequence containing all shots, or None if creation fails.
-        
+
         Example:
             >>> shots = [shot1_seq, shot2_seq, shot3_seq]
-            >>> master = generator.create_master_sequence(shots)
+            >>> master = generator.create_master_sequence(shots, durations=[2.0, 3.5, 4.0])
         """
         if not sequences:
             unreal.log_warning("No sequences to combine")
@@ -250,8 +260,9 @@ class SequenceGenerator:
         sub_track = master.add_track(unreal.MovieSceneSubTrack)
 
         # Add each sequence
+        fps = 30
         current_time = 0
-        for seq in sequences:
+        for index, seq in enumerate(sequences):
             if not seq:
                 continue
 
@@ -263,19 +274,34 @@ class SequenceGenerator:
             section.set_start_frame_bounded(True)
             section.set_start_frame(current_time)
 
-            # Get duration from sequence
-            seq_movie_scene = seq.get_movie_scene()
-            if seq_movie_scene:
-                duration = seq.get_playback_end() - seq.get_playback_start()
-            else:
-                duration = 90  # Default 3 seconds at 30fps
+            # Per-panel stored duration wins; fall back to the shot's own range
+            duration = None
+            if durations is not None and index < len(durations) and durations[index] is not None:
+                duration = int(round(durations[index] * fps))
+                if duration <= 0:
+                    unreal.log_warning(
+                        f"Ignoring non-positive duration {durations[index]} for shot {index}"
+                    )
+                    duration = None
+
+            if duration is None:
+                seq_movie_scene = seq.get_movie_scene()
+                if seq_movie_scene:
+                    duration = seq.get_playback_end() - seq.get_playback_start()
+                else:
+                    duration = 90  # Default 3 seconds at 30fps
 
             section.set_end_frame_bounded(True)
             section.set_end_frame(current_time + duration)
 
             current_time += duration
 
-            unreal.log(f"Added subsequence: {seq.get_name()}")
+            unreal.log(f"Added subsequence: {seq.get_name()} ({duration} frames)")
+
+        # Match the master's playback range to the assembled shots so
+        # playback and rendering cover every subsequence exactly
+        master.set_playback_start(0)
+        master.set_playback_end(current_time)
 
         # Save master
         asset_subsystem.save_asset(master_path)

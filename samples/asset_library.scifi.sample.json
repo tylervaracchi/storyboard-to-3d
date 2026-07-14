@@ -1,0 +1,58 @@
+{
+  "characters": {
+    "Space Marine": {
+      "asset_path": "/Engine/BasicShapes/Cylinder",
+      "description": "Armored soldier in a bulky exosuit placeholder (capsule proportions)",
+      "aliases": ["marine", "soldier", "trooper", "guard", "exosuit"]
+    },
+    "Android": {
+      "asset_path": "/Engine/BasicShapes/Cylinder",
+      "description": "Humanoid robot or android placeholder (capsule proportions)",
+      "aliases": ["android", "robot", "droid", "cyborg", "synth"]
+    },
+    "Alien Creature": {
+      "asset_path": "/Engine/BasicShapes/Sphere",
+      "description": "Alien lifeform or xenomorph placeholder (rounded bulk)",
+      "aliases": ["alien", "xenomorph", "creature", "monster", "lifeform"]
+    }
+  },
+  "props": {
+    "Laser Rifle": {
+      "asset_path": "/Engine/BasicShapes/Cone",
+      "description": "Futuristic ranged weapon such as a rifle or blaster",
+      "aliases": ["rifle", "blaster", "gun", "weapon", "laser"]
+    },
+    "Cargo Crate": {
+      "asset_path": "/Engine/BasicShapes/Cube",
+      "description": "Sci-fi supply crate or shipping container",
+      "aliases": ["crate", "box", "container", "supplies", "cargo"]
+    },
+    "Control Console": {
+      "asset_path": "/Engine/BasicShapes/Cube",
+      "description": "Control panel, terminal, or console",
+      "aliases": ["console", "terminal", "panel", "computer", "control panel"]
+    },
+    "Viewscreen": {
+      "asset_path": "/Engine/BasicShapes/Plane",
+      "description": "Holographic display, viewscreen, or energy shield",
+      "aliases": ["screen", "hologram", "display", "shield", "barrier"]
+    }
+  },
+  "locations": {
+    "Space Station": {
+      "asset_path": "/Engine/BasicShapes/Cylinder",
+      "description": "Space station module or orbital habitat ring",
+      "aliases": ["station", "habitat", "module", "outpost", "orbital ring"]
+    },
+    "Alien Planet Surface": {
+      "asset_path": "/Engine/BasicShapes/Plane",
+      "description": "Alien planet ground, terrain, or landing pad",
+      "aliases": ["planet surface", "landing pad", "terrain", "alien ground"]
+    },
+    "Starship Bridge": {
+      "asset_path": "/Engine/BasicShapes/Cube",
+      "description": "Starship bridge, command deck, or cockpit interior",
+      "aliases": ["bridge", "command deck", "cockpit", "flight deck"]
+    }
+  }
+}

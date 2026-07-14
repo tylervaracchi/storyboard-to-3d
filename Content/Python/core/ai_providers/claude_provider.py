@@ -12,7 +12,26 @@ import time
 import os
 from pathlib import Path
 from typing import List, Dict
-import unreal
+
+try:
+    import unreal
+except ImportError:
+    class _UnrealLogStub:
+        """Print-based logging fallback so this module can be imported outside UE."""
+
+        @staticmethod
+        def log(message):
+            print(message)
+
+        @staticmethod
+        def log_warning(message):
+            print(f"[WARNING] {message}")
+
+        @staticmethod
+        def log_error(message):
+            print(f"[ERROR] {message}")
+
+    unreal = _UnrealLogStub()
 
 try:
     from .base_provider import BaseAIProvider
@@ -27,7 +46,20 @@ class ClaudeProvider(BaseAIProvider):
     API_VERSION = "2023-06-01"
     MODELS_URL = "https://api.anthropic.com/v1/models"
 
-    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6", use_extended_thinking: bool = True, enable_caching: bool = True, use_structured_outputs: bool = True):
+    # Files API (beta): upload once, reference by file_id in messages.
+    # The beta header is required on BOTH the upload and any messages
+    # request that references an uploaded file.
+    FILES_URL = "https://api.anthropic.com/v1/files"
+    FILES_BETA_HEADER = "files-api-2025-04-14"
+
+    # Default cheap model for per-iteration re-scoring (see score_images)
+    DEFAULT_SCORING_MODEL = "claude-haiku-4-5"
+
+    # Pricing for the default scoring model (claude-haiku-4-5), per 1M tokens:
+    # (input, output, cache write, cache read)
+    HAIKU_PRICING = (1.00, 5.00, 1.25, 0.10)
+
+    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6", use_extended_thinking: bool = True, enable_caching: bool = True, use_structured_outputs: bool = True, use_files_api: bool = False, scoring_model: str = None):
         super().__init__("Claude Sonnet 4.5 (Extended Thinking)")
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model
@@ -37,6 +69,14 @@ class ClaudeProvider(BaseAIProvider):
         # Only takes effect when the caller supplies a json_schema kwarg to analyze_images.
         # Older models reject output_config with HTTP 400; we retry once without it.
         self.use_structured_outputs = use_structured_outputs
+        # Files API: when True, analyze_images uploads each image once and
+        # sends file_id references instead of inline base64 (uploads are
+        # cached per path). Any per-image upload failure falls back to base64.
+        self.use_files_api = use_files_api
+        self._file_id_cache = {}  # absolute image path -> uploaded file_id
+        # Cheap model used by score_images() for per-iteration re-scoring.
+        # The main model above still handles full analysis.
+        self.scoring_model = scoring_model or self.DEFAULT_SCORING_MODEL
         self.base_url = "https://api.anthropic.com/v1/messages"
         self.max_images = 20  # Claude can handle up to 20 images (100 via API!)
 
@@ -130,33 +170,39 @@ class ClaudeProvider(BaseAIProvider):
                 unreal.log(f"[Claude] Adjusted max_tokens to {max_tokens} (thinking budget {self.thinking_budget_tokens} + 4096 output)")
 
         try:
-            # Convert images to base64
+            # Build image content blocks.
+            # With use_files_api enabled, each image is uploaded once via the
+            # Files API and referenced by file_id (cached per path), avoiding
+            # re-sending base64 payloads on every refinement iteration.
+            # Any per-image upload failure silently falls back to base64.
             image_contents = []
+            used_file_reference = False
             for img_path in images:
+                if self.use_files_api:
+                    file_id = self.upload_file(img_path)
+                    if file_id:
+                        image_contents.append({
+                            "type": "image",
+                            "source": {
+                                "type": "file",
+                                "file_id": file_id
+                            }
+                        })
+                        used_file_reference = True
+                        continue
+                    # upload_file already logged the failure; fall back to base64
+
                 with open(img_path, 'rb') as f:
                     b64 = base64.b64encode(f.read()).decode('utf-8')
 
-                    # Detect image type
-                    ext = Path(img_path).suffix.lower()
-                    if ext == '.png':
-                        media_type = 'image/png'
-                    elif ext in ['.jpg', '.jpeg']:
-                        media_type = 'image/jpeg'
-                    elif ext == '.webp':
-                        media_type = 'image/webp'
-                    elif ext == '.gif':
-                        media_type = 'image/gif'
-                    else:
-                        media_type = 'image/png'
-
-                    image_contents.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": b64
-                        }
-                    })
+                image_contents.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": self._media_type_for(img_path),
+                        "data": b64
+                    }
+                })
 
             unreal.log(f"[Claude] Sending {len(images)} images to Anthropic...")
 
@@ -245,6 +291,11 @@ class ClaudeProvider(BaseAIProvider):
                 "content-type": "application/json",
                 "anthropic-version": self.API_VERSION
             }
+
+            # File references require the Files API beta header on the
+            # messages request too (not just the upload).
+            if used_file_reference:
+                headers["anthropic-beta"] = self.FILES_BETA_HEADER
 
             response = requests.post(
                 self.base_url,
@@ -411,6 +462,126 @@ class ClaudeProvider(BaseAIProvider):
                 'error': f'Claude error: {str(e)}'
             }
 
+    @staticmethod
+    def _media_type_for(img_path) -> str:
+        """Map an image file extension to its MIME type (defaults to PNG)."""
+        ext = Path(img_path).suffix.lower()
+        if ext == '.png':
+            return 'image/png'
+        if ext in ['.jpg', '.jpeg']:
+            return 'image/jpeg'
+        if ext == '.webp':
+            return 'image/webp'
+        if ext == '.gif':
+            return 'image/gif'
+        return 'image/png'
+
+    def upload_file(self, image_path: str):
+        """
+        Upload an image to the Anthropic Files API (beta) and return its file_id.
+
+        Uploads are cached per absolute path, so repeated calls for the same
+        image (e.g. across refinement iterations) hit the API only once.
+
+        Args:
+            image_path: Path to the image file on disk
+
+        Returns:
+            The file_id string, or None on any failure. Failures are logged;
+            callers should fall back to inline base64.
+        """
+        cache_key = os.path.abspath(str(image_path))
+        cached = self._file_id_cache.get(cache_key)
+        if cached:
+            return cached
+
+        if not self.api_key:
+            unreal.log_warning("[Claude] Files API upload skipped: no API key configured")
+            return None
+
+        try:
+            with open(image_path, 'rb') as f:
+                response = requests.post(
+                    self.FILES_URL,
+                    headers={
+                        "x-api-key": self.api_key,
+                        "anthropic-version": self.API_VERSION,
+                        "anthropic-beta": self.FILES_BETA_HEADER
+                    },
+                    files={
+                        "file": (Path(image_path).name, f, self._media_type_for(image_path))
+                    },
+                    timeout=60
+                )
+            response.raise_for_status()
+            file_id = response.json().get("id")
+            if not file_id:
+                unreal.log_warning(f"[Claude] Files API returned no id for {image_path}")
+                return None
+
+            self._file_id_cache[cache_key] = file_id
+            unreal.log(f"[Claude] Uploaded {Path(image_path).name} to Files API (file_id: {file_id})")
+            return file_id
+
+        except Exception as e:
+            unreal.log_warning(f"[Claude] Files API upload failed for {image_path}: {e}")
+            return None
+
+    def score_images(self, images: List[str], prompt: str, json_schema: Dict = None, **kwargs) -> Dict:
+        """
+        Lightweight per-iteration re-scoring using the cheap scoring model.
+
+        Reuses the full analyze_images request plumbing (validation, prompt
+        caching, structured outputs, cost/statistics tracking) but swaps in
+        self.scoring_model (default claude-haiku-4-5) and disables extended
+        thinking, since re-scoring does not need deep spatial reasoning.
+
+        Note: this temporarily swaps instance attributes and restores them in
+        a finally block; the plugin drives providers synchronously so this is
+        safe, but the method is not re-entrant.
+
+        Args:
+            images: List of image paths
+            prompt: Scoring prompt
+            json_schema: Optional JSON schema for structured score output
+            **kwargs: Passed through to analyze_images
+
+        Returns:
+            Same result dict shape as analyze_images.
+        """
+        original_model = self.model
+        original_thinking = self.use_extended_thinking
+        original_pricing = (
+            self.cost_per_1m_input_tokens,
+            self.cost_per_1m_output_tokens,
+            self.cost_per_1m_cache_write_tokens,
+            self.cost_per_1m_cache_read_tokens
+        )
+
+        self.model = self.scoring_model
+        self.use_extended_thinking = False
+        if 'haiku' in self.scoring_model:
+            (self.cost_per_1m_input_tokens,
+             self.cost_per_1m_output_tokens,
+             self.cost_per_1m_cache_write_tokens,
+             self.cost_per_1m_cache_read_tokens) = self.HAIKU_PRICING
+
+        unreal.log(f"[Claude] Re-scoring with {self.scoring_model} (extended thinking off)")
+
+        try:
+            call_kwargs = dict(kwargs)
+            call_kwargs.setdefault('max_tokens', 1024)
+            if json_schema is not None:
+                call_kwargs['json_schema'] = json_schema
+            return self.analyze_images(images, prompt, **call_kwargs)
+        finally:
+            self.model = original_model
+            self.use_extended_thinking = original_thinking
+            (self.cost_per_1m_input_tokens,
+             self.cost_per_1m_output_tokens,
+             self.cost_per_1m_cache_write_tokens,
+             self.cost_per_1m_cache_read_tokens) = original_pricing
+
     def is_available(self) -> bool:
         """Check if API key is configured"""
         return self.api_key is not None and len(self.api_key) > 0
@@ -502,5 +673,7 @@ class ClaudeProvider(BaseAIProvider):
             'cache_read_tokens': self.cache_read_tokens,
             'cache_creation_tokens': self.cache_creation_tokens,
             'supports_batch_api': True,
+            'files_api_enabled': self.use_files_api,
+            'scoring_model': self.scoring_model,
             'context_window': '200K tokens'
         }

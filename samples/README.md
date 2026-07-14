@@ -5,6 +5,15 @@ No custom assets required: this sample library maps everything to UE's built-in
 Scenes will be made of simple shapes — swap in your own characters and props
 later (see "Bring your own assets" below).
 
+Three ready-to-copy libraries are included, all using only `/Engine/BasicShapes/`
+meshes so every one of them works in an empty project with no imports:
+`asset_library.sample.json` is a generic starter (a character and a few props);
+`asset_library.fantasy.sample.json` adds genre entries like Knight, Wizard,
+Dragon, Castle Tower, and Enchanted Forest; and `asset_library.scifi.sample.json`
+adds entries like Space Marine, Android, Laser Rifle, and Space Station. Copy
+whichever fits your storyboard to `Content/StoryboardTo3D/asset_library.json`
+(see "Quick start" below), or merge entries from more than one.
+
 ## Quick start
 
 1. Copy the sample library into your project:

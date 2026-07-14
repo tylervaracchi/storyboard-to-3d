@@ -1,0 +1,58 @@
+{
+  "characters": {
+    "Knight": {
+      "asset_path": "/Engine/BasicShapes/Cylinder",
+      "description": "Armored knight or foot soldier placeholder (capsule proportions)",
+      "aliases": ["knight", "soldier", "guard", "warrior", "man-at-arms"]
+    },
+    "Wizard": {
+      "asset_path": "/Engine/BasicShapes/Cylinder",
+      "description": "Robed spellcaster placeholder (capsule proportions)",
+      "aliases": ["wizard", "mage", "sorcerer", "witch", "spellcaster"]
+    },
+    "Dragon": {
+      "asset_path": "/Engine/BasicShapes/Sphere",
+      "description": "Large hulking creature or beast placeholder (rounded bulk)",
+      "aliases": ["dragon", "beast", "monster", "wyrm", "creature"]
+    }
+  },
+  "props": {
+    "Castle Tower": {
+      "asset_path": "/Engine/BasicShapes/Cube",
+      "description": "Castle tower, turret, or keep (blocky masonry placeholder)",
+      "aliases": ["tower", "turret", "keep", "spire", "battlement"]
+    },
+    "Treasure Chest": {
+      "asset_path": "/Engine/BasicShapes/Cube",
+      "description": "Wooden chest, crate, or box of loot",
+      "aliases": ["chest", "crate", "box", "loot", "treasure"]
+    },
+    "Banner": {
+      "asset_path": "/Engine/BasicShapes/Plane",
+      "description": "Hanging banner, flag, or heraldic shield",
+      "aliases": ["banner", "flag", "shield", "standard", "pennant"]
+    },
+    "Sword": {
+      "asset_path": "/Engine/BasicShapes/Cone",
+      "description": "Bladed weapon such as a sword, spear, or dagger",
+      "aliases": ["sword", "blade", "dagger", "spear", "weapon"]
+    }
+  },
+  "locations": {
+    "Castle Courtyard": {
+      "asset_path": "/Engine/BasicShapes/Plane",
+      "description": "Open castle courtyard or stone plaza ground",
+      "aliases": ["courtyard", "castle grounds", "plaza", "bailey"]
+    },
+    "Enchanted Forest": {
+      "asset_path": "/Engine/BasicShapes/Cone",
+      "description": "Evergreen tree or dense forest canopy",
+      "aliases": ["forest", "woods", "trees", "grove"]
+    },
+    "Mountain Pass": {
+      "asset_path": "/Engine/BasicShapes/Cone",
+      "description": "Rocky mountain peak, cliff, or pass",
+      "aliases": ["mountain", "cliff", "pass", "ridge", "peak"]
+    }
+  }
+}
