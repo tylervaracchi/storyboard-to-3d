@@ -1,0 +1,244 @@
+# Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
+# Licensed under the MIT License. See LICENSE in the repository root.
+"""
+Features Settings Tab for StoryboardTo3D
+
+One place to switch every optional feature on or off. Each toggle maps
+to the exact settings key the feature reads at runtime, and every
+default here matches the in-code default, so an untouched tab changes
+nothing. Sections are written copy-then-overwrite so sibling keys that
+only live in global_settings.json survive a dialog save.
+"""
+
+import unreal
+
+try:
+    from PySide6.QtWidgets import *
+    from PySide6.QtCore import *
+    from PySide6.QtGui import *
+    USING_PYSIDE6 = True
+except ImportError:
+    from PySide2.QtWidgets import *
+    from PySide2.QtCore import *
+    from PySide2.QtGui import *
+    USING_PYSIDE6 = False
+
+
+class FeaturesTab(QWidget):
+    """Optional-features settings tab: every experimental toggle in one place"""
+
+    settings_changed = Signal()
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the UI"""
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Scene extras
+        scene_group = QGroupBox("Scene Extras")
+        scene_layout = QVBoxLayout()
+
+        self.mood_lighting_check = QCheckBox("Mood lighting (map the panel's mood to light and fog presets)")
+        self.mood_lighting_check.setToolTip(
+            "Applies a lighting preset (night, golden hour, noir, tense...) from the "
+            "panel's analyzed mood after the scene builds. Spawned lights are tagged "
+            "StoryboardMoodLighting.")
+        self.mood_lighting_check.stateChanged.connect(self.on_change)
+        scene_layout.addWidget(self.mood_lighting_check)
+
+        self.auto_animation_check = QCheckBox("Animation picker (play matched animations on skeletal characters)")
+        self.auto_animation_check.setToolTip(
+            "Matches each character's action text (running, sitting...) against the "
+            "show's animation_library.json and plays the clip on skeletal actors. "
+            "See samples/animation_library.sample.json for the format.")
+        self.auto_animation_check.stateChanged.connect(self.on_change)
+        scene_layout.addWidget(self.auto_animation_check)
+
+        self.camera_moves_check = QCheckBox("Camera moves (shot type drives push-in / drift / pan)")
+        self.camera_moves_check.setToolTip(
+            "Keys a subtle camera move on each shot sequence: close-ups push in, "
+            "mediums drift, wides pan.")
+        self.camera_moves_check.stateChanged.connect(self.on_change)
+        scene_layout.addWidget(self.camera_moves_check)
+
+        scene_group.setLayout(scene_layout)
+        layout.addWidget(scene_group)
+
+        # Asset matching and generation
+        matching_group = QGroupBox("Asset Matching && Generation")
+        matching_layout = QVBoxLayout()
+
+        self.semantic_matching_check = QCheckBox("Semantic asset matching (embeddings; needs OpenAI key)")
+        self.semantic_matching_check.setToolTip(
+            "Matches described objects to library assets by meaning ('canine' finds "
+            "the dog) using OpenAI embeddings. Falls back to fuzzy matching on any failure.")
+        self.semantic_matching_check.stateChanged.connect(self.on_change)
+        matching_layout.addWidget(self.semantic_matching_check)
+
+        self.gen3d_check = QCheckBox("Generative 3D fallback (create missing assets; needs Meshy or Tripo key)")
+        self.gen3d_check.setToolTip(
+            "When no library asset matches at all, generate the missing character or "
+            "prop via a text-to-3D API, import it, and add it to the show library so "
+            "it is reused instead of regenerated. Generation can take 1-3 minutes per "
+            "asset. Keys: MESHY_API_KEY / TRIPO_API_KEY.")
+        self.gen3d_check.stateChanged.connect(self.on_change)
+        matching_layout.addWidget(self.gen3d_check)
+
+        gen3d_row = QHBoxLayout()
+        gen3d_row.addSpacing(24)
+        gen3d_row.addWidget(QLabel("Provider:"))
+        self.gen3d_provider_combo = QComboBox()
+        self.gen3d_provider_combo.addItems(["meshy", "tripo"])
+        self.gen3d_provider_combo.currentTextChanged.connect(self.on_change)
+        gen3d_row.addWidget(self.gen3d_provider_combo)
+        gen3d_row.addWidget(QLabel("Max generations per run:"))
+        self.gen3d_max_spin = QSpinBox()
+        self.gen3d_max_spin.setRange(0, 10)
+        self.gen3d_max_spin.setValue(3)
+        self.gen3d_max_spin.valueChanged.connect(self.on_change)
+        gen3d_row.addWidget(self.gen3d_max_spin)
+        gen3d_row.addStretch()
+        matching_layout.addLayout(gen3d_row)
+
+        matching_group.setLayout(matching_layout)
+        layout.addWidget(matching_group)
+
+        # Performance
+        perf_group = QGroupBox("Performance")
+        perf_layout = QVBoxLayout()
+
+        self.optimize_images_check = QCheckBox("Optimize image transport (downscale + JPEG before API calls)")
+        self.optimize_images_check.setToolTip(
+            "Downscales captures to a 1288 px long edge and re-encodes as JPEG before "
+            "sending to the AI: typically 5-10x smaller payloads, faster and cheaper, "
+            "no effect on scene judgment. On by default; turn off for byte-identical "
+            "legacy payloads (e.g. exact thesis reproduction).")
+        self.optimize_images_check.stateChanged.connect(self.on_change)
+        perf_layout.addWidget(self.optimize_images_check)
+
+        self.reduced_views_check = QCheckBox("Reduced refinement views (7 views on iteration 1, then hero+top+right)")
+        self.reduced_views_check.setToolTip(
+            "Refinement iterations capture 3 of 7 views, saving roughly a minute per "
+            "iteration. The first iteration always captures the full set so the model "
+            "gets complete spatial context.")
+        self.reduced_views_check.stateChanged.connect(self.on_change)
+        perf_layout.addWidget(self.reduced_views_check)
+
+        perf_group.setLayout(perf_layout)
+        layout.addWidget(perf_group)
+
+        # Cost
+        cost_group = QGroupBox("API Cost")
+        cost_layout = QVBoxLayout()
+
+        self.files_api_check = QCheckBox("Files API image reuse (upload each panel once, Claude only)")
+        self.files_api_check.setToolTip(
+            "Uploads the storyboard image once and references it by ID instead of "
+            "re-sending it every iteration. Falls back to inline images on any failure.")
+        self.files_api_check.stateChanged.connect(self.on_change)
+        cost_layout.addWidget(self.files_api_check)
+
+        self.scoring_model_check = QCheckBox("Cheap re-scoring model (per-iteration scoring on Haiku)")
+        self.scoring_model_check.setToolTip(
+            "Runs the cheap per-iteration re-scoring passes on claude-haiku-4-5 while "
+            "the main model handles full analysis. Several times cheaper per iteration.")
+        self.scoring_model_check.stateChanged.connect(self.on_change)
+        cost_layout.addWidget(self.scoring_model_check)
+
+        cost_group.setLayout(cost_layout)
+        layout.addWidget(cost_group)
+
+        note = QLabel(
+            "All features are off by default except image transport optimization. "
+            "External validation lives on the General tab. Defaults here always match "
+            "the plugin's in-code defaults.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        layout.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+    def on_change(self):
+        """Emit change signal"""
+        self.settings_changed.emit()
+
+    def load_settings(self):
+        """Load settings into UI"""
+        scene = self.settings.get('scene', {})
+        sequence = self.settings.get('sequence', {})
+        asset_library = self.settings.get('asset_library', {})
+        gen3d = self.settings.get('gen3d', {})
+        performance = self.settings.get('performance', {})
+        cost = self.settings.get('cost', {})
+
+        self.mood_lighting_check.setChecked(bool(scene.get('apply_mood_lighting', False)))
+        self.auto_animation_check.setChecked(bool(scene.get('auto_animation', False)))
+        self.camera_moves_check.setChecked(bool(sequence.get('camera_moves', False)))
+
+        self.semantic_matching_check.setChecked(bool(asset_library.get('semantic_matching', False)))
+        self.gen3d_check.setChecked(bool(gen3d.get('enabled', False)))
+        self.gen3d_provider_combo.setCurrentText(str(gen3d.get('provider', 'meshy')))
+        try:
+            self.gen3d_max_spin.setValue(int(gen3d.get('max_per_run', 3)))
+        except (TypeError, ValueError):
+            self.gen3d_max_spin.setValue(3)
+
+        self.optimize_images_check.setChecked(bool(performance.get('optimize_images', True)))
+        self.reduced_views_check.setChecked(bool(performance.get('reduced_refinement_views', False)))
+
+        self.files_api_check.setChecked(bool(cost.get('use_files_api', False)))
+        self.scoring_model_check.setChecked(bool(cost.get('use_scoring_model', False)))
+
+    def get_settings(self):
+        """Get settings from UI"""
+        # Copy-then-overwrite so sibling keys (e.g. gen3d.timeout_seconds,
+        # cost.scoring_model) survive the dialog's wholesale section replace
+        scene = dict(self.settings.get('scene', {}))
+        scene['apply_mood_lighting'] = self.mood_lighting_check.isChecked()
+        scene['auto_animation'] = self.auto_animation_check.isChecked()
+
+        sequence = dict(self.settings.get('sequence', {}))
+        sequence['camera_moves'] = self.camera_moves_check.isChecked()
+
+        asset_library = dict(self.settings.get('asset_library', {}))
+        asset_library['semantic_matching'] = self.semantic_matching_check.isChecked()
+
+        gen3d = dict(self.settings.get('gen3d', {}))
+        gen3d['enabled'] = self.gen3d_check.isChecked()
+        gen3d['provider'] = self.gen3d_provider_combo.currentText()
+        gen3d['max_per_run'] = self.gen3d_max_spin.value()
+
+        performance = dict(self.settings.get('performance', {}))
+        performance['optimize_images'] = self.optimize_images_check.isChecked()
+        performance['reduced_refinement_views'] = self.reduced_views_check.isChecked()
+
+        cost = dict(self.settings.get('cost', {}))
+        cost['use_files_api'] = self.files_api_check.isChecked()
+        cost['use_scoring_model'] = self.scoring_model_check.isChecked()
+
+        return {
+            'scene': scene,
+            'sequence': sequence,
+            'asset_library': asset_library,
+            'gen3d': gen3d,
+            'performance': performance,
+            'cost': cost
+        }
+
+    def on_settings_saved(self):
+        """Called after settings are saved"""
+        pass

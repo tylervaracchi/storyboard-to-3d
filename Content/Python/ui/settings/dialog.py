@@ -25,7 +25,8 @@ from .tabs import (
     AISettingsTab,
     OllamaSettingsTab,
     PathsTab,
-    AdvancedTab
+    AdvancedTab,
+    FeaturesTab
 )
 
 # Import settings manager
@@ -61,6 +62,7 @@ class SettingsDialog(QDialog):
         # Create tabs
         self.general_tab = GeneralTab(self.settings)
         self.ai_tab = AISettingsTab(self.settings)
+        self.features_tab = FeaturesTab(self.settings)
         self.ollama_tab = OllamaSettingsTab(self.settings)
         self.paths_tab = PathsTab(self.settings)
         self.advanced_tab = AdvancedTab(self.settings)
@@ -68,6 +70,7 @@ class SettingsDialog(QDialog):
         # Add tabs
         self.tab_widget.addTab(self.general_tab, " General")
         self.tab_widget.addTab(self.ai_tab, " AI Settings")
+        self.tab_widget.addTab(self.features_tab, " Features")
         self.tab_widget.addTab(self.ollama_tab, " Ollama")
         self.tab_widget.addTab(self.paths_tab, " Paths")
         self.tab_widget.addTab(self.advanced_tab, " Advanced")
@@ -104,6 +107,7 @@ class SettingsDialog(QDialog):
         # Each tab should emit settings_changed signal
         self.general_tab.settings_changed.connect(self.on_settings_changed)
         self.ai_tab.settings_changed.connect(self.on_settings_changed)
+        self.features_tab.settings_changed.connect(self.on_settings_changed)
         self.ollama_tab.settings_changed.connect(self.on_settings_changed)
         self.paths_tab.settings_changed.connect(self.on_settings_changed)
         self.advanced_tab.settings_changed.connect(self.on_settings_changed)
@@ -118,6 +122,7 @@ class SettingsDialog(QDialog):
         # Each tab loads its own settings
         self.general_tab.load_settings()
         self.ai_tab.load_settings()
+        self.features_tab.load_settings()
         self.ollama_tab.load_settings()
         self.paths_tab.load_settings()
         self.advanced_tab.load_settings()
@@ -130,6 +135,7 @@ class SettingsDialog(QDialog):
         new_settings = {}
         new_settings.update(self.general_tab.get_settings())
         new_settings.update(self.ai_tab.get_settings())
+        new_settings.update(self.features_tab.get_settings())
         new_settings.update(self.ollama_tab.get_settings())
         new_settings.update(self.paths_tab.get_settings())
         new_settings.update(self.advanced_tab.get_settings())
@@ -144,6 +150,7 @@ class SettingsDialog(QDialog):
             # Notify tabs that settings were saved
             self.general_tab.on_settings_saved()
             self.ai_tab.on_settings_saved()
+            self.features_tab.on_settings_saved()
             self.ollama_tab.on_settings_saved()
             self.paths_tab.on_settings_saved()
             self.advanced_tab.on_settings_saved()

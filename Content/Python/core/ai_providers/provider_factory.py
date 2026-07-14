@@ -4,6 +4,7 @@
 from .llava_provider import LLaVAProvider
 from .gpt4v_provider import GPT4VisionProvider
 from .claude_provider import ClaudeProvider
+from .gemini_provider import GeminiProvider
 import unreal
 
 class AIProviderFactory:
@@ -12,7 +13,7 @@ class AIProviderFactory:
         """Create an AI provider instance
 
         Args:
-            provider_type: 'auto', 'llava', 'gpt4v', or 'claude'
+            provider_type: 'auto', 'llava', 'gpt4v', 'claude', or 'gemini'
             **kwargs: Additional provider configuration
 
         Returns:
@@ -27,7 +28,8 @@ class AIProviderFactory:
         providers = {
             'llava': LLaVAProvider,
             'gpt4v': GPT4VisionProvider,
-            'claude': ClaudeProvider
+            'claude': ClaudeProvider,
+            'gemini': GeminiProvider
         }
 
         if provider_type not in providers:
@@ -40,7 +42,7 @@ class AIProviderFactory:
     def get_best_available_provider(**config):
         """
         Auto-detect best available provider based on settings
-        Priority: 1) User's configured provider, 2) OpenAI, 3) Claude, 4) LLaVA
+        Priority: 1) User's configured provider, 2) OpenAI, 3) Claude, 4) Gemini, 5) LLaVA
         """
         unreal.log("[AI] Checking configured providers...")
 
@@ -79,6 +81,18 @@ class AIProviderFactory:
                     else:
                         unreal.log_warning("[AI] Claude configured but API key invalid")
 
+            elif 'Gemini' in provider_name or 'Google' in provider_name:
+                api_key = ai_settings.get('gemini_api_key', '')
+                model = ai_settings.get('gemini_model', 'gemini-2.5-pro')
+                if api_key:
+                    unreal.log(f"[AI] Trying Gemini with model: {model}")
+                    gemini = GeminiProvider(api_key=api_key, model=model)
+                    if gemini.is_available():
+                        unreal.log(f"[AI]  Selected: Gemini ({model})")
+                        return gemini
+                    else:
+                        unreal.log_warning("[AI] Gemini configured but API key invalid")
+
             # If user chose "Auto" or their choice failed, try all providers
             unreal.log("[AI] Checking all available providers...")
 
@@ -102,7 +116,17 @@ class AIProviderFactory:
                     unreal.log(f"[AI]  Auto-selected: Claude ({model})")
                     return claude
 
-            # 3. Fall back to LLaVA (local, free)
+            # 3. Try Gemini (strong multimodal reasoning)
+            gemini_key = ai_settings.get('gemini_api_key', '')
+            if gemini_key:
+                model = ai_settings.get('gemini_model', 'gemini-2.5-pro')
+                unreal.log(f"[AI] Found Gemini API key, testing with {model}...")
+                gemini = GeminiProvider(api_key=gemini_key, model=model)
+                if gemini.is_available():
+                    unreal.log(f"[AI]  Auto-selected: Gemini ({model})")
+                    return gemini
+
+            # 4. Fall back to LLaVA (local, free)
             llava_url = ai_settings.get('llava_url', 'http://localhost:11434')
             unreal.log(f"[AI] Trying LLaVA at {llava_url}...")
             llava = LLaVAProvider(url=llava_url)
@@ -177,6 +201,28 @@ class AIProviderFactory:
         else:
             available.append({
                 'name': 'Claude 3.5 Sonnet (Anthropic)', 'type': 'claude',
+                'available': False,
+                'error': 'No API key configured'
+            })
+
+        # Check Gemini
+        gemini_key = config.get('gemini_api_key') or ai_settings.get('gemini_api_key', '')
+        gemini_model = config.get('gemini_model') or ai_settings.get('gemini_model', 'gemini-2.5-pro')
+        if gemini_key:
+            gemini = GeminiProvider(api_key=gemini_key, model=gemini_model)
+            if gemini.is_available():
+                info = gemini.get_provider_info()
+                info['available'] = True
+                available.append(info)
+            else:
+                available.append({
+                    'name': 'Gemini (Google)', 'type': 'gemini',
+                    'available': False,
+                    'error': 'API key configured but invalid'
+                })
+        else:
+            available.append({
+                'name': 'Gemini (Google)', 'type': 'gemini',
                 'available': False,
                 'error': 'No API key configured'
             })

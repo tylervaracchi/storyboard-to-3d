@@ -9,11 +9,13 @@ from .ai_tab import AISettingsTab
 from .ollama_tab import OllamaSettingsTab
 from .paths_tab import PathsTab
 from .advanced_tab import AdvancedTab
+from .features_tab import FeaturesTab
 
 __all__ = [
     'GeneralTab',
     'AISettingsTab',
     'OllamaSettingsTab',
     'PathsTab',
-    'AdvancedTab'
+    'AdvancedTab',
+    'FeaturesTab'
 ]

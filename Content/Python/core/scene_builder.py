@@ -135,7 +135,24 @@ class SceneBuilder:
                 unreal.log_error(f"BLOCKED HALLUCINATIONS: {rejected}")
             else:
                 unreal.log(f"All {len(validated_characters)} characters validated")
-        
+
+        # Props get the same gen3d rescue: a prop with no library match
+        # would otherwise silently spawn as a placeholder cube. Runs
+        # before the transaction because generation can block for minutes.
+        ai_props = analysis.get('props', [])
+        if ai_props and self.show_name and hasattr(self.asset_matcher, 'show_library'):
+            try:
+                prop_lib = {'props': self.asset_matcher.show_library.get('props', {})}
+                missing_props = [p for p in ai_props if isinstance(p, str)
+                                 and not self._find_asset_path(p, prop_lib, 'props')]
+                if missing_props:
+                    rescued_props = self._gen3d_rescue(missing_props, analysis,
+                                                       category='props')
+                    if rescued_props:
+                        unreal.log(f"[Gen3D] props rescued: {rescued_props}")
+            except Exception as e:
+                unreal.log_warning(f"[Gen3D] prop rescue check failed: {e}")
+
         with unreal.ScopedEditorTransaction(f"Generate Panel {panel_index}") as trans:
             unreal.log(f"Starting build_scene with panel_index={panel_index}")
 
@@ -1181,17 +1198,19 @@ class SceneBuilder:
 
         unreal.log(f"[AnimationPicker] Animations applied: {applied}/{len(pairs)}")
 
-    def _gen3d_rescue(self, rejected_names, analysis: Dict[str, Any]) -> list:
+    def _gen3d_rescue(self, rejected_names, analysis: Dict[str, Any],
+                      category: str = 'characters') -> list:
         """
-        Try to generate rejected entities via the optional gen3d tier
-        instead of dropping them as hallucinations.
+        Try to generate rejected/missing entities via the optional gen3d
+        tier instead of dropping them (characters) or falling back to
+        placeholder cubes (props).
 
         Only active when 'gen3d.enabled' is on and a provider key exists
         (gen3d_factory.get_configured() returns None otherwise). Each
         rescued entity is generated, imported, written into the show's
-        asset_library.json so _spawn_characters can resolve it, and
-        returned so validation accepts it. Any failure just leaves the
-        entity rejected, exactly as before.
+        asset_library.json so the spawn steps can resolve it, and
+        returned so the caller accepts it. Any failure just leaves the
+        entity missing, exactly as before.
         """
         rescued = []
         try:
@@ -1211,25 +1230,27 @@ class SceneBuilder:
         for name in rejected_names:
             try:
                 asset = self.asset_matcher.find_best_match(
-                    name, category='characters', description=description)
+                    name, category=category, description=description)
                 if asset is None or not hasattr(asset, 'get_path_name'):
                     continue
                 asset_path = asset.get_path_name()
                 if not asset_path:
                     continue
-                if self._register_rescued_asset(name, asset_path, description):
+                if self._register_rescued_asset(name, asset_path, description,
+                                                category=category):
                     rescued.append(name)
-                    unreal.log(f"[Gen3D] rescued '{name}' -> {asset_path}")
+                    unreal.log(f"[Gen3D] rescued {category[:-1]} '{name}' -> {asset_path}")
             except Exception as e:
                 unreal.log_warning(f"[Gen3D] rescue failed for '{name}': {e}")
 
         return rescued
 
     def _register_rescued_asset(self, name: str, asset_path: str,
-                                description: Optional[str] = None) -> bool:
+                                description: Optional[str] = None,
+                                category: str = 'characters') -> bool:
         """
         Write a rescued entity into the show's asset_library.json (the
-        file _spawn_characters resolves asset paths from) and mirror it
+        file the spawn steps resolve asset paths from) and mirror it
         into the in-memory show_library used for validation.
         """
         if not self.show_name:
@@ -1250,13 +1271,13 @@ class SceneBuilder:
                 'description': description or 'AI-generated 3D asset (gen3d)',
                 'aliases': []
             }
-            library.setdefault('characters', {})[name] = entry
+            library.setdefault(category, {})[name] = entry
             with open(library_path, 'w') as f:
                 json.dump(library, f, indent=2)
 
             if hasattr(self.asset_matcher, 'show_library') and isinstance(
                     self.asset_matcher.show_library, dict):
-                self.asset_matcher.show_library.setdefault('characters', {})[name] = entry
+                self.asset_matcher.show_library.setdefault(category, {})[name] = entry
             return True
         except Exception as e:
             unreal.log_warning(f"[Gen3D] could not register '{name}' in the show library: {e}")

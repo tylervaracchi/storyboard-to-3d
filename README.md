@@ -82,7 +82,8 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 
 ## Features
 
-- **Multi-Model Support** — Claude, GPT-4o, LLaVA (local via Ollama)
+- **Multi-Model Support** — Claude, GPT (4o and 5 family), Google Gemini, LLaVA (local via Ollama); Claude, OpenAI, and Gemini model dropdowns refresh from each vendor's live models API, so new models are selectable without code changes
+- **Features Tab** — Every optional feature has an on/off switch in Settings > Features (all off by default except image transport optimization)
 - **7-Camera Spatial Validation** — Catches depth/positioning errors
 - **Iterative Refinement** — Automatic convergence with configurable thresholds
 - **External Validation** — Optional independent check on the AI's self-score (see below)

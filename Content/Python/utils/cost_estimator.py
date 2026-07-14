@@ -23,6 +23,16 @@ MODEL_PRICING = {
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "verified": True},
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00, "verified": True},
     "claude-opus-4-1": {"input": 15.00, "output": 75.00, "verified": True},
+    # Verified against https://platform.claude.com/docs/en/about-claude/pricing
+    # on 2026-07-14 ($10 in / $50 out per MTok; public GA model).
+    "claude-fable-5": {"input": 10.00, "output": 50.00, "verified": True},
+
+    # Google Gemini family
+    # Verified against https://ai.google.dev/gemini-api/docs/pricing on 2026-07-14.
+    # gemini-2.5-pro uses the <=200k-token prompt tier here; prompts over 200k
+    # tokens bill at $2.50 in / $15.00 out. Output prices include thinking tokens.
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "verified": True},
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "verified": True},
 
     # OpenAI GPT-4o
     # UNVERIFIED: this price was not cross-checked against OpenAI's live pricing
@@ -43,6 +53,9 @@ MODEL_ALIASES = {
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5",
     "opus": "claude-opus-4-1",
+    "fable": "claude-fable-5",
+    "gemini": "gemini-2.5-pro",
+    "flash": "gemini-2.5-flash",
 }
 
 # Anthropic prompt caching: cached reads cost ~10% of a normal input token
@@ -100,7 +113,7 @@ def _is_claude_model(model):
     """Return True if `model` resolves to an Anthropic Claude model string."""
     if not model:
         return False
-    return "claude" in str(model).lower() or str(model).lower() in ("sonnet", "haiku", "opus")
+    return "claude" in str(model).lower() or str(model).lower() in ("sonnet", "haiku", "opus", "fable")
 
 
 def _format_iterations(avg_iterations):
@@ -241,7 +254,7 @@ def format_estimate(d):
 if __name__ == "__main__":
     print("Testing cost_estimator...")
 
-    for test_model in ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-1-20250805", "gpt-4o", "llava:13b"]:
+    for test_model in ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-1-20250805", "claude-fable-5", "gpt-4o", "gemini-2.5-pro", "gemini-2.5-flash", "llava:13b"]:
         result = estimate_run(num_panels=12, avg_iterations=15, model=test_model)
         print(f"\n{test_model}:")
         print(f"  {format_estimate(result)}")

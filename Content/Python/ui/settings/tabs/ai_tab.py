@@ -38,6 +38,49 @@ class AISettingsTab(QWidget):
         "claude-sonnet-4-20250514",
     ]
 
+    # Built-in OpenAI model list - used at startup and as the fallback when
+    # the OpenAI Models API cannot be reached via "Refresh Models"
+    OPENAI_FALLBACK_MODELS = [
+        # === GPT-5 SERIES (Aug 2025) ===
+        "gpt-5",                    # Flagship reasoning + vision
+        "gpt-5-pro",                # Extended reasoning (GPT-5 Pro)
+        "gpt-5-mini",               # Faster, cheaper
+        "gpt-5-nano",               # Fastest, cheapest
+        "gpt-5-chat",               # Chat-optimized
+
+        # === O-SERIES (Reasoning + Vision) ===
+        "o3",                       # Advanced reasoning
+        "o3-mini",                  # Fast reasoning
+        "o3-pro",                   # Professional reasoning
+        "o4-mini",                  # Latest mini reasoning
+        "o4-mini-high",             # Enhanced reasoning
+
+        # === GPT-4.1 SERIES (Apr 2025) ===
+        "gpt-4.1",                  # 1M context, best coding
+        "gpt-4.1-mini",             # Fast & efficient
+        "gpt-4.1-nano",             # Fastest & cheapest
+
+        # === GPT-4o SERIES (May 2024) ===
+        "gpt-4o",                   # Proven balanced model
+        "gpt-4o-mini",              # Budget option
+        "chatgpt-4o-latest",        # Latest ChatGPT version
+
+        # === GPT-4.5 SERIES ===
+        "gpt-4.5-preview",          # Being deprecated July 2025
+
+        # === GPT-4 LEGACY ===
+        "gpt-4",                    # Original GPT-4
+        "gpt-4-turbo",              # Faster version
+        "gpt-4-vision-preview"      # Original vision model
+    ]
+
+    # Built-in Gemini model list - used at startup and as the fallback when
+    # the Gemini Models API cannot be reached via "Refresh Models"
+    GEMINI_FALLBACK_MODELS = [
+        "gemini-2.5-pro",           # Strongest reasoning + vision
+        "gemini-2.5-flash",         # Recommended default (fast + low cost)
+    ]
+
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -56,7 +99,7 @@ class AISettingsTab(QWidget):
         provider_select_layout = QHBoxLayout()
         provider_select_layout.addWidget(QLabel("Active Provider:"))
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["Auto", "LLaVA (Local)", "GPT-4 Vision (OpenAI)", "Claude (Anthropic)"])
+        self.provider_combo.addItems(["Auto", "LLaVA (Local)", "GPT-4 Vision (OpenAI)", "Claude (Anthropic)", "Gemini (Google)"])
         self.provider_combo.currentTextChanged.connect(self.on_provider_changed)
         provider_select_layout.addWidget(self.provider_combo)
         provider_select_layout.addStretch()
@@ -110,41 +153,16 @@ class AISettingsTab(QWidget):
         openai_model_layout = QHBoxLayout()
         openai_model_layout.addWidget(QLabel("Model:"))
         self.openai_model_combo = QComboBox()
-        self.openai_model_combo.addItems([
-            # === GPT-5 SERIES (Aug 2025) ===
-            "gpt-5",                    # Flagship reasoning + vision
-            "gpt-5-pro",                # Extended reasoning (GPT-5 Pro)
-            "gpt-5-mini",               # Faster, cheaper
-            "gpt-5-nano",               # Fastest, cheapest
-            "gpt-5-chat",               # Chat-optimized
-
-            # === O-SERIES (Reasoning + Vision) ===
-            "o3",                       # Advanced reasoning
-            "o3-mini",                  # Fast reasoning
-            "o3-pro",                   # Professional reasoning
-            "o4-mini",                  # Latest mini reasoning
-            "o4-mini-high",             # Enhanced reasoning
-
-            # === GPT-4.1 SERIES (Apr 2025) ===
-            "gpt-4.1",                  # 1M context, best coding
-            "gpt-4.1-mini",             # Fast & efficient
-            "gpt-4.1-nano",             # Fastest & cheapest
-
-            # === GPT-4o SERIES (May 2024) ===
-            "gpt-4o",                   # Proven balanced model
-            "gpt-4o-mini",              # Budget option
-            "chatgpt-4o-latest",        # Latest ChatGPT version
-
-            # === GPT-4.5 SERIES ===
-            "gpt-4.5-preview",          # Being deprecated July 2025
-
-            # === GPT-4 LEGACY ===
-            "gpt-4",                    # Original GPT-4
-            "gpt-4-turbo",              # Faster version
-            "gpt-4-vision-preview"      # Original vision model
-        ])
+        self.openai_model_combo.addItems(self.OPENAI_FALLBACK_MODELS)
         self.openai_model_combo.currentTextChanged.connect(self.on_change)
         openai_model_layout.addWidget(self.openai_model_combo)
+
+        # Refresh the dropdown from the live OpenAI Models API
+        self.refresh_openai_models_btn = QPushButton("Refresh Models")
+        self.refresh_openai_models_btn.setToolTip("Fetch the current model list from the OpenAI API (requires API key)")
+        self.refresh_openai_models_btn.clicked.connect(self.refresh_openai_models)
+        openai_model_layout.addWidget(self.refresh_openai_models_btn)
+
         openai_model_layout.addStretch()
         openai_layout.addLayout(openai_model_layout)
 
@@ -212,6 +230,54 @@ class AISettingsTab(QWidget):
 
         claude_group.setLayout(claude_layout)
         layout.addWidget(claude_group)
+
+        # === GOOGLE GEMINI SETTINGS ===
+        gemini_group = QGroupBox(" Google Gemini - Paid")
+        gemini_layout = QVBoxLayout()
+
+        # Gemini API Key (SEPARATE)
+        gemini_key_layout = QHBoxLayout()
+        gemini_key_layout.addWidget(QLabel("Gemini API Key:"))
+        self.gemini_api_key_edit = QLineEdit()
+        self.gemini_api_key_edit.setEchoMode(QLineEdit.Password)
+        self.gemini_api_key_edit.setPlaceholderText("AIza...")
+        self.gemini_api_key_edit.textChanged.connect(self.on_change)
+        gemini_key_layout.addWidget(self.gemini_api_key_edit)
+
+        self.show_gemini_key_btn = QPushButton("")
+        self.show_gemini_key_btn.setCheckable(True)
+        self.show_gemini_key_btn.toggled.connect(lambda checked: self.toggle_key_visibility(
+            self.gemini_api_key_edit, self.show_gemini_key_btn, checked
+        ))
+        self.show_gemini_key_btn.setMaximumWidth(30)
+        gemini_key_layout.addWidget(self.show_gemini_key_btn)
+        gemini_layout.addLayout(gemini_key_layout)
+
+        # Gemini Model
+        gemini_model_layout = QHBoxLayout()
+        gemini_model_layout.addWidget(QLabel("Model:"))
+        self.gemini_model_combo = QComboBox()
+        self.gemini_model_combo.addItems(self.GEMINI_FALLBACK_MODELS)
+        self.gemini_model_combo.currentTextChanged.connect(self.on_change)
+        gemini_model_layout.addWidget(self.gemini_model_combo)
+
+        # Refresh the dropdown from the live Gemini Models API
+        self.refresh_gemini_models_btn = QPushButton("Refresh Models")
+        self.refresh_gemini_models_btn.setToolTip("Fetch the current model list from the Google Gemini API (requires API key)")
+        self.refresh_gemini_models_btn.clicked.connect(self.refresh_gemini_models)
+        gemini_model_layout.addWidget(self.refresh_gemini_models_btn)
+
+        gemini_model_layout.addStretch()
+        gemini_layout.addLayout(gemini_model_layout)
+
+        # Gemini info label
+        gemini_info_label = QLabel(" Recommended: gemini-2.5-flash for fast, low-cost analysis | Both support vision")
+        gemini_info_label.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
+        gemini_info_label.setWordWrap(True)
+        gemini_layout.addWidget(gemini_info_label)
+
+        gemini_group.setLayout(gemini_layout)
+        layout.addWidget(gemini_group)
 
         # === MODEL SETTINGS ===
         model_group = QGroupBox("Model Settings")
@@ -487,6 +553,180 @@ class AISettingsTab(QWidget):
                                 "Check your API key and connection.\n"
                                 "The built-in model list is still available.")
 
+    def refresh_openai_models(self):
+        """Fetch available models from the OpenAI Models API and repopulate the dropdown"""
+        api_key = self.openai_api_key_edit.text().strip()
+
+        if not api_key:
+            QMessageBox.warning(self, "No API Key", "Please enter your OpenAI API key first")
+            return
+
+        progress = QProgressDialog("Fetching OpenAI models...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+        QApplication.processEvents()
+
+        models = []
+        try:
+            import requests
+            response = requests.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json().get("data", [])
+
+            # Keep only chat/vision-capable model families
+            include_prefixes = ("gpt-4o", "gpt-4.", "gpt-5", "o3", "o4")
+            exclude_terms = ("audio", "realtime", "transcribe", "tts",
+                             "embedding", "image", "moderation")
+
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                model_id = entry.get("id", "")
+                if not model_id.startswith(include_prefixes):
+                    continue
+                if any(term in model_id for term in exclude_terms):
+                    continue
+                models.append(model_id)
+
+            models.sort(reverse=True)
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Error", f"Model refresh failed: {str(e)}")
+            return
+
+        progress.close()
+
+        # Keep the current selection across the repopulate
+        current = self.openai_model_combo.currentText()
+
+        # Fall back to the hardcoded list if the API returned nothing
+        items = models if models else list(self.OPENAI_FALLBACK_MODELS)
+
+        # Block signals so repopulating does not emit spurious settings_changed
+        self.openai_model_combo.blockSignals(True)
+        self.openai_model_combo.clear()
+        self.openai_model_combo.addItems(items)
+
+        index = self.openai_model_combo.findText(current)
+        if index >= 0:
+            self.openai_model_combo.setCurrentIndex(index)
+        elif current:
+            # Preserve a custom or no-longer-listed model at the top
+            self.openai_model_combo.insertItem(0, current)
+            self.openai_model_combo.setCurrentIndex(0)
+        self.openai_model_combo.blockSignals(False)
+
+        if models:
+            unreal.log(f"[AI Settings] Loaded {len(models)} OpenAI models from the OpenAI API")
+        else:
+            unreal.log_warning("[AI Settings] Could not fetch models from the OpenAI API - keeping the built-in list")
+            QMessageBox.warning(self, "Refresh Failed",
+                                "Could not fetch models from the OpenAI API.\n"
+                                "Check your API key and connection.\n"
+                                "The built-in model list is still available.")
+
+    def refresh_gemini_models(self):
+        """Fetch available models from the Google Gemini API and repopulate the dropdown"""
+        api_key = self.gemini_api_key_edit.text().strip()
+
+        if not api_key:
+            QMessageBox.warning(self, "No API Key", "Please enter your Gemini API key first")
+            return
+
+        progress = QProgressDialog("Fetching Gemini models...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+        QApplication.processEvents()
+
+        models = []
+        try:
+            import sys
+            from pathlib import Path
+            plugin_path = Path(unreal.Paths.project_content_dir()).parent / "Plugins" / "StoryboardTo3D" / "Content" / "Python"
+            if str(plugin_path) not in sys.path:
+                sys.path.insert(0, str(plugin_path))
+
+            # Prefer the provider's own model listing; fall back to a direct
+            # REST call if the Gemini provider module is not available yet
+            try:
+                from core.ai_providers.gemini_provider import GeminiProvider
+            except ImportError:
+                GeminiProvider = None
+
+            if GeminiProvider is not None and hasattr(GeminiProvider, "list_available_models"):
+                models = GeminiProvider.list_available_models(api_key)
+            else:
+                models = self._fetch_gemini_models_direct(api_key)
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Error", f"Model refresh failed: {str(e)}")
+            return
+
+        progress.close()
+
+        # Keep the current selection across the repopulate
+        current = self.gemini_model_combo.currentText()
+
+        # Fall back to the hardcoded list if the API returned nothing
+        items = models if models else list(self.GEMINI_FALLBACK_MODELS)
+
+        # Block signals so repopulating does not emit spurious settings_changed
+        self.gemini_model_combo.blockSignals(True)
+        self.gemini_model_combo.clear()
+        self.gemini_model_combo.addItems(items)
+
+        index = self.gemini_model_combo.findText(current)
+        if index >= 0:
+            self.gemini_model_combo.setCurrentIndex(index)
+        elif current:
+            # Preserve a custom or no-longer-listed model at the top
+            self.gemini_model_combo.insertItem(0, current)
+            self.gemini_model_combo.setCurrentIndex(0)
+        self.gemini_model_combo.blockSignals(False)
+
+        if models:
+            unreal.log(f"[AI Settings] Loaded {len(models)} Gemini models from the Google Gemini API")
+        else:
+            unreal.log_warning("[AI Settings] Could not fetch models from the Google Gemini API - keeping the built-in list")
+            QMessageBox.warning(self, "Refresh Failed",
+                                "Could not fetch models from the Google Gemini API.\n"
+                                "Check your API key and connection.\n"
+                                "The built-in model list is still available.")
+
+    def _fetch_gemini_models_direct(self, api_key):
+        """Direct REST fallback for listing Gemini models when the provider module is unavailable.
+
+        Queries GET https://generativelanguage.googleapis.com/v1beta/models and
+        returns the model names (with the 'models/' prefix stripped) that
+        support the generateContent method. Exceptions propagate to the caller.
+        """
+        import requests
+        response = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            headers={"x-goog-api-key": api_key},
+            timeout=10
+        )
+        response.raise_for_status()
+        entries = response.json().get("models", [])
+
+        models = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            methods = entry.get("supportedGenerationMethods") or entry.get("supported_actions") or []
+            if "generateContent" not in methods:
+                continue
+            name = entry.get("name", "")
+            if name.startswith("models/"):
+                name = name[len("models/"):]
+            if name:
+                models.append(name)
+        return models
+
     def load_settings(self):
         """Load settings into UI"""
         ai_settings = self.settings.get('ai_settings', {})
@@ -507,6 +747,10 @@ class AISettingsTab(QWidget):
         # Claude (SEPARATE KEY) - Default to Sonnet 4.5 with extended thinking
         self.claude_api_key_edit.setText(ai_settings.get('claude_api_key', ''))
         self.claude_model_combo.setCurrentText(ai_settings.get('claude_model', 'claude-sonnet-4-6'))
+
+        # Gemini (SEPARATE KEY) - Default to gemini-2.5-flash (fast + low cost)
+        self.gemini_api_key_edit.setText(ai_settings.get('gemini_api_key', ''))
+        self.gemini_model_combo.setCurrentText(ai_settings.get('gemini_model', 'gemini-2.5-flash'))
 
         # Model settings
         temp = int(ai_settings.get('temperature', 0.7) * 100)
@@ -537,6 +781,10 @@ class AISettingsTab(QWidget):
                 # Claude (SEPARATE)
                 'claude_api_key': self.claude_api_key_edit.text(),
                 'claude_model': self.claude_model_combo.currentText(),
+
+                # Gemini (SEPARATE)
+                'gemini_api_key': self.gemini_api_key_edit.text(),
+                'gemini_model': self.gemini_model_combo.currentText(),
 
                 # Model settings
                 'temperature': self.temperature_slider.value() / 100.0,
