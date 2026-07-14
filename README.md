@@ -9,8 +9,10 @@
 
 An Unreal Engine plugin that automatically converts 2D storyboard panels into positioned 3D scenes using vision-language models. Developed as MS Thesis research at Drexel University.
 
+> 🔧 **SensAI Worlds in Action Hack [02-LA] (July 18–19, 2026):** this plugin is in the hacker toolkit. Clone it, build with it — I'm on site Saturday for questions, and at SIGGRAPH all week (poster: West Hall Lobby, Mon–Wed 12–1).
+
 <p align="center">
-  <a href="https://vimeo.com/1152943813"><img src="docs/stb-demo-thumb.webp" alt="Watch Demo Video" width="80%"></a>
+  <a href="https://vimeo.com/1152943813"><img src="docs/stb-demo-thumb.png" alt="Watch Demo Video" width="80%"></a>
   <br>
   <em>▶️ <a href="https://vimeo.com/1152943813">Watch Demo Video</a></em>
 </p>
@@ -43,6 +45,10 @@ This research revealed a significant **calibration gap** in vision-language mode
 ---
 
 ## Publications & Archives
+
+🖼️ **SIGGRAPH 2026 Posters:**
+- "AI Score Hallucination in Vision-Language Models: Measuring Self-Assessment Calibration for Iterative 3D Scene Positioning" — Los Angeles, July 2026
+- Poster, extended abstract, and ACM link: [tylervaracchi.com/paper](https://tylervaracchi.com/paper)
 
 📄 **Full Thesis:**
 - [ProQuest Dissertations & Theses](https://www.proquest.com/docview/3284362822)

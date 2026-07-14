@@ -79,7 +79,14 @@ class DepthAnalyzer:
             # Determine which Python to use
             # UE's sys.executable points to UnrealEditor.exe, not Python!
             # We need to find actual Python interpreters
+            import os
+            import shutil
             python_candidates = []
+
+            # User override: point STB_PYTHON at a Python with torch+transformers
+            env_python = os.environ.get("STB_PYTHON")
+            if env_python:
+                python_candidates.append(env_python)
 
             # Try to find UE's embedded Python
             if sys.executable:
@@ -88,25 +95,25 @@ class DepthAnalyzer:
                 if ue_python.exists():
                     python_candidates.append(str(ue_python))
 
-            # Add user's miniconda (known to have transformers)
-            python_candidates.append(r"C:\Users\tyler\miniconda3\python.exe")
-
-            # Add system Python from PATH
-            python_candidates.append("python")
+            # System Pythons resolved from PATH
+            for name in ("python", "python3"):
+                found = shutil.which(name)
+                if found:
+                    python_candidates.append(found)
 
             # Find first existing Python
             python_exe = None
             for candidate in python_candidates:
-                candidate_path = Path(candidate)
-                if candidate_path.exists() and candidate_path.suffix == '.exe':
-                    python_exe = str(candidate_path)
+                if Path(candidate).exists():
+                    python_exe = str(candidate)
                     log(f"   Using Python: {python_exe}")
                     break
 
             if not python_exe:
-                # Fallback to miniconda (hardcoded path known to work)
-                python_exe = r"C:\Users\tyler\miniconda3\python.exe"
-                log(f"   Fallback to miniconda: {python_exe}")
+                log_error(" No Python interpreter found for the depth server.")
+                log_error("   Set the STB_PYTHON environment variable to a Python")
+                log_error("   that has torch and transformers installed.")
+                return
 
             # Spawn subprocess with PyTorch server
             self.process = subprocess.Popen(
