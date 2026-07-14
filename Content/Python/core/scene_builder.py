@@ -56,6 +56,9 @@ class SceneBuilder:
         self.world = None
         self.actors: List[Any] = []
         self.show_name = show_name
+        # (config, spawnable) pairs from the latest _add_actors_to_sequence
+        # run; consumed by the optional auto-animation step.
+        self._last_spawned_character_pairs: List[Any] = []
         
         from core.asset_matcher import AssetMatcher
         from core.sequence_generator import SequenceGenerator
@@ -116,9 +119,18 @@ class SceneBuilder:
         if available_actors and ai_characters:
             unreal.log(f"Validating {len(ai_characters)} AI suggestions: {ai_characters}")
             validated_characters = validate_actors(ai_characters, available_actors)
-            analysis['characters'] = validated_characters
 
             rejected = set(ai_characters) - set(validated_characters)
+            if rejected:
+                # Gen3D rescue (opt-in, 'gen3d.enabled'): an entity missing from
+                # the library is not necessarily a hallucination. Runs before the
+                # transaction opens because generation can block for minutes.
+                rescued = self._gen3d_rescue(sorted(rejected), analysis)
+                if rescued:
+                    validated_characters = list(validated_characters) + rescued
+                    rejected -= set(rescued)
+            analysis['characters'] = validated_characters
+
             if rejected:
                 unreal.log_error(f"BLOCKED HALLUCINATIONS: {rejected}")
             else:
@@ -188,6 +200,11 @@ class SceneBuilder:
                 # STEP 8: Add to sequence
                 if scene_data['sequence'].get('asset'):
                     self._add_actors_to_sequence(scene_data)
+
+                # STEP 9: Optional enhancements (mood lighting, auto
+                # animation). Both settings default OFF, so the default
+                # path is unchanged; failures never break scene building.
+                self._apply_optional_enhancements(scene_data, analysis)
 
                 # Summary
                 unreal.log(f"\nScene generation complete!")
@@ -918,11 +935,13 @@ class SceneBuilder:
                         spawned_lights.append(spawned_light)
 
             # Characters
+            self._last_spawned_character_pairs = []
             for char_config in scene_data.get('characters', []):
                 if isinstance(char_config, dict):
                     spawned = self._create_spawnable_from_config(sequence, char_config, 'character')
                     if spawned:
                         spawned_characters.append(spawned)
+                        self._last_spawned_character_pairs.append((char_config, spawned))
 
             # Props
             for prop_config in scene_data.get('props', []):
@@ -1003,3 +1022,242 @@ class SceneBuilder:
             unreal.log_error(f"Failed to setup camera cuts: {e}")
             import traceback
             unreal.log_error(traceback.format_exc())
+
+    # ========================================
+    # OPTIONAL ENHANCEMENTS (default OFF)
+    # ========================================
+
+    def _read_optional_setting(self, path: str, default: Any = False) -> Any:
+        """
+        Read a setting with an inline default, mirroring the pattern used
+        by core.external_validator.ExternalValidator.get_configured().
+
+        Args:
+            path: Dot-notation settings path (e.g. 'scene.auto_animation').
+            default: Value returned when settings are unavailable.
+
+        Returns:
+            The setting value, or the default on any failure. Never raises.
+        """
+        try:
+            from core.settings_manager import get_setting
+        except Exception as e:
+            unreal.log_warning(f"Settings manager unavailable ({e}); using default for '{path}'")
+            return default
+        try:
+            return get_setting(path, default)
+        except Exception as e:
+            unreal.log_warning(f"Could not read setting '{path}': {e}; using default")
+            return default
+
+    def _apply_optional_enhancements(self, scene_data: Dict[str, Any],
+                                     analysis: Dict[str, Any]) -> None:
+        """
+        Apply optional, opt-in scene enhancements at the end of a build.
+
+        (a) Mood lighting when 'scene.apply_mood_lighting' is truthy and
+            the analysis carries a mood (time_of_day as fallback).
+        (b) Auto animation when 'scene.auto_animation' is truthy, for
+            spawned characters whose source entity has action text.
+
+        Both default OFF; every failure is logged and swallowed so scene
+        building is never broken by these steps.
+        """
+        # (a) Mood lighting
+        try:
+            if self._read_optional_setting('scene.apply_mood_lighting', False):
+                mood = analysis.get('mood') or analysis.get('time_of_day')
+                if mood:
+                    from core import mood_lighting
+                    result = mood_lighting.apply_mood(str(mood))
+                    unreal.log(
+                        "[MoodLighting] mood '{0}' -> preset '{1}' "
+                        "(status: {2}, actors touched: {3})".format(
+                            mood, result.get('preset'), result.get('status'),
+                            result.get('actors_touched', 0)))
+                    for error in result.get('errors') or []:
+                        unreal.log_warning(f"[MoodLighting] {error}")
+                else:
+                    unreal.log("[MoodLighting] apply_mood_lighting is on but "
+                               "analysis carries no mood; skipping")
+        except Exception as e:
+            unreal.log_warning(f"[MoodLighting] Failed (scene build unaffected): {e}")
+
+        # (b) Auto animation
+        try:
+            if self._read_optional_setting('scene.auto_animation', False):
+                self._apply_auto_animations(analysis)
+        except Exception as e:
+            unreal.log_warning(f"[AnimationPicker] Failed (scene build unaffected): {e}")
+
+    def _get_entity_action_text(self, analysis: Dict[str, Any],
+                                entity_name: str) -> Optional[str]:
+        """
+        Find action/description text for a spawned entity in the analysis.
+
+        Character entries are usually plain name strings, but richer AI
+        responses return dicts (with 'action'/'description' style fields),
+        and script/importer flows carry scene-level 'action'/'actions' text.
+
+        Returns:
+            Action text string, or None when the entity has none.
+        """
+        try:
+            entries = analysis.get('characters') or []
+            if isinstance(entries, (list, tuple)):
+                wanted = str(entity_name).strip().lower()
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_name = str(entry.get('name', '')).strip().lower()
+                    if entry_name and entry_name != wanted:
+                        continue
+                    for key in ('action', 'description', 'pose', 'activity'):
+                        text = entry.get(key)
+                        if isinstance(text, str) and text.strip():
+                            return text.strip()
+
+            action = analysis.get('action')
+            if isinstance(action, str) and action.strip():
+                return action.strip()
+
+            actions = analysis.get('actions')
+            if isinstance(actions, str) and actions.strip():
+                return actions.strip()
+            if isinstance(actions, (list, tuple)):
+                joined = ' '.join(str(a) for a in actions if a)
+                if joined.strip():
+                    return joined.strip()
+        except Exception as e:
+            unreal.log_warning(f"[AnimationPicker] Could not read action text: {e}")
+        return None
+
+    def _apply_auto_animations(self, analysis: Dict[str, Any]) -> None:
+        """
+        Match and apply animations to spawned skeletal characters.
+
+        Uses the (config, spawnable) pairs recorded by
+        _add_actors_to_sequence; the spawnable's object template is the
+        animation target (non-skeletal templates are skipped by the
+        matcher with a log).
+        """
+        pairs = getattr(self, '_last_spawned_character_pairs', None) or []
+        if not pairs:
+            unreal.log("[AnimationPicker] auto_animation is on but no "
+                       "spawned characters to animate")
+            return
+
+        from core.animation_matcher import AnimationMatcher
+        matcher = AnimationMatcher(show_name=self.show_name)
+        applied = 0
+
+        for config, spawnable in pairs:
+            try:
+                name = config.get('name', 'Actor') if isinstance(config, dict) else 'Actor'
+                action_text = self._get_entity_action_text(analysis, name)
+                if not action_text:
+                    unreal.log(f"[AnimationPicker] No action/description text for '{name}'; skipping")
+                    continue
+
+                anim_path = matcher.find_animation(action_text)
+                if not anim_path:
+                    unreal.log(f"[AnimationPicker] No animation match for '{name}' (action: '{action_text}')")
+                    continue
+
+                template = None
+                if hasattr(spawnable, 'get_object_template'):
+                    template = spawnable.get_object_template()
+                if template is None:
+                    unreal.log(f"[AnimationPicker] No object template for '{name}'; cannot animate spawnable")
+                    continue
+
+                if matcher.apply_animation_to_actor(template, anim_path):
+                    applied += 1
+                    unreal.log(f"[AnimationPicker] Applied '{anim_path}' to '{name}' (action: '{action_text}')")
+                else:
+                    unreal.log(f"[AnimationPicker] Could not apply '{anim_path}' to '{name}' (not skeletal?)")
+            except Exception as e:
+                unreal.log_warning(f"[AnimationPicker] Error animating one actor: {e}")
+
+        unreal.log(f"[AnimationPicker] Animations applied: {applied}/{len(pairs)}")
+
+    def _gen3d_rescue(self, rejected_names, analysis: Dict[str, Any]) -> list:
+        """
+        Try to generate rejected entities via the optional gen3d tier
+        instead of dropping them as hallucinations.
+
+        Only active when 'gen3d.enabled' is on and a provider key exists
+        (gen3d_factory.get_configured() returns None otherwise). Each
+        rescued entity is generated, imported, written into the show's
+        asset_library.json so _spawn_characters can resolve it, and
+        returned so validation accepts it. Any failure just leaves the
+        entity rejected, exactly as before.
+        """
+        rescued = []
+        try:
+            from core.gen3d import gen3d_factory
+            if gen3d_factory.get_configured() is None:
+                return rescued
+        except ImportError:
+            return rescued
+        except Exception as e:
+            unreal.log_warning(f"[Gen3D] rescue unavailable: {e}")
+            return rescued
+
+        description = analysis.get('scene_description') or analysis.get('description')
+        if not isinstance(description, str):
+            description = None
+
+        for name in rejected_names:
+            try:
+                asset = self.asset_matcher.find_best_match(
+                    name, category='characters', description=description)
+                if asset is None or not hasattr(asset, 'get_path_name'):
+                    continue
+                asset_path = asset.get_path_name()
+                if not asset_path:
+                    continue
+                if self._register_rescued_asset(name, asset_path, description):
+                    rescued.append(name)
+                    unreal.log(f"[Gen3D] rescued '{name}' -> {asset_path}")
+            except Exception as e:
+                unreal.log_warning(f"[Gen3D] rescue failed for '{name}': {e}")
+
+        return rescued
+
+    def _register_rescued_asset(self, name: str, asset_path: str,
+                                description: Optional[str] = None) -> bool:
+        """
+        Write a rescued entity into the show's asset_library.json (the
+        file _spawn_characters resolves asset paths from) and mirror it
+        into the in-memory show_library used for validation.
+        """
+        if not self.show_name:
+            return False
+        try:
+            from core.utils import get_shows_manager
+            import json
+
+            shows_manager = get_shows_manager()
+            library_path = shows_manager.shows_root / self.show_name / 'asset_library.json'
+            library = {}
+            if library_path.exists():
+                with open(library_path, 'r') as f:
+                    library = json.load(f)
+
+            entry = {
+                'asset_path': asset_path,
+                'description': description or 'AI-generated 3D asset (gen3d)',
+                'aliases': []
+            }
+            library.setdefault('characters', {})[name] = entry
+            with open(library_path, 'w') as f:
+                json.dump(library, f, indent=2)
+
+            if hasattr(self.asset_matcher, 'show_library') and isinstance(
+                    self.asset_matcher.show_library, dict):
+                self.asset_matcher.show_library.setdefault('characters', {})[name] = entry
+            return True
+        except Exception as e:
+            unreal.log_warning(f"[Gen3D] could not register '{name}' in the show library: {e}")
+            return False

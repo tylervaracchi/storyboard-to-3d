@@ -280,6 +280,12 @@ class ActivePanelWidget(QWidget):
         # CRITICAL: Workflow cancellation flag to prevent crashed from orphaned timers
         self.capture_workflow_active = False  # Set True when workflow starts, False on cleanup
 
+        # [AdaptiveViews] Per-iteration latch for reduced refinement views
+        # (setting 'performance.reduced_refinement_views', OFF by default).
+        # Latched once at iteration start so the capture chain and the AI
+        # image payload always agree on which views exist this iteration.
+        self._adaptive_reduced_views_this_iteration = False
+
         # FEATURE #6: Cost tracking per iteration
         self.iteration_costs = []  # Track API costs per iteration
         self.total_cost = 0.0  # Cumulative cost across all iterations
@@ -1646,6 +1652,9 @@ class ActivePanelWidget(QWidget):
         unreal.log("\n Setting up auto-iteration...")
         self.auto_iterate = True
         self.current_iteration = 1
+        # [AdaptiveViews] Iteration 1 always captures the full view set so the
+        # model gets complete spatial context before refining.
+        self._adaptive_reduced_views_this_iteration = False
         self.iteration_scores = []
         unreal.log(f"Auto-iteration enabled: {self.max_iterations} iterations")
         unreal.log(f"Current iteration: {self.current_iteration}")
@@ -1800,6 +1809,15 @@ class ActivePanelWidget(QWidget):
 
         unreal.log("\n" + "="*70)
         self.test_capture_top()
+
+        # [AdaptiveViews] Reduced refinement iterations skip the 3/4 view and
+        # go straight to scout cleanup, then the hero capture (never skipped).
+        if getattr(self, '_adaptive_reduced_views_this_iteration', False):
+            unreal.log("Top queued (2/2 reduced)\n")
+            unreal.log("⏳ Scheduling cleanup in 15 seconds...\n")
+            QTimer.singleShot(15000, self._cleanup_scout_delayed)
+            return
+
         unreal.log("Top queued (5/6)\n")
 
         # Schedule 3/4 capture
@@ -2297,6 +2315,15 @@ class ActivePanelWidget(QWidget):
                 'three_quarter': 'test_front_3_4.png',
                 'hero': 'test_hero.png'
             }
+
+            # [AdaptiveViews] Reduced refinement iterations only captured the
+            # reduced subset, so only load those files. PNGs for the skipped
+            # angles still exist on disk from earlier iterations and must not
+            # be sent to the model as if they were current.
+            if getattr(self, '_adaptive_reduced_views_this_iteration', False):
+                capture_files = {angle: filename for angle, filename in capture_files.items()
+                                 if angle in self.ADAPTIVE_REDUCED_VIEWS}
+                unreal.log("[AdaptiveViews] Loading reduced capture set: {}".format(list(capture_files.keys())))
 
             unreal.log("Loading captures...")
             missing_captures = []
@@ -5060,6 +5087,32 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         self.auto_iterate = False
         self.current_iteration = 0
 
+    # [AdaptiveViews] Views kept during reduced refinement iterations. Hero is
+    # mandatory (scoring and external validation read test_hero.png); 'top'
+    # gives the overhead layout; 'right' gives one lateral side view.
+    ADAPTIVE_REDUCED_VIEWS = ('hero', 'top', 'right')
+
+    def _reduced_refinement_views_active(self):
+        """[AdaptiveViews] True when the reduced multi-view capture applies.
+
+        Reads the 'performance.reduced_refinement_views' global setting
+        (default False, feature OFF so default behavior is unchanged). Even
+        when enabled, iteration 1 always uses the full 7-view set so the
+        model gets complete spatial context before refining; only iterations
+        2+ are reduced. Never raises.
+        """
+        try:
+            from core.settings_manager import get_setting
+            value = get_setting('performance.reduced_refinement_views', False)
+        except Exception as e:
+            unreal.log_warning("[AdaptiveViews] Could not read 'performance.reduced_refinement_views'; feature stays off: {}".format(e))
+            return False
+        if isinstance(value, str):
+            enabled = value.strip().lower() not in ('', 'false', '0', 'off', 'none', 'no', 'disabled')
+        else:
+            enabled = bool(value)
+        return enabled and self.current_iteration > 1
+
     def _start_next_iteration(self):
         """Start the next capture iteration"""
         # ============================================================
@@ -5197,9 +5250,30 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         self.capture_workflow_active = True
         unreal.log("Workflow reactivated for iteration {}\n".format(self.current_iteration))
 
+        # [AdaptiveViews] Latch the reduced-view decision once per iteration so
+        # the capture chain and the AI image payload stay consistent even if
+        # the setting is toggled mid-iteration. OFF by default.
+        self._adaptive_reduced_views_this_iteration = self._reduced_refinement_views_active()
+        if self._adaptive_reduced_views_this_iteration:
+            unreal.log("[AdaptiveViews] iteration {}: capturing {} of {} views".format(
+                self.current_iteration, len(self.ADAPTIVE_REDUCED_VIEWS), 7))
+
         # Step 1: Pilot to Scout
         self.test_pilot_to_scout()
         unreal.log("Pilot complete\n")
+
+        # [AdaptiveViews] Reduced chain: right -> top -> cleanup -> hero.
+        # Hero is always captured (scoring and external validation read
+        # test_hero.png). Full chain below stays untouched for default runs.
+        if self._adaptive_reduced_views_this_iteration:
+            right_success = self.test_capture_right()
+            if not right_success:
+                unreal.log_error("Right capture failed to queue!")
+                return
+            unreal.log("Right queued (1/2 reduced)\n")
+            unreal.log("⏳ Scheduling Top View in 15 seconds...\n")
+            QTimer.singleShot(15000, self._capture_top_delayed)
+            return
 
         # Step 2: Front Capture
         front_success = self.test_capture_front()

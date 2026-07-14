@@ -10,6 +10,16 @@ panel image in a show episode, runs PanelAnalyzer analysis on each panel
 optionally builds the 3D scene per panel via SceneBuilder. Collects per-panel
 results and writes a JSON report to Saved/StoryboardTo3D/batch_reports/.
 
+PARALLEL ANALYSIS: the analysis phase is pure API I/O (PanelAnalyzer + an
+HTTP vision request), so when analysis_workers > 1 it runs concurrently on a
+concurrent.futures.ThreadPoolExecutor. Generation (SceneBuilder) touches
+Unreal actor/world APIs, which must stay on the game thread, so it ALWAYS
+runs strictly serially on the calling thread, in panel order, after every
+panel's analysis has completed. This is a two-phase design: (1) analyze all
+panels, optionally in parallel; (2) generate all scenes, always serially.
+When analysis_workers <= 1 the original single-threaded, single-loop code
+path is used unchanged (no executor is created).
+
 IMPORTANT HONESTY NOTE (scope of this runner):
     The full iterative-refinement loop (multi-view capture, VLM scoring, and
     up-to-N correction iterations) lives inside the UI widget
@@ -24,15 +34,17 @@ IMPORTANT HONESTY NOTE (scope of this runner):
 Usage from the UE Python console:
     py "C:/path/to/Content/Python/core/batch_runner.py" MyShow Episode_1
     py "C:/path/to/Content/Python/core/batch_runner.py" MyShow Episode_1 "Claude (Anthropic)" --no-generate --max-panels 5
+    py "C:/path/to/Content/Python/core/batch_runner.py" MyShow Episode_1 --workers 4
 
 Or programmatically:
     from core.batch_runner import run_batch
-    summary = run_batch("MyShow", "Episode_1", generate=True)
+    summary = run_batch("MyShow", "Episode_1", generate=True, analysis_workers=3)
 """
 
 import base64
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -351,7 +363,12 @@ def _extract_entities(analysis):
 
 
 def _notify_progress(progress_cb, done, total, panel_result):
-    """Invoke the progress callback without letting it break the batch."""
+    """Invoke the progress callback without letting it break the batch.
+
+    CRITICAL: callers must only invoke this from the main/calling thread
+    (never from a ThreadPoolExecutor worker) since progress_cb may touch UI
+    or other non-thread-safe state.
+    """
     if progress_cb is None:
         return
     try:
@@ -360,18 +377,102 @@ def _notify_progress(progress_cb, done, total, panel_result):
         _log_warning("[Batch] progress_cb raised (ignored): {0}".format(e))
 
 
+def _clamp_analysis_workers(value, default=3, low=1, high=6):
+    """Coerce analysis_workers to an int clamped to [low, high].
+
+    Falls back to `default` (then clamped) on missing/invalid input. Never
+    raises.
+    """
+    try:
+        workers = int(value)
+    except (TypeError, ValueError):
+        _log_warning(
+            "[Batch] Invalid analysis_workers {0!r}; using default {1}".format(
+                value, default))
+        workers = default
+    if workers < low:
+        workers = low
+    elif workers > high:
+        workers = high
+    return workers
+
+
+def _make_panel_result(index, panel_path):
+    """Fresh, JSON-safe per-panel result dict (shared shape for both the
+    serial and parallel code paths)."""
+    return {
+        'index': index,
+        'panel': panel_path.name,
+        'path': str(panel_path),
+        'status': 'ok',
+        'analyzed': False,
+        'from_cache': False,
+        'generated': False,
+        'entities': {},
+        'scene': None,
+        'errors': [],
+    }
+
+
+def _analyze_panel_worker(provider, show, panel_path, index):
+    """Analyze one panel. Runs on a ThreadPoolExecutor worker thread.
+
+    Pure API I/O only (PanelAnalyzer + HTTP vision request) -- must NEVER
+    touch unreal actor/world/SceneBuilder APIs, which are game-thread-only.
+    Builds its OWN PanelAnalyzer (and therefore its own AI client) so no
+    client/analyzer state is shared across threads.
+
+    Returns:
+        tuple: (panel_result dict, analysis dict-or-None)
+    """
+    panel_result = _make_panel_result(index, panel_path)
+    try:
+        worker_analyzer = _build_panel_analyzer(provider)
+    except Exception as e:
+        panel_result['status'] = 'analysis_failed'
+        panel_result['errors'].append('Failed to create PanelAnalyzer: {0}'.format(e))
+        return panel_result, None
+
+    analysis = None
+    try:
+        analysis = worker_analyzer.analyze(str(panel_path), show_name=str(show))
+        if isinstance(analysis, dict):
+            panel_result['analyzed'] = True
+            panel_result['from_cache'] = False
+            panel_result['entities'] = _extract_entities(analysis)
+            panel_result['analysis'] = analysis
+        else:
+            panel_result['status'] = 'analysis_failed'
+            panel_result['errors'].append('Analysis returned no data')
+            analysis = None
+    except Exception as e:
+        panel_result['status'] = 'analysis_failed'
+        panel_result['errors'].append('Analysis failed: {0}'.format(e))
+        analysis = None
+
+    return panel_result, analysis
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def run_batch(show, episode, provider=DEFAULT_PROVIDER, generate=True,
-              max_panels=None, progress_cb=None):
+              max_panels=None, progress_cb=None, analysis_workers=3):
     """Run a single-pass analyze (+ optionally generate) batch over an episode.
 
     HONESTY: this is SINGLE-PASS analyze + generate per panel. The iterative
     refinement loop (multi-view capture, scoring, up-to-N corrections) lives
     in ui/widgets/active_panel_widget.py and is not reusable here yet. See
     the module docstring.
+
+    Two-phase execution when analysis_workers > 1: all panels are analyzed
+    first (concurrently, on a ThreadPoolExecutor -- analysis is pure API
+    I/O), then all scenes are generated strictly serially, in panel order,
+    on the calling thread (SceneBuilder/unreal actor APIs are game-thread
+    only and must never run on a worker thread). When analysis_workers <= 1
+    the original single-threaded per-panel loop (analyze then generate,
+    panel by panel) is used unchanged.
 
     Args:
         show: Show name (display name or folder name).
@@ -382,7 +483,11 @@ def run_batch(show, episode, provider=DEFAULT_PROVIDER, generate=True,
         max_panels: Optional cap on how many panels to process (None = all).
         progress_cb: Optional callable(done_count, total_count, panel_result)
                      invoked after each panel. Exceptions in the callback are
-                     logged and ignored.
+                     logged and ignored. Always invoked from the main/calling
+                     thread, never from a worker thread.
+        analysis_workers: Max concurrent threads for the analysis phase.
+                           Clamped to [1, 6]. 1 (or less) runs the original
+                           strictly-serial analyze+generate-per-panel path.
 
     Returns:
         Summary dict with per-panel results, counters, and the report path.
@@ -390,12 +495,14 @@ def run_batch(show, episode, provider=DEFAULT_PROVIDER, generate=True,
         'error' key and no panels are processed.
     """
     started = datetime.now()
+    analysis_workers = _clamp_analysis_workers(analysis_workers)
     summary = {
         'show': str(show),
         'episode': str(episode),
         'provider': str(provider),
         'generate': bool(generate),
         'mode': 'single_pass',
+        'analysis_workers': analysis_workers,
         'note': (
             'Single-pass analyze+generate per panel. The iterative '
             'refinement loop lives in the UI widget '
@@ -452,7 +559,8 @@ def run_batch(show, episode, provider=DEFAULT_PROVIDER, generate=True,
     _log("[Batch] Overnight batch: show='{0}' episode='{1}'".format(show, episode_folder))
     _log("[Batch] Provider: {0} | Generate scenes: {1} | Panels: {2}".format(
         provider, generate, len(panel_paths)))
-    _log("[Batch] Mode: single-pass (no iterative refinement; see module docstring)")
+    _log("[Batch] Mode: single-pass (no iterative refinement; see module docstring) | "
+         "Analysis workers: {0}".format(analysis_workers))
     _log("=" * 70)
 
     try:
@@ -473,73 +581,194 @@ def run_batch(show, episode, provider=DEFAULT_PROVIDER, generate=True,
             return summary
 
     total = len(panel_paths)
-    for index, panel_path in enumerate(panel_paths):
-        panel_result = {
-            'index': index,
-            'panel': panel_path.name,
-            'path': str(panel_path),
-            'status': 'ok',
-            'analyzed': False,
-            'from_cache': False,
-            'generated': False,
-            'entities': {},
-            'scene': None,
-            'errors': [],
-        }
-        _log("[Batch] Panel {0}/{1}: {2}".format(index + 1, total, panel_path.name))
 
-        # --- Analysis (cache-aware) ---
-        analysis = None
-        try:
+    if analysis_workers <= 1:
+        # -------------------------------------------------------------
+        # Original strictly-serial path (analyze then generate, panel by
+        # panel). Left byte-for-byte equivalent to the pre-parallel code.
+        # -------------------------------------------------------------
+        for index, panel_path in enumerate(panel_paths):
+            panel_result = {
+                'index': index,
+                'panel': panel_path.name,
+                'path': str(panel_path),
+                'status': 'ok',
+                'analyzed': False,
+                'from_cache': False,
+                'generated': False,
+                'entities': {},
+                'scene': None,
+                'errors': [],
+            }
+            _log("[Batch] Panel {0}/{1}: {2}".format(index + 1, total, panel_path.name))
+
+            # --- Analysis (cache-aware) ---
+            analysis = None
+            try:
+                was_cached = False
+                if hasattr(analyzer, 'get_cached_analysis'):
+                    try:
+                        was_cached = analyzer.get_cached_analysis(str(panel_path), str(show)) is not None
+                    except Exception:
+                        was_cached = False
+
+                analysis = analyzer.analyze(str(panel_path), show_name=str(show))
+                if isinstance(analysis, dict):
+                    panel_result['analyzed'] = True
+                    panel_result['from_cache'] = was_cached
+                    panel_result['entities'] = _extract_entities(analysis)
+                    panel_result['analysis'] = analysis
+                    if was_cached:
+                        summary['analyzed_from_cache'] += 1
+                    else:
+                        summary['analyzed_fresh'] += 1
+                else:
+                    panel_result['status'] = 'analysis_failed'
+                    panel_result['errors'].append('Analysis returned no data')
+            except Exception as e:
+                panel_result['status'] = 'analysis_failed'
+                panel_result['errors'].append('Analysis failed: {0}'.format(e))
+                _log_error("[Batch] Analysis failed for {0}: {1}".format(panel_path.name, e))
+
+            # --- Generation (optional, single pass) ---
+            if generate and builder is not None and isinstance(analysis, dict):
+                try:
+                    scene = builder.build_scene(analysis, panel_index=index)
+                    if scene:
+                        panel_result['generated'] = True
+                        panel_result['scene'] = _summarize_scene(scene)
+                        summary['generated'] += 1
+                    else:
+                        panel_result['status'] = 'generation_failed'
+                        panel_result['errors'].append(
+                            'SceneBuilder returned no scene (see Output Log; '
+                            'common causes: no editor world, sequence creation failed)')
+                except Exception as e:
+                    panel_result['status'] = 'generation_failed'
+                    panel_result['errors'].append('Generation failed: {0}'.format(e))
+                    _log_error("[Batch] Generation failed for {0}: {1}".format(panel_path.name, e))
+
+            if panel_result['status'] != 'ok':
+                summary['failed'] += 1
+
+            summary['panels'].append(panel_result)
+            summary['panels_processed'] += 1
+            _notify_progress(progress_cb, index + 1, total, panel_result)
+
+    else:
+        # -------------------------------------------------------------
+        # Two-phase parallel path:
+        #   Phase 1: analyze every panel, concurrently (pure API I/O).
+        #            Already-cached panels resolve immediately on the main
+        #            thread and never occupy a worker.
+        #   Phase 2: generate every scene, strictly serially, in panel
+        #            order, on the calling thread (unreal actor/world APIs
+        #            are game-thread only).
+        # -------------------------------------------------------------
+        panel_results = [None] * total
+        analyses = [None] * total
+        done_so_far = 0
+        to_submit = []
+
+        for index, panel_path in enumerate(panel_paths):
             was_cached = False
+            cached_analysis = None
             if hasattr(analyzer, 'get_cached_analysis'):
                 try:
-                    was_cached = analyzer.get_cached_analysis(str(panel_path), str(show)) is not None
+                    cached_analysis = analyzer.get_cached_analysis(str(panel_path), str(show))
+                    was_cached = cached_analysis is not None
                 except Exception:
                     was_cached = False
+                    cached_analysis = None
 
-            analysis = analyzer.analyze(str(panel_path), show_name=str(show))
-            if isinstance(analysis, dict):
+            if was_cached:
+                _log("[Batch] Panel {0}/{1}: {2} (cached, skipping worker)".format(
+                    index + 1, total, panel_path.name))
+                panel_result = _make_panel_result(index, panel_path)
                 panel_result['analyzed'] = True
-                panel_result['from_cache'] = was_cached
-                panel_result['entities'] = _extract_entities(analysis)
-                panel_result['analysis'] = analysis
-                if was_cached:
-                    summary['analyzed_from_cache'] += 1
-                else:
-                    summary['analyzed_fresh'] += 1
+                panel_result['from_cache'] = True
+                panel_result['entities'] = _extract_entities(cached_analysis)
+                panel_result['analysis'] = cached_analysis
+                panel_results[index] = panel_result
+                analyses[index] = cached_analysis
+                summary['analyzed_from_cache'] += 1
+                if not (generate and builder is not None):
+                    done_so_far += 1
+                    _notify_progress(progress_cb, done_so_far, total, panel_result)
             else:
-                panel_result['status'] = 'analysis_failed'
-                panel_result['errors'].append('Analysis returned no data')
-        except Exception as e:
-            panel_result['status'] = 'analysis_failed'
-            panel_result['errors'].append('Analysis failed: {0}'.format(e))
-            _log_error("[Batch] Analysis failed for {0}: {1}".format(panel_path.name, e))
+                to_submit.append(index)
 
-        # --- Generation (optional, single pass) ---
-        if generate and builder is not None and isinstance(analysis, dict):
-            try:
-                scene = builder.build_scene(analysis, panel_index=index)
-                if scene:
-                    panel_result['generated'] = True
-                    panel_result['scene'] = _summarize_scene(scene)
-                    summary['generated'] += 1
-                else:
-                    panel_result['status'] = 'generation_failed'
-                    panel_result['errors'].append(
-                        'SceneBuilder returned no scene (see Output Log; '
-                        'common causes: no editor world, sequence creation failed)')
-            except Exception as e:
-                panel_result['status'] = 'generation_failed'
-                panel_result['errors'].append('Generation failed: {0}'.format(e))
-                _log_error("[Batch] Generation failed for {0}: {1}".format(panel_path.name, e))
+        if to_submit:
+            _log("[Batch] Analyzing {0} panel(s) with {1} worker(s)...".format(
+                len(to_submit), analysis_workers))
+            with ThreadPoolExecutor(max_workers=analysis_workers) as executor:
+                future_map = {}
+                for idx in to_submit:
+                    future = executor.submit(
+                        _analyze_panel_worker, provider, show, panel_paths[idx], idx)
+                    future_map[future] = idx
 
-        if panel_result['status'] != 'ok':
-            summary['failed'] += 1
+                # as_completed() runs on this (main/calling) thread only --
+                # progress_cb is always invoked here, never inside a worker.
+                for future in as_completed(future_map):
+                    idx = future_map[future]
+                    panel_path = panel_paths[idx]
+                    try:
+                        worker_result, worker_analysis = future.result()
+                    except Exception as e:
+                        worker_result = _make_panel_result(idx, panel_path)
+                        worker_result['status'] = 'analysis_failed'
+                        worker_result['errors'].append(
+                            'Analysis worker raised: {0}'.format(e))
+                        worker_analysis = None
 
-        summary['panels'].append(panel_result)
-        summary['panels_processed'] += 1
-        _notify_progress(progress_cb, index + 1, total, panel_result)
+                    if worker_result['status'] == 'analysis_failed' and worker_result['errors']:
+                        _log_error("[Batch] Analysis failed for {0}: {1}".format(
+                            panel_path.name, worker_result['errors'][-1]))
+
+                    panel_results[idx] = worker_result
+                    analyses[idx] = worker_analysis
+                    if isinstance(worker_analysis, dict):
+                        summary['analyzed_fresh'] += 1
+
+                    _log("[Batch] Panel {0}/{1}: {2} (analyzed)".format(
+                        idx + 1, total, panel_path.name))
+
+                    if not (generate and builder is not None):
+                        done_so_far += 1
+                        _notify_progress(progress_cb, done_so_far, total, worker_result)
+
+        # --- Phase 2: generation, strictly serial, in panel order ---
+        if generate and builder is not None:
+            for index, panel_path in enumerate(panel_paths):
+                panel_result = panel_results[index]
+                analysis = analyses[index]
+                if isinstance(analysis, dict):
+                    try:
+                        scene = builder.build_scene(analysis, panel_index=index)
+                        if scene:
+                            panel_result['generated'] = True
+                            panel_result['scene'] = _summarize_scene(scene)
+                            summary['generated'] += 1
+                        else:
+                            panel_result['status'] = 'generation_failed'
+                            panel_result['errors'].append(
+                                'SceneBuilder returned no scene (see Output Log; '
+                                'common causes: no editor world, sequence creation failed)')
+                    except Exception as e:
+                        panel_result['status'] = 'generation_failed'
+                        panel_result['errors'].append('Generation failed: {0}'.format(e))
+                        _log_error("[Batch] Generation failed for {0}: {1}".format(
+                            panel_path.name, e))
+
+                done_so_far += 1
+                _notify_progress(progress_cb, done_so_far, total, panel_result)
+
+        for panel_result in panel_results:
+            if panel_result['status'] != 'ok':
+                summary['failed'] += 1
+            summary['panels'].append(panel_result)
+        summary['panels_processed'] += total
 
     summary['finished'] = datetime.now().isoformat()
     summary['duration_seconds'] = (datetime.now() - started).total_seconds()
@@ -570,7 +799,8 @@ def run_batch(show, episode, provider=DEFAULT_PROVIDER, generate=True,
 
 # ---------------------------------------------------------------------------
 # Console entry point:
-#   py ".../core/batch_runner.py" <show> <episode> [provider] [--no-generate] [--max-panels N]
+#   py ".../core/batch_runner.py" <show> <episode> [provider] [--no-generate]
+#       [--max-panels N] [--workers N]
 # ---------------------------------------------------------------------------
 
 def _parse_argv(argv):
@@ -583,6 +813,7 @@ def _parse_argv(argv):
     positional = []
     generate = True
     max_panels = None
+    workers = None
 
     i = 0
     while i < len(argv):
@@ -605,6 +836,22 @@ def _parse_argv(argv):
             except ValueError:
                 _log_error("[Batch] Invalid --max-panels value: {0}".format(arg))
                 return None
+        elif arg == '--workers':
+            if i + 1 >= len(argv):
+                _log_error("[Batch] --workers requires a number")
+                return None
+            i += 1
+            try:
+                workers = int(argv[i])
+            except ValueError:
+                _log_error("[Batch] Invalid --workers value: {0}".format(argv[i]))
+                return None
+        elif arg.startswith('--workers='):
+            try:
+                workers = int(arg.split('=', 1)[1])
+            except ValueError:
+                _log_error("[Batch] Invalid --workers value: {0}".format(arg))
+                return None
         elif arg.startswith('--'):
             _log_error("[Batch] Unknown flag: {0}".format(arg))
             return None
@@ -615,7 +862,7 @@ def _parse_argv(argv):
     if len(positional) < 2:
         _log_error(
             "Usage: py batch_runner.py <show> <episode> [provider] "
-            "[--no-generate] [--max-panels N]")
+            "[--no-generate] [--max-panels N] [--workers N]")
         return None
 
     kwargs = {
@@ -626,6 +873,8 @@ def _parse_argv(argv):
     }
     if len(positional) >= 3:
         kwargs['provider'] = positional[2]
+    if workers is not None:
+        kwargs['analysis_workers'] = workers
     return kwargs
 
 

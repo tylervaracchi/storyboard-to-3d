@@ -19,6 +19,103 @@ try:
 except ImportError:
     from base_provider import BaseAIProvider
 
+# Optional transport optimizer (downscale + JPEG re-encode before upload).
+# Guarded so the provider still works if utils/ is not on sys.path.
+try:
+    from utils.image_prep import optimize_image_for_api
+except ImportError:
+    optimize_image_for_api = None
+
+# Shared keep-alive HTTP session so successive refinement-iteration calls
+# reuse the same TCP+TLS connection instead of paying setup cost each time.
+# Created lazily; falls back to the plain requests module (per-call
+# connections, identical API surface) if Session creation ever fails.
+_http_session = None
+
+# One-time log flag for the transport optimization setting.
+_optimize_log_emitted = False
+
+
+def _get_http_session():
+    """Return a shared keep-alive requests.Session (or the requests module as fallback)."""
+    global _http_session
+    if _http_session is None:
+        try:
+            _http_session = requests.Session()
+        except Exception as e:
+            unreal.log_warning(f"[GPT-4V] Could not create requests.Session ({e}); using per-call connections")
+            _http_session = requests
+    return _http_session
+
+
+def _optimize_images_enabled() -> bool:
+    """
+    Read the 'performance.optimize_images' setting (default: True).
+
+    Defaults to enabled because transport optimization is lossless in
+    effect for VLM scene judgment and a pure speedup. Setting it
+    explicitly to false restores byte-identical legacy image encoding.
+    Returns False when the optimizer module is unavailable.
+    """
+    global _optimize_log_emitted
+
+    if optimize_image_for_api is None:
+        return False
+
+    try:
+        from core.settings_manager import get_setting
+        value = get_setting('performance.optimize_images', True)
+    except Exception:
+        value = True
+
+    if isinstance(value, str):
+        enabled = value.strip().lower() not in ('', 'false', 'off', '0', 'no', 'none', 'disabled')
+    else:
+        enabled = bool(value)
+
+    if enabled and not _optimize_log_emitted:
+        _optimize_log_emitted = True
+        unreal.log("[ImagePrep] downscaling+jpeg transport enabled (performance.optimize_images)")
+
+    return enabled
+
+
+def _media_type_for_path(img_path) -> str:
+    """Map an image file extension to its MIME type (defaults to PNG)."""
+    ext = Path(img_path).suffix.lower()
+    if ext == '.png':
+        return 'image/png'
+    if ext in ['.jpg', '.jpeg']:
+        return 'image/jpeg'
+    if ext == '.webp':
+        return 'image/webp'
+    if ext == '.gif':
+        return 'image/gif'
+    return 'image/png'
+
+
+def _read_image_payload(img_path):
+    """
+    Read image bytes for transport, optionally optimized.
+
+    When 'performance.optimize_images' is truthy (the default), the image
+    is downscaled and re-encoded as JPEG via utils.image_prep to cut upload
+    time and image tokens. When the setting is explicitly false (or the
+    optimizer is unavailable), the raw file bytes and the extension-based
+    media type are returned unchanged (legacy behavior).
+
+    Returns:
+        Tuple of (image bytes, media type string).
+    """
+    if _optimize_images_enabled():
+        try:
+            return optimize_image_for_api(img_path)
+        except Exception as e:
+            unreal.log_warning(f"[GPT-4V] Image optimization failed for {img_path}: {e}. Using original bytes.")
+
+    with open(img_path, 'rb') as f:
+        return f.read(), _media_type_for_path(img_path)
+
 
 class GPT4VisionProvider(BaseAIProvider):
     """OpenAI GPT-4/GPT-5 Vision Provider (supports both Chat Completions and Responses API)"""
@@ -193,41 +290,28 @@ class GPT4VisionProvider(BaseAIProvider):
             use_structured_output = False
 
         try:
-            # Convert images to base64
+            # Convert images to base64 (optionally transport-optimized)
             image_contents = []
             for img_path in images:
-                with open(img_path, 'rb') as f:
-                    b64 = base64.b64encode(f.read()).decode('utf-8')
+                img_bytes, media_type = _read_image_payload(img_path)
+                b64 = base64.b64encode(img_bytes).decode('utf-8')
 
-                    # Detect image type
-                    ext = Path(img_path).suffix.lower()
-                    if ext == '.png':
-                        media_type = 'image/png'
-                    elif ext in ['.jpg', '.jpeg']:
-                        media_type = 'image/jpeg'
-                    elif ext == '.webp':
-                        media_type = 'image/webp'
-                    elif ext == '.gif':
-                        media_type = 'image/gif'
-                    else:
-                        media_type = 'image/png'
-
-                    # Different format for GPT-5 vs GPT-4
-                    if self.is_gpt5:
-                        # Responses API format
-                        image_contents.append({
-                            "type": "input_image",
-                            "image_url": f"data:{media_type};base64,{b64}"
-                        })
-                    else:
-                        # Chat Completions API format
-                        image_contents.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{media_type};base64,{b64}",
-                                "detail": detail  # "high" or "low"
-                            }
-                        })
+                # Different format for GPT-5 vs GPT-4
+                if self.is_gpt5:
+                    # Responses API format
+                    image_contents.append({
+                        "type": "input_image",
+                        "image_url": f"data:{media_type};base64,{b64}"
+                    })
+                else:
+                    # Chat Completions API format
+                    image_contents.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{b64}",
+                            "detail": detail  # "high" or "low"
+                        }
+                    })
 
             unreal.log(f"[GPT-4V] Sending {len(images)} images (detail={detail}) to OpenAI...")
             unreal.log(f"[GPT-4V] Using {'Responses API' if self.is_gpt5 else 'Chat Completions API'} for {self.model}")
@@ -279,7 +363,7 @@ class GPT4VisionProvider(BaseAIProvider):
                     unreal.log(f"[GPT-4V] Using JSON schema: {schema['json_schema']['name']}")
 
             # Call OpenAI API
-            response = requests.post(
+            response = _get_http_session().post(
                 self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",

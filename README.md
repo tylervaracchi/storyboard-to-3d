@@ -94,9 +94,17 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 - **Script Breakdown** — Text-only LLM pass turning a script into a numbered shot list (`core/script_breakdown.py`)
 - **Headless Batch Mode** — Single-pass analyze+generate over a whole episode from the UE Python console (`core/batch_runner.py`)
 - **Semantic Asset Matching** — Optional embedding-based matching so "canine" finds the dog asset (off by default; `asset_library.semantic_matching`)
+- **Generative 3D Fallback** — When the library has no match at all, optionally generate the missing asset via Meshy or Tripo3D, import it, and add it to the show library so it is reused, not re-bought (off by default; `gen3d.enabled`, capped by `gen3d.max_per_run`)
+- **Mood Lighting** — Maps the panel's analyzed mood (night, golden hour, noir, tense...) to directional/sky light and fog presets (off by default; `scene.apply_mood_lighting`)
+- **Animation Picker** — Matches each character's action text ("running", "sits on a bench") to a tagged animation library and plays it on skeletal actors (off by default; `scene.auto_animation`, see `samples/animation_library.sample.json`)
+- **Camera Moves** — Shot type drives a subtle camera move in the shot sequence: close-ups push in, mediums drift, wides pan (off by default; `sequence.camera_moves`)
 - **Cost Controls** — Pre-run cost estimates (`utils/cost_estimator.py`), cheap-model re-scoring, Files API image reuse, and a 50%-off Batch API client
 - **A/B Provider Comparison** — Same panel through two providers with transform snapshot/restore (`core/ab_comparison.py`)
 - **Metrics Tracking** — Logs accuracy, iterations, confidence per model, plus a calibration dashboard chart (`analysis/calibration_dashboard.py`)
+
+### Performance
+
+Image transport optimization is on by default (`performance.optimize_images`): captures are downscaled to a 1288 px long edge and re-encoded as JPEG before hitting the API, typically 5-10x smaller payloads with no effect on VLM judgment (Anthropic server-side downscales anything over 1568 px anyway). Both providers reuse keep-alive HTTP sessions across iteration calls. Opt-in extras: `performance.reduced_refinement_views` captures 3 of 7 views on refinement iterations (the first iteration always gets the full set), and `ai_vision/scene_capture_rig.py` provides a viewport-independent SceneCapture2D rig that renders all 7 views in roughly a frame instead of piloting the editor viewport through them (wiring into the iteration loop is pending live-editor verification). Headless batch mode analyzes panels in parallel (`--workers N`).
 
 ### External validation (recommended)
 

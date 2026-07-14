@@ -1,0 +1,45 @@
+{
+  "_comment": "Sample animation library for the optional auto-animation feature (the 'scene.auto_animation' setting, default off). Every asset_path below is a PLACEHOLDER: engine content ships no guaranteed skeletal animations, so point each entry at real AnimSequence assets in your own project (e.g. a Mixamo import or the UE Mannequin AnimStarterPack). Then save this file as animation_library.json in your show folder, next to asset_library.json.",
+  "animations": {
+    "idle": {
+      "asset_path": "/Game/Characters/Animations/Idle",
+      "aliases": ["standing", "waiting", "still", "stands", "stationary"]
+    },
+    "walk": {
+      "asset_path": "/Game/Characters/Animations/Walk",
+      "aliases": ["walking", "walks", "strolling", "stroll", "wandering"]
+    },
+    "run": {
+      "asset_path": "/Game/Characters/Animations/Run",
+      "aliases": ["running", "runs", "sprinting", "sprint", "jogging", "chasing", "fleeing"]
+    },
+    "sit": {
+      "asset_path": "/Game/Characters/Animations/Sit",
+      "aliases": ["sitting", "sits", "seated", "crouching", "kneeling"]
+    },
+    "talk": {
+      "asset_path": "/Game/Characters/Animations/Talk",
+      "aliases": ["talking", "talks", "speaking", "conversation", "chatting", "arguing"]
+    },
+    "point": {
+      "asset_path": "/Game/Characters/Animations/Point",
+      "aliases": ["pointing", "points", "gesturing", "gesture", "indicating"]
+    },
+    "wave": {
+      "asset_path": "/Game/Characters/Animations/Wave",
+      "aliases": ["waving", "waves", "greeting", "hello", "goodbye"]
+    },
+    "fall": {
+      "asset_path": "/Game/Characters/Animations/Fall",
+      "aliases": ["falling", "falls", "tripping", "collapsing", "stumbling"]
+    },
+    "fight": {
+      "asset_path": "/Game/Characters/Animations/Fight",
+      "aliases": ["fighting", "fights", "punching", "attacking", "combat", "brawling"]
+    },
+    "look_around": {
+      "asset_path": "/Game/Characters/Animations/LookAround",
+      "aliases": ["looking", "looks", "searching", "scanning", "observing", "watching"]
+    }
+  }
+}

@@ -13,6 +13,12 @@ terms (e.g. 'canine' or 'pup') can find a 'dog' asset. Semantic matching is
 disabled by default; it activates only when the 'semantic_matching' setting
 is truthy AND an OpenAI API key is available. On any failure it falls back
 to the existing fuzzy matching, so out-of-the-box behavior is unchanged.
+
+Optionally (also off by default) calls a generative text-to-3D provider
+(Meshy or Tripo3D, see core/gen3d) when every matching tier has failed,
+so missing entities get a real generated mesh instead of a basic shape.
+Enabled via the 'gen3d.enabled' setting; every failure in that path logs
+and falls through to the existing basic-shape fallback unchanged.
 """
 
 import json
@@ -39,6 +45,9 @@ SEMANTIC_MATCH_THRESHOLD = 0.55
 EMBEDDING_BATCH_SIZE = 100
 QUERY_EMBEDDING_CACHE_MAX = 128
 EMBEDDING_CACHE_FILE = Path.home() / ".storyboard_to_3d" / "embedding_cache.json"
+
+# Generative text-to-3D configuration (see core/gen3d)
+GEN3D_DEFAULT_MAX_PER_RUN = 3
 
 
 def _log(message: str) -> None:
@@ -82,7 +91,8 @@ class AssetMatcher:
         2. General project asset cache (exact match)
         3. Semantic matching via OpenAI embeddings (optional, off by default)
         4. Fuzzy matching in general cache
-        5. Fallback to basic shapes
+        5. Generative text-to-3D (optional, off by default; see core/gen3d)
+        6. Fallback to basic shapes
 
     Attributes:
         show_name: Name of the current show for library lookup.
@@ -113,6 +123,10 @@ class AssetMatcher:
         self._query_embedding_cache: Dict[str, List[float]] = {}
         self._openai_api_key: Optional[str] = None
         self._openai_api_key_resolved: bool = False
+
+        # Generative text-to-3D: per-matcher-instance attempt counter,
+        # enforced against the 'gen3d.max_per_run' setting.
+        self._gen3d_generation_count: int = 0
 
         if show_name:
             self.load_show_library(show_name)
@@ -199,17 +213,22 @@ class AssetMatcher:
                 _log_warning(f"Failed to build embedding index: {e}")
                 self._semantic_index = []
 
-    def find_best_match(self, object_name: str, category: Optional[str] = None) -> Optional[Any]:
+    def find_best_match(self, object_name: str, category: Optional[str] = None,
+                        description: Optional[str] = None) -> Optional[Any]:
         """
         Find the best matching asset for an object name.
 
         Searches in priority order: show library, general cache, semantic
-        (embedding) match, fuzzy match, then fallback shapes.
+        (embedding) match, fuzzy match, optional generative text-to-3D,
+        then fallback shapes.
 
         Args:
             object_name: Name of the object to find an asset for.
             category: Optional category hint ('characters', 'props', 'locations').
                      If None, category is inferred from object_name keywords.
+            description: Optional entity description. Only used by the
+                     optional generative text-to-3D step to build a richer
+                     prompt; existing matching tiers ignore it.
 
         Returns:
             Loaded Unreal asset object, or None if no match found.
@@ -246,7 +265,14 @@ class AssetMatcher:
         if asset:
             return asset
 
-        # PRIORITY 5: Fallback shapes
+        # PRIORITY 5: Generative text-to-3D (optional, off by default).
+        # Any failure inside returns None so we fall through to shapes;
+        # with 'gen3d.enabled' false this is a no-op.
+        asset = self._generative_match(object_name_lower, description)
+        if asset:
+            return asset
+
+        # PRIORITY 6: Fallback shapes
         return self.get_fallback_asset(object_name)
 
     def _infer_category(self, object_name: str) -> str:
@@ -671,6 +697,168 @@ class AssetMatcher:
             return self.load_asset(best_match)
 
         return None
+
+    # ========================================
+    # GENERATIVE TEXT-TO-3D (OPTIONAL)
+    # ========================================
+
+    def _get_gen3d_max_per_run(self) -> int:
+        """
+        Read the per-run generation budget ('gen3d.max_per_run', default 3).
+
+        Returns:
+            Non-negative integer budget; the default on any failure.
+        """
+        try:
+            from core.settings_manager import get_setting
+            value = get_setting('gen3d.max_per_run', GEN3D_DEFAULT_MAX_PER_RUN)
+            return max(0, int(value))
+        except Exception as e:
+            _log_warning(f"[Gen3D] Could not read 'gen3d.max_per_run': {e}; "
+                         f"using default {GEN3D_DEFAULT_MAX_PER_RUN}")
+            return GEN3D_DEFAULT_MAX_PER_RUN
+
+    def _generative_match(self, object_name: str,
+                          description: Optional[str] = None) -> Optional[Any]:
+        """
+        Generate a 3D asset for an unmatched entity via core/gen3d.
+
+        Runs only when 'gen3d.enabled' is truthy and a provider API key is
+        available (gen3d_factory.get_configured() returns None otherwise,
+        making this a no-op by default). Checks the reuse manifest first,
+        then enforces the per-run budget, then generates, imports, and
+        registers the new asset so later panels in this run match it via
+        the normal tiers.
+
+        Args:
+            object_name: Lowercase object name that failed all match tiers.
+            description: Optional entity description for a richer prompt.
+
+        Returns:
+            Loaded asset or None. Never raises; every failure logs and
+            returns None so callers fall through to the basic-shape
+            fallback unchanged.
+        """
+        try:
+            from core.gen3d import gen3d_factory
+        except ImportError:
+            # Package not present; keep the legacy behavior silently.
+            return None
+
+        try:
+            provider = gen3d_factory.get_configured()
+        except Exception as e:
+            _log_warning(f"[Gen3D] Provider configuration failed: {e}")
+            return None
+
+        if provider is None:
+            return None
+
+        provider_name = getattr(provider, 'name', 'unknown')
+        entity_text = (f"{object_name} {description}".strip()
+                       if description else object_name)
+
+        # (a) Reuse a previously generated asset when possible.
+        cached_path = None
+        try:
+            from core.gen3d import manifest as gen3d_manifest
+            cached_path = gen3d_manifest.lookup(entity_text)
+        except Exception as e:
+            _log_warning(f"[Gen3D] Manifest lookup failed: {e}")
+
+        if cached_path:
+            asset = self.load_asset(cached_path)
+            if asset:
+                _log(f"[Gen3D] reusing previously generated asset for "
+                     f"'{object_name}': {cached_path}")
+                self._register_generated_asset(object_name, cached_path)
+                return asset
+            _log_warning(f"[Gen3D] Previously generated asset failed to "
+                         f"load: {cached_path}; regenerating")
+
+        # (b) Per-run generation budget (counts attempts, so repeated
+        # failures cannot spiral costs or stall a batch).
+        max_per_run = self._get_gen3d_max_per_run()
+        if self._gen3d_generation_count >= max_per_run:
+            _log(f"[Gen3D] Skipping generation for '{object_name}': per-run "
+                 f"budget of {max_per_run} exhausted (gen3d.max_per_run); "
+                 f"using fallback shape")
+            return None
+
+        # (c) Generate, import, register, record.
+        if description:
+            prompt = (f"a low-poly game-ready {object_name}, {description}, "
+                      f"single object, neutral pose")
+        else:
+            prompt = f"a low-poly game-ready {object_name}, single object, neutral pose"
+
+        self._gen3d_generation_count += 1
+        try:
+            result = provider.generate(prompt)
+        except Exception as e:
+            # provider.generate() should never raise; belt and braces.
+            _log_warning(f"[Gen3D] Generation failed for '{object_name}': {e}")
+            return None
+
+        if (not isinstance(result, dict)
+                or result.get('status') != 'succeeded'
+                or not result.get('file_path')):
+            error = 'unknown error'
+            if isinstance(result, dict):
+                error = result.get('error', error)
+            _log_warning(f"[Gen3D] Generation failed for '{object_name}': "
+                         f"{error}; using fallback shape")
+            return None
+
+        try:
+            from core.gen3d.importer import import_generated_model
+            asset_path = import_generated_model(result['file_path'], object_name)
+        except Exception as e:
+            _log_warning(f"[Gen3D] Import failed for '{object_name}': {e}")
+            return None
+
+        if not asset_path:
+            _log_warning(f"[Gen3D] Import produced no asset for "
+                         f"'{object_name}'; using fallback shape")
+            return None
+
+        asset = self.load_asset(asset_path)
+        if not asset:
+            _log_warning(f"[Gen3D] Imported asset failed to load: "
+                         f"{asset_path}; using fallback shape")
+            return None
+
+        self._register_generated_asset(object_name, asset_path)
+
+        try:
+            from core.gen3d import manifest as gen3d_manifest
+            gen3d_manifest.record(entity_text, asset_path, provider_name)
+        except Exception as e:
+            _log_warning(f"[Gen3D] Failed to record manifest entry: {e}")
+
+        _log(f"[Gen3D] generated and imported {object_name} via "
+             f"{provider_name}: {asset_path}")
+        return asset
+
+    def _register_generated_asset(self, object_name: str, asset_path: str) -> None:
+        """
+        Register a generated asset in the in-memory cache the same way
+        library assets are registered (lowercase name -> asset path), so
+        later panels in this run match it via the normal exact/fuzzy tiers.
+
+        Args:
+            object_name: Entity name the asset was generated for.
+            asset_path: Imported asset path in the project.
+        """
+        try:
+            self.asset_cache[object_name.lower().strip()] = asset_path
+            # Also register under the imported asset's own name.
+            asset_name = asset_path.rsplit('/', 1)[-1].split('.')[0]
+            if asset_name:
+                self.asset_cache.setdefault(asset_name.lower(), asset_path)
+        except Exception as e:
+            _log_warning(f"[Gen3D] Could not register generated asset in "
+                         f"cache: {e}")
 
     def load_asset(self, asset_path: str) -> Optional[Any]:
         """

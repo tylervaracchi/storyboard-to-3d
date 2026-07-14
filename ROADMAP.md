@@ -87,6 +87,34 @@ verification inside a running Unreal Editor.
 
 ---
 
+# July 14 additions (wow + speed round)
+
+## 16. Mood-to-lighting pass  [SHIPPED]
+core/mood_lighting.py: 10 presets + synonym/fuzzy mood resolution; finds or spawns DirectionalLight/SkyLight/fog and applies the preset. Wired into scene building behind 'scene.apply_mood_lighting' (off by default).
+
+## 17. Animation picker  [SHIPPED]
+core/animation_matcher.py + samples/animation_library.sample.json: matches per-character action text to a tagged animation library (AssetMatcher's difflib pattern) and plays the clip on skeletal spawnables in single-node mode. Behind 'scene.auto_animation' (off). Needs real AnimSequence assets pointed at by the show's animation_library.json.
+
+## 18. Camera move picker  [SHIPPED]
+core/camera_moves.py: shot type -> push-in / drift / pan keyframed on the shot camera's transform track, current-transform-aware, skips rather than keying garbage. Behind 'sequence.camera_moves' (off). Sequencer channel APIs are the most version-variant surface in UE Python: verify in a live editor per engine version.
+
+## 19. Image transport optimization + HTTP session reuse  [SHIPPED]
+utils/image_prep.py: 1288 px long edge + JPEG 85 before base64/upload (5-10x smaller, token-cheaper); keep-alive requests.Session in both providers. ON by default ('performance.optimize_images' to disable).
+
+## 20. Adaptive capture views  [SHIPPED]
+Iteration 1 captures all 7 views; refinement iterations capture hero+top+right when 'performance.reduced_refinement_views' is on (off by default). Also filters stale skipped-view PNGs from the API payload. Estimated ~60s saved per refinement iteration.
+
+## 21. SceneCapture2D rig (viewport-free capture)  [PARTIAL - needs live editor]
+ai_vision/scene_capture_rig.py: pre-placed SceneCapture2D per view with own render targets, capture-every-frame off, exports the same test_<view>.png files. All 7 views in ~a frame vs 5-10s of viewport piloting; also eliminates the scout-camera viewport-locking bug class. Open: FOV sync with the CineCamera hero, live verification, then loop wiring behind 'performance.scene_capture_rig'.
+
+## 22. Generative 3D fallback (Meshy / Tripo3D)  [SHIPPED - experimental]
+core/gen3d/: provider-abstracted text-to-3D client (Meshy verified against live docs 2026-07-14; Tripo coded defensively, marked VERIFY-BEFORE-USE), import via AssetImportTask (FBX preferred), manifest cache so an asset is never generated twice, per-run cap. Two activation points: AssetMatcher.find_best_match PRIORITY 5, and the gen3d rescue in SceneBuilder that intercepts entities about to be rejected as hallucinations, generates them, and writes them into the show's asset_library.json. Behind 'gen3d.enabled' (off), keys via MESHY_API_KEY / TRIPO_API_KEY. Needs a live API-key test before demoing.
+
+## 23. Parallel batch analysis  [SHIPPED]
+batch_runner run_batch(analysis_workers=3): analysis phase fans out on threads (per-worker client instances), generation stays strictly serial on the game thread. --workers N on the CLI.
+
+---
+
 # Frontier / blocked items (need hands-on verification or external accounts)
 
 ## 11. MCP image returns  [SHIPPED, interim form]

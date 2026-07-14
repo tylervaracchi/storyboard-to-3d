@@ -38,6 +38,66 @@ try:
 except ImportError:
     from base_provider import BaseAIProvider
 
+# Optional transport optimizer (downscale + JPEG re-encode before upload).
+# Guarded so the provider still works if utils/ is not on sys.path.
+try:
+    from utils.image_prep import optimize_image_for_api
+except ImportError:
+    optimize_image_for_api = None
+
+# Shared keep-alive HTTP session so successive refinement-iteration calls
+# reuse the same TCP+TLS connection instead of paying setup cost each time.
+# Created lazily; falls back to the plain requests module (per-call
+# connections, identical API surface) if Session creation ever fails.
+_http_session = None
+
+# One-time log flag for the transport optimization setting.
+_optimize_log_emitted = False
+
+
+def _get_http_session():
+    """Return a shared keep-alive requests.Session (or the requests module as fallback)."""
+    global _http_session
+    if _http_session is None:
+        try:
+            _http_session = requests.Session()
+        except Exception as e:
+            unreal.log_warning(f"[Claude] Could not create requests.Session ({e}); using per-call connections")
+            _http_session = requests
+    return _http_session
+
+
+def _optimize_images_enabled() -> bool:
+    """
+    Read the 'performance.optimize_images' setting (default: True).
+
+    Defaults to enabled because transport optimization is lossless in
+    effect for VLM scene judgment and a pure speedup. Setting it
+    explicitly to false restores byte-identical legacy image encoding.
+    Returns False when the optimizer module is unavailable.
+    """
+    global _optimize_log_emitted
+
+    if optimize_image_for_api is None:
+        return False
+
+    try:
+        from core.settings_manager import get_setting
+        value = get_setting('performance.optimize_images', True)
+    except Exception:
+        value = True
+
+    if isinstance(value, str):
+        enabled = value.strip().lower() not in ('', 'false', 'off', '0', 'no', 'none', 'disabled')
+    else:
+        enabled = bool(value)
+
+    if enabled and not _optimize_log_emitted:
+        _optimize_log_emitted = True
+        unreal.log("[ImagePrep] downscaling+jpeg transport enabled (performance.optimize_images)")
+
+    return enabled
+
 
 class ClaudeProvider(BaseAIProvider):
     """Anthropic Claude - Excellent for spatial reasoning with extended thinking"""
@@ -192,14 +252,14 @@ class ClaudeProvider(BaseAIProvider):
                         continue
                     # upload_file already logged the failure; fall back to base64
 
-                with open(img_path, 'rb') as f:
-                    b64 = base64.b64encode(f.read()).decode('utf-8')
+                img_bytes, media_type = self._read_image_payload(img_path)
+                b64 = base64.b64encode(img_bytes).decode('utf-8')
 
                 image_contents.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": self._media_type_for(img_path),
+                        "media_type": media_type,
                         "data": b64
                     }
                 })
@@ -297,7 +357,7 @@ class ClaudeProvider(BaseAIProvider):
             if used_file_reference:
                 headers["anthropic-beta"] = self.FILES_BETA_HEADER
 
-            response = requests.post(
+            response = _get_http_session().post(
                 self.base_url,
                 headers=headers,
                 json=request_body,
@@ -316,7 +376,7 @@ class ClaudeProvider(BaseAIProvider):
                 if 'output_config' in error_detail:
                     unreal.log_warning(f"[Claude] Model {self.model} rejected output_config (structured outputs not supported). Retrying once without it.")
                     request_body.pop('output_config', None)
-                    response = requests.post(
+                    response = _get_http_session().post(
                         self.base_url,
                         headers=headers,
                         json=request_body,
@@ -476,6 +536,28 @@ class ClaudeProvider(BaseAIProvider):
             return 'image/gif'
         return 'image/png'
 
+    def _read_image_payload(self, img_path):
+        """
+        Read image bytes for transport, optionally optimized.
+
+        When 'performance.optimize_images' is truthy (the default), the
+        image is downscaled and re-encoded as JPEG via utils.image_prep to
+        cut upload time and image tokens. When the setting is explicitly
+        false (or the optimizer is unavailable), the raw file bytes and the
+        extension-based media type are returned unchanged (legacy behavior).
+
+        Returns:
+            Tuple of (image bytes, media type string).
+        """
+        if _optimize_images_enabled():
+            try:
+                return optimize_image_for_api(img_path)
+            except Exception as e:
+                unreal.log_warning(f"[Claude] Image optimization failed for {img_path}: {e}. Using original bytes.")
+
+        with open(img_path, 'rb') as f:
+            return f.read(), self._media_type_for(img_path)
+
     def upload_file(self, image_path: str):
         """
         Upload an image to the Anthropic Files API (beta) and return its file_id.
@@ -500,19 +582,25 @@ class ClaudeProvider(BaseAIProvider):
             return None
 
         try:
-            with open(image_path, 'rb') as f:
-                response = requests.post(
-                    self.FILES_URL,
-                    headers={
-                        "x-api-key": self.api_key,
-                        "anthropic-version": self.API_VERSION,
-                        "anthropic-beta": self.FILES_BETA_HEADER
-                    },
-                    files={
-                        "file": (Path(image_path).name, f, self._media_type_for(image_path))
-                    },
-                    timeout=60
-                )
+            # Upload the same optimized bytes the base64 path would send,
+            # so Files API uploads also benefit from transport optimization.
+            file_bytes, media_type = self._read_image_payload(image_path)
+            file_name = Path(image_path).name
+            if media_type == 'image/jpeg' and Path(image_path).suffix.lower() not in ('.jpg', '.jpeg'):
+                file_name = Path(image_path).stem + '.jpg'
+
+            response = _get_http_session().post(
+                self.FILES_URL,
+                headers={
+                    "x-api-key": self.api_key,
+                    "anthropic-version": self.API_VERSION,
+                    "anthropic-beta": self.FILES_BETA_HEADER
+                },
+                files={
+                    "file": (file_name, file_bytes, media_type)
+                },
+                timeout=60
+            )
             response.raise_for_status()
             file_id = response.json().get("id")
             if not file_id:
@@ -606,7 +694,7 @@ class ClaudeProvider(BaseAIProvider):
             return []
 
         try:
-            response = requests.get(
+            response = _get_http_session().get(
                 cls.MODELS_URL,
                 headers={
                     "x-api-key": api_key,

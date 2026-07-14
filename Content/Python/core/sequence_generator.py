@@ -116,7 +116,14 @@ class SequenceGenerator:
 
         # Bind camera
         if scene_data.get('camera'):
-            self.add_camera_to_sequence(sequence, scene_data['camera'], duration)
+            camera_binding = self.add_camera_to_sequence(sequence, scene_data['camera'], duration)
+
+            # Optional shot-type camera move (opt-in via 'sequence.camera_moves',
+            # default OFF; sequence generation is unaffected when unset)
+            if camera_binding is not None:
+                self._maybe_apply_camera_move(
+                    sequence, camera_binding, scene_data, start_frame, end_frame
+                )
 
         # Bind actors
         for actor in scene_data.get('actors', []):
@@ -128,20 +135,25 @@ class SequenceGenerator:
         unreal.log(f"Sequence created successfully: {sequence_name}")
         return sequence
 
-    def add_camera_to_sequence(self, sequence: unreal.LevelSequence, camera: unreal.Actor, duration: float) -> None:
+    def add_camera_to_sequence(self, sequence: unreal.LevelSequence, camera: unreal.Actor, duration: float) -> Optional[Any]:
         """
         Add camera to sequence with camera cut track.
-        
+
         Binds the camera as a possessable and creates a camera cut track
         so the sequence uses this camera for playback.
-        
+
         Args:
             sequence: Target Level Sequence to add camera to.
             camera: Camera actor to bind.
             duration: Duration for the camera cut section in seconds.
+
+        Returns:
+            The camera's binding proxy on success, or None. Typed as Any
+            because the proxy class name varies across UE versions
+            (SequencerBindingProxy vs MovieSceneBindingProxy).
         """
         if not camera:
-            return
+            return None
 
         # Bind camera
         camera_binding = sequence.add_possessable(camera)
@@ -150,7 +162,7 @@ class SequenceGenerator:
         movie_scene = sequence.get_movie_scene()
         if not movie_scene:
             unreal.log_error("Failed to get movie scene for camera cut track")
-            return
+            return None
 
         # Add camera cuts track
         camera_cut_track = sequence.add_track(unreal.MovieSceneCameraCutTrack)
@@ -170,6 +182,85 @@ class SequenceGenerator:
         camera_cut_section.set_camera_binding_id(camera_binding_id)
 
         unreal.log("Camera added to sequence")
+        return camera_binding
+
+    def _maybe_apply_camera_move(
+        self,
+        sequence: unreal.LevelSequence,
+        camera_binding: Any,
+        scene_data: Dict[str, Any],
+        start_frame: int,
+        end_frame: int
+    ) -> None:
+        """
+        Apply an optional shot-type camera move to the bound camera.
+
+        Gated by the 'sequence.camera_moves' setting (default False, so
+        behavior is unchanged unless a user opts in). Reads the shot type
+        from scene_data ('shot_type' / 'shot', or nested under 'analysis')
+        and delegates to core.camera_moves. Fully wrapped in try/except:
+        sequence generation can never break because of a camera move.
+        """
+        try:
+            # Feature flag, read via the settings manager with an inline
+            # default (same pattern as core.external_validator.get_configured)
+            try:
+                from core.settings_manager import get_setting
+                enabled = get_setting('sequence.camera_moves', False)
+            except Exception as e:
+                unreal.log(f"[CameraMoves] Settings unavailable ({e}); camera moves disabled")
+                return
+            if isinstance(enabled, str):
+                enabled = enabled.strip().lower() in ('1', 'true', 'yes', 'on')
+            if not enabled:
+                return
+
+            # Shot type: panel analysis and the UI use 'shot_type'
+            # (occasionally 'shot'), sometimes nested under 'analysis'
+            shot_type = scene_data.get('shot_type') or scene_data.get('shot')
+            if not shot_type:
+                analysis = scene_data.get('analysis')
+                if isinstance(analysis, dict):
+                    shot_type = analysis.get('shot_type') or analysis.get('shot')
+            if not shot_type:
+                unreal.log("[CameraMoves] Enabled but scene data carries no shot type; skipping")
+                return
+
+            # The camera here is a possessed live actor, so its transform
+            # is readable now and passed along explicitly
+            current_transform = None
+            camera = scene_data.get('camera')
+            if camera is not None and hasattr(camera, 'get_actor_transform'):
+                try:
+                    current_transform = camera.get_actor_transform()
+                except Exception:
+                    current_transform = None
+
+            # First bound actor doubles as the subject for push-in scaling
+            subject_location = None
+            actors = scene_data.get('actors') or []
+            if actors and hasattr(actors[0], 'get_actor_location'):
+                try:
+                    subject_location = actors[0].get_actor_location()
+                except Exception:
+                    subject_location = None
+
+            from core import camera_moves
+            result = camera_moves.apply_camera_move(
+                sequence,
+                camera_binding,
+                shot_type,
+                start_frame,
+                end_frame,
+                subject_location=subject_location,
+                current_transform=current_transform
+            )
+            unreal.log(
+                f"[CameraMoves] {result.get('status')} (shot type: {shot_type}, "
+                f"move: {result.get('move')}, notes: {'; '.join(result.get('notes', []))})"
+            )
+        except Exception as e:
+            unreal.log_warning(f"[CameraMoves] Failed, sequence unaffected: {e}")
 
     def add_actor_to_sequence(self, sequence: unreal.LevelSequence, actor: unreal.Actor, duration: float) -> None:
         """

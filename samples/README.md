@@ -56,3 +56,16 @@ entries at your own assets:
 - `aliases` — extra names the AI might use for the same thing
 
 The richer the descriptions, the better the AI matches your sketch.
+
+## Animation library (optional)
+
+`animation_library.sample.json` maps action words (idle, walk, run, sit, ...)
+to AnimSequence assets for two opt-in features that both default to off:
+`scene.auto_animation` picks and plays a looping animation on skeletal
+characters whose analysis carries action text, and `scene.apply_mood_lighting`
+retunes the level's directional/sky lights (and optional fog) to match the
+panel's mood. The sample's `asset_path` values are placeholders, since the
+engine ships no guaranteed skeletal animations; point them at your own
+animations (e.g. a Mixamo import or the UE Mannequin AnimStarterPack) and save
+the file as `animation_library.json` in your show folder, next to
+`asset_library.json`.
