@@ -96,8 +96,7 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 ### Requirements
 
 - Unreal Engine 5.4 – 5.8
-- Python 3.11+
-- PySide6 (`pip install PySide6`)
+- **Visual Studio 2022** with the "Game Development with C++" workload (the plugin has a small C++ module; UE will prompt to build it on first launch)
 - API key for Claude or OpenAI (optional: Ollama for local inference)
 
 ### Setup
@@ -113,9 +112,10 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
    Edit → Plugins → Python Editor Script Plugin → Enable
    ```
 
-3. **Install Python dependencies**:
+3. **Install Python dependencies — into Unreal's bundled Python** (not your system Python; UE uses its own interpreter):
    ```bash
-   pip install -r Plugins/StoryboardTo3D/Content/Python/requirements.txt
+   # Windows (adjust the engine path to your install)
+   "C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\ThirdParty\Python3\Win64\python.exe" -m pip install -r Plugins/StoryboardTo3D/Content/Python/requirements.txt
    ```
 
 4. **Configure API keys** (choose one):

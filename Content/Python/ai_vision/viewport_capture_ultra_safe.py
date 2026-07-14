@@ -8,7 +8,6 @@ Avoids all deprecated functions
 import unreal
 import time
 from pathlib import Path
-from datetime import datetime
 from typing import Optional
 
 class ViewportCaptureUltraSafe:
@@ -24,49 +23,44 @@ class ViewportCaptureUltraSafe:
 
     def take_screenshot_safest(self) -> Optional[str]:
         """
-        The absolute safest way to take a screenshot
-        Uses the new recommended subsystem instead of deprecated functions
+        Take a viewport screenshot and return the newest capture file.
+
+        Note: the Screenshot console command queues the capture for a future
+        rendered frame, so this method snapshots the pre-existing files first
+        and only returns a file that appeared (or was rewritten) after the
+        command was issued - never a stale capture from an earlier run.
         """
         try:
-            unreal.log("[ViewportCaptureUltraSafe] Taking screenshot with safest method...")
-
-            # Get the level editor subsystem (new recommended way)
-            level_editor_subsystem = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
-
-            if level_editor_subsystem:
-                # Execute console command through the subsystem
-                level_editor_subsystem.execute_console_command("Screenshot")
-                unreal.log("[ViewportCaptureUltraSafe] Screenshot command executed")
-
-                # Wait for file
-                time.sleep(1.0)
-
-                # Find screenshot
-                screenshots_dir = Path(unreal.Paths.project_saved_dir()) / "Screenshots"
-                if screenshots_dir.exists():
-                    # Look for any PNG files
-                    png_files = list(screenshots_dir.rglob("*.png"))
-
-                    if png_files:
-                        # Get most recent
-                        latest = max(png_files, key=lambda p: p.stat().st_mtime)
-                        unreal.log(f"[ViewportCaptureUltraSafe] Found screenshot: {latest}")
-                        return str(latest)
-
-            # Fallback: Try without subsystem
-            unreal.log("[ViewportCaptureUltraSafe] Trying fallback method...")
-            unreal.SystemLibrary.execute_console_command(None, "Screenshot")
-
-            time.sleep(1.0)
+            unreal.log("[ViewportCaptureUltraSafe] Taking screenshot...")
 
             screenshots_dir = Path(unreal.Paths.project_saved_dir()) / "Screenshots"
+            before = {}
             if screenshots_dir.exists():
-                png_files = list(screenshots_dir.rglob("*.png"))
-                if png_files:
-                    latest = max(png_files, key=lambda p: p.stat().st_mtime)
-                    return str(latest)
+                before = {p: p.stat().st_mtime for p in screenshots_dir.rglob("*.png")}
 
-            unreal.log_warning("[ViewportCaptureUltraSafe] No screenshot found")
+            issued_at = time.time()
+            # SystemLibrary is the console-command API that exists across UE 5.4-5.8.
+            # (LevelEditorSubsystem has no execute_console_command method.)
+            unreal.SystemLibrary.execute_console_command(None, "Screenshot")
+
+            # The engine needs to render at least one frame to fulfill the request.
+            # Poll briefly; on an idle editor the file typically lands well under 5s.
+            deadline = time.time() + 10.0
+            while time.time() < deadline:
+                time.sleep(0.25)
+                if not screenshots_dir.exists():
+                    continue
+                for p in screenshots_dir.rglob("*.png"):
+                    mtime = p.stat().st_mtime
+                    if mtime >= issued_at and (p not in before or mtime > before[p]):
+                        unreal.log(f"[ViewportCaptureUltraSafe] Captured: {p}")
+                        return str(p)
+
+            unreal.log_warning(
+                "[ViewportCaptureUltraSafe] No new screenshot appeared within 10s. "
+                "The editor may not have rendered a frame while Python was blocking; "
+                "prefer unreal.AutomationLibrary.take_high_res_screenshot for async capture."
+            )
             return None
 
         except Exception as e:

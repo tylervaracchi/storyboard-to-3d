@@ -1,0 +1,27 @@
+{
+  "characters": {
+    "Character": {
+      "asset_path": "/Engine/BasicShapes/Cylinder",
+      "description": "Generic standing character placeholder (capsule proportions)",
+      "aliases": ["person", "figure", "dog", "rabbit", "animal", "actor", "character"]
+    }
+  },
+  "props": {
+    "Ball": {
+      "asset_path": "/Engine/BasicShapes/Sphere",
+      "description": "Round ball or sphere-shaped object",
+      "aliases": ["toy", "sphere", "orb"]
+    },
+    "Box": {
+      "asset_path": "/Engine/BasicShapes/Cube",
+      "description": "Box, crate, bench, table, or any rectangular object",
+      "aliases": ["crate", "bench", "table", "seat", "block"]
+    },
+    "Pillar": {
+      "asset_path": "/Engine/BasicShapes/Cylinder",
+      "description": "Tree trunk, lamp post, pillar, or column",
+      "aliases": ["tree", "post", "column", "pole"]
+    }
+  },
+  "locations": {}
+}

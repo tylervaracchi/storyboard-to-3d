@@ -358,7 +358,9 @@ Return as JSON with keys: overall_match, composition, lighting, content, adjustm
         matcher = SceneMatcher()
         basic_result = matcher.compare_images(storyboard_path, viewport_path, detailed=False)
 
-        # Add AI-specific fields
+        # Add AI-specific fields and conform to the AI-result shape
+        # (SceneMatcher reports 'match_percentage'; consumers read 'overall_match')
+        basic_result['overall_match'] = basic_result.get('match_percentage', 0)
         basic_result['ai_model'] = 'fallback'
         basic_result['analysis_type'] = 'basic'
         basic_result['confidence'] = 50
@@ -500,10 +502,10 @@ Return as detailed JSON."""
         Returns:
             Refinement results
         """
-        from ai_vision.viewport_capture import ViewportCapture
+        from ai_vision.viewport_capture_ultra_safe import ViewportCaptureUltraSafe
         from ai_vision.scene_matcher import SceneMatcher
 
-        capture = ViewportCapture()
+        capture = ViewportCaptureUltraSafe()
         matcher = SceneMatcher()
 
         unreal.log(f"[AIVisionAnalyzer] Starting iterative refinement (target: {target_match}%)")
@@ -517,8 +519,8 @@ Return as detailed JSON."""
         for i in range(max_iterations):
             unreal.log(f"[AIVisionAnalyzer] Iteration {i+1}/{max_iterations}")
 
-            # Capture current viewport
-            viewport_path = capture.capture_viewport(f"iteration_{i+1}.png")
+            # Capture current viewport (returns the newest capture file path)
+            viewport_path = capture.take_screenshot_safest()
             if not viewport_path:
                 unreal.log_error("[AIVisionAnalyzer] Failed to capture viewport")
                 break
