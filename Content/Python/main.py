@@ -318,10 +318,32 @@ def on_unreal_shutdown():
             pass
 
 
+def register_mcp_toolset():
+    """
+    Attempt to load the optional UE 5.8+ MCP toolset.
+
+    Safe on any engine version: mcp_toolset no-ops with a single log line
+    below UE 5.8 (where unreal.ToolsetDefinition does not exist), and any
+    unexpected import error is caught here so plugin startup never breaks.
+
+    Returns:
+        bool: True if the module imported cleanly, False otherwise.
+    """
+    try:
+        import mcp_toolset  # noqa: F401 (import registers the toolset)
+        return True
+    except Exception as e:
+        unreal.log_warning(f"Optional MCP toolset failed to load (non-critical): {e}")
+        return False
+
+
 # Auto-initialize on import
 if __name__ != "__main__":
     initialize_core_systems()
-    
+
+    # Optional UE 5.8 MCP integration (no-op on older engines, never fatal)
+    register_mcp_toolset()
+
     # Register shutdown cleanup
     try:
         import atexit

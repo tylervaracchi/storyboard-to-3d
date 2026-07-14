@@ -25,6 +25,19 @@ class AISettingsTab(QWidget):
 
     settings_changed = Signal()
 
+    # Built-in Claude model list - used at startup and as the fallback when
+    # the Anthropic Models API cannot be reached via "Refresh Models"
+    CLAUDE_FALLBACK_MODELS = [
+        # === CURRENT GENERATION ===
+        "claude-sonnet-4-6",             # Recommended default (vision + sampling params)
+        "claude-haiku-4-5",              # Fast + cheap for scoring passes
+        "claude-opus-4-1-20250805",      # Most powerful of the sampling-compatible line
+
+        # === LEGACY (thesis study model) ===
+        "claude-sonnet-4-5-20250929",    # Model used in the published calibration research
+        "claude-sonnet-4-20250514",
+    ]
+
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -174,18 +187,16 @@ class AISettingsTab(QWidget):
         claude_model_layout = QHBoxLayout()
         claude_model_layout.addWidget(QLabel("Model:"))
         self.claude_model_combo = QComboBox()
-        self.claude_model_combo.addItems([
-            # === CURRENT GENERATION ===
-            "claude-sonnet-4-6",             # Recommended default (vision + sampling params)
-            "claude-haiku-4-5",              # Fast + cheap for scoring passes
-            "claude-opus-4-1-20250805",      # Most powerful of the sampling-compatible line
-
-            # === LEGACY (thesis study model) ===
-            "claude-sonnet-4-5-20250929",    # Model used in the published calibration research
-            "claude-sonnet-4-20250514",
-        ])
+        self.claude_model_combo.addItems(self.CLAUDE_FALLBACK_MODELS)
         self.claude_model_combo.currentTextChanged.connect(self.on_change)
         claude_model_layout.addWidget(self.claude_model_combo)
+
+        # Refresh the dropdown from the live Anthropic Models API
+        self.refresh_claude_models_btn = QPushButton("Refresh Models")
+        self.refresh_claude_models_btn.setToolTip("Fetch the current model list from the Anthropic API (requires API key)")
+        self.refresh_claude_models_btn.clicked.connect(self.refresh_claude_models)
+        claude_model_layout.addWidget(self.refresh_claude_models_btn)
+
         claude_model_layout.addStretch()
         claude_layout.addLayout(claude_model_layout)
 
@@ -415,6 +426,66 @@ class AISettingsTab(QWidget):
         except Exception as e:
             progress.close()
             QMessageBox.critical(self, "Error", f"Test failed: {str(e)}")
+
+    def refresh_claude_models(self):
+        """Fetch available models from the Anthropic Models API and repopulate the dropdown"""
+        api_key = self.claude_api_key_edit.text().strip()
+
+        if not api_key:
+            QMessageBox.warning(self, "No API Key", "Please enter your Anthropic API key first")
+            return
+
+        progress = QProgressDialog("Fetching Claude models...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+        QApplication.processEvents()
+
+        models = []
+        try:
+            import sys
+            from pathlib import Path
+            plugin_path = Path(unreal.Paths.project_content_dir()).parent / "Plugins" / "StoryboardTo3D" / "Content" / "Python"
+            if str(plugin_path) not in sys.path:
+                sys.path.insert(0, str(plugin_path))
+
+            from core.ai_providers import ClaudeProvider
+
+            models = ClaudeProvider.list_available_models(api_key)
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Error", f"Model refresh failed: {str(e)}")
+            return
+
+        progress.close()
+
+        # Keep the current selection across the repopulate
+        current = self.claude_model_combo.currentText()
+
+        # Fall back to the hardcoded list if the API returned nothing
+        items = models if models else list(self.CLAUDE_FALLBACK_MODELS)
+
+        # Block signals so repopulating does not emit spurious settings_changed
+        self.claude_model_combo.blockSignals(True)
+        self.claude_model_combo.clear()
+        self.claude_model_combo.addItems(items)
+
+        index = self.claude_model_combo.findText(current)
+        if index >= 0:
+            self.claude_model_combo.setCurrentIndex(index)
+        elif current:
+            # Preserve a custom or no-longer-listed model at the top
+            self.claude_model_combo.insertItem(0, current)
+            self.claude_model_combo.setCurrentIndex(0)
+        self.claude_model_combo.blockSignals(False)
+
+        if models:
+            unreal.log(f"[AI Settings] Loaded {len(models)} Claude models from the Anthropic API")
+        else:
+            unreal.log_warning("[AI Settings] Could not fetch models from the Anthropic API - keeping the built-in list")
+            QMessageBox.warning(self, "Refresh Failed",
+                                "Could not fetch models from the Anthropic API.\n"
+                                "Check your API key and connection.\n"
+                                "The built-in model list is still available.")
 
     def load_settings(self):
         """Load settings into UI"""

@@ -89,15 +89,39 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 - **Level Sequence Integration** — Exports to UE5 Sequencer
 - **Metrics Tracking** — Logs accuracy, iterations, confidence per model
 
+### External validation (recommended)
+
+The calibration study above is exactly why this exists: all three models reported roughly 84/100 confidence while their real success rates ranged from 17% to 83%, so **a VLM's self-score is not a usable stop signal on its own**. `ExternalValidator` cross-checks the hero capture against the storyboard with an independent signal: `"opencv"` (local image comparison, zero API cost), `"second_model"` (a *different* VLM returns only a 0-100 score plus a one-sentence reason), or `"both"` (conservative minimum of the two).
+
+```python
+from core.external_validator import ExternalValidator
+
+validator = ExternalValidator(strategy="opencv")  # or "second_model" / "both"
+result = validator.validate("storyboard.png", "hero_capture.png")
+print(result["score"], result["details"], validator.agrees_with_self_score(self_score=84))
+```
+
+Enable it globally via the `validation.external_validation` setting (default `off`; options `off`, `opencv`, `second_model`, `both`). `ExternalValidator.get_configured()` reads that setting, so pipeline and UI wiring can pick it up without touching the iteration loop.
+
 ---
 
 ## Installation
 
 ### Requirements
 
-- Unreal Engine 5.4 – 5.8
+- Unreal Engine 5.4 - 5.8 (Python plugin layer; the C++ module compiles against each engine's toolchain)
 - **Visual Studio 2022** with the "Game Development with C++" workload (the plugin has a small C++ module; UE will prompt to build it on first launch)
 - API key for Claude or OpenAI (optional: Ollama for local inference)
+
+#### Engine version support
+
+| Engine version | Status | Notes |
+|---|---|---|
+| UE 5.4 | Supported | Ships embedded Python 3.9.7; the Python layer targets a 3.9 syntax floor |
+| UE 5.5 | Supported | Ships embedded Python 3.11 |
+| UE 5.6 | Developed on | Primary development and test version |
+| UE 5.7 | Supported | |
+| UE 5.8 | Supported | See MCP extras for 5.8 |
 
 ### Setup
 
@@ -153,6 +177,33 @@ main.show_window()
 <p align="center">
   <img src="docs/stb-ui.png" alt="Plugin UI" width="80%">
 </p>
+
+---
+
+## Drive it with Claude (UE 5.8 MCP)
+
+> **Experimental** and **UE 5.8+ only.** This integration builds on Epic's experimental ModelContextProtocol plugin that ships with Unreal Engine 5.8. On older engines the plugin logs one skip line at startup and nothing else changes.
+
+UE 5.8 embeds an MCP server in the editor at `http://127.0.0.1:8000/mcp`. When that server is enabled, StoryboardTo3D auto-registers a toolset so MCP clients such as Claude Code can drive the storyboard pipeline directly, without the plugin UI.
+
+1. Enable both plugins in `Edit → Plugins`: **ModelContextProtocol** (Epic, Experimental) and **StoryboardTo3D**, then restart the editor.
+2. Generate a Claude Code client config from the Unreal console:
+   ```
+   ModelContextProtocol.GenerateClientConfig ClaudeCode
+   ```
+3. Start Claude Code. The storyboard tools are now callable.
+
+Registered tools:
+
+| Tool | What it does |
+|------|--------------|
+| `list_asset_library` | Returns the character / prop / location library (with descriptions) as JSON |
+| `analyze_storyboard_panel` | Runs the AI panel analysis on an image file and returns the scene description JSON |
+| `generate_scene_from_panel` | Full pipeline: analyzes a panel, then builds the 3D scene in the current level and returns a summary of placed actors |
+| `capture_scene_views` | Triggers the 7-view capture and returns the capture file paths (files are written asynchronously) |
+| `get_project_info` | Plugin version, engine version, and the configured AI provider |
+
+Notes: tool calls run on the editor's game thread, so long operations (scene generation, AI analysis) block the editor while they run. `capture_scene_views` queues screenshots that land in `Saved/Screenshots/WindowsEditor/` a few seconds after the call returns.
 
 ---
 

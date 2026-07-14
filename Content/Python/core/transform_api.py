@@ -6,21 +6,24 @@ PROPER TRANSFORM APPLICATION FOR SEQUENCER - ULTRA-ROBUST VERSION
 Works across ALL UE 5.x versions by handling API differences.
 
 API COMPATIBILITY:
-- UE 5.0-5.3: Uses SequenceTimeUnit
-- UE 5.4-5.6: Uses MovieSceneTimeUnit
+- UE 5.4-5.8: Uses MovieSceneTimeUnit (SequenceTimeUnit is the deprecated
+  older name; engine_compat.get_time_unit() picks whichever exists)
 - Fallback: Works without time_unit parameter
 """
 
 import unreal
 
+try:
+    from core.engine_compat import get_time_unit
+except ImportError:
+    from engine_compat import get_time_unit
 
-# Detect which TimeUnit enum is available
-if hasattr(unreal, 'MovieSceneTimeUnit'):
-    TIME_UNIT = unreal.MovieSceneTimeUnit.DISPLAY_RATE
-    TIME_UNIT_NAME = "MovieSceneTimeUnit"
-elif hasattr(unreal, 'SequenceTimeUnit'):
-    TIME_UNIT = unreal.SequenceTimeUnit.DISPLAY_RATE
-    TIME_UNIT_NAME = "SequenceTimeUnit"
+
+# Resolve the time-unit enum via the shared compat helper
+_TIME_UNIT_ENUM = get_time_unit()
+if _TIME_UNIT_ENUM is not None:
+    TIME_UNIT = _TIME_UNIT_ENUM.DISPLAY_RATE
+    TIME_UNIT_NAME = _TIME_UNIT_ENUM.__name__
 else:
     TIME_UNIT = None
     TIME_UNIT_NAME = "None (using fallback)"

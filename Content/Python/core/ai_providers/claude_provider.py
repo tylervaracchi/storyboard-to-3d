@@ -21,14 +21,22 @@ except ImportError:
 
 
 class ClaudeProvider(BaseAIProvider):
-    """Anthropic Claude Sonnet 4.5 - Excellent for spatial reasoning with extended thinking"""
+    """Anthropic Claude - Excellent for spatial reasoning with extended thinking"""
 
-    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6", use_extended_thinking: bool = True, enable_caching: bool = True):
+    # Shared Anthropic API constants
+    API_VERSION = "2023-06-01"
+    MODELS_URL = "https://api.anthropic.com/v1/models"
+
+    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6", use_extended_thinking: bool = True, enable_caching: bool = True, use_structured_outputs: bool = True):
         super().__init__("Claude Sonnet 4.5 (Extended Thinking)")
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model
         self.use_extended_thinking = use_extended_thinking
         self.enable_caching = enable_caching
+        # Structured outputs (output_config json_schema) guarantee schema-valid JSON.
+        # Only takes effect when the caller supplies a json_schema kwarg to analyze_images.
+        # Older models reject output_config with HTTP 400; we retry once without it.
+        self.use_structured_outputs = use_structured_outputs
         self.base_url = "https://api.anthropic.com/v1/messages"
         self.max_images = 20  # Claude can handle up to 20 images (100 via API!)
 
@@ -62,6 +70,10 @@ class ClaudeProvider(BaseAIProvider):
                 - temperature: 0-1 (default: 1.0)
                 - system: System prompt (optional)
                 - enable_caching: Enable prompt caching (default: inherited from instance)
+                - json_schema: JSON schema dict for structured outputs (optional).
+                  When provided (and use_structured_outputs is on), the API is asked
+                  to return schema-valid JSON via output_config json_schema.
+                - use_structured_outputs: Override the instance flag (optional)
         """
 
         start_time = time.time()
@@ -99,6 +111,8 @@ class ClaudeProvider(BaseAIProvider):
         temperature = kwargs.get('temperature', 1.0)
         system_prompt = kwargs.get('system', None)
         enable_caching = kwargs.get('enable_caching', self.enable_caching)
+        json_schema = kwargs.get('json_schema', None)
+        use_structured_outputs = kwargs.get('use_structured_outputs', self.use_structured_outputs)
 
         # FIXED: Adaptive timeout based on context (was fixed 60s causing timeouts)
         # Longer timeout for complex analysis with extended thinking + vision
@@ -209,18 +223,28 @@ class ClaudeProvider(BaseAIProvider):
                 if temperature != 1.0:
                     request_body["temperature"] = temperature
 
-            # Call Anthropic API with prompt caching headers
+            # Structured outputs: ask the API to return schema-valid JSON.
+            # Supported on Sonnet 4.5+ generation models. Older models reject
+            # output_config with HTTP 400; handled with a one-shot retry below.
+            structured_output_active = False
+            if use_structured_outputs and json_schema:
+                request_body["output_config"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": json_schema
+                    }
+                }
+                structured_output_active = True
+                unreal.log("[Claude] Structured outputs enabled (output_config json_schema)")
+
+            # Call Anthropic API
+            # Note: prompt caching is GA - no beta header needed. cache_control
+            # blocks below the cacheable minimum are ignored harmlessly.
             headers = {
                 "x-api-key": self.api_key,
-                "content-type": "application/json"
+                "content-type": "application/json",
+                "anthropic-version": self.API_VERSION
             }
-
-            # CRITICAL: Prompt caching requires specific API version
-            if enable_caching:
-                headers["anthropic-version"] = "2023-06-01"
-                headers["anthropic-beta"] = "prompt-caching-2024-07-31"
-            else:
-                headers["anthropic-version"] = "2023-06-01"
 
             response = requests.post(
                 self.base_url,
@@ -228,6 +252,25 @@ class ClaudeProvider(BaseAIProvider):
                 json=request_body,
                 timeout=request_timeout
             )
+
+            # Graceful degradation: if the model rejects output_config (older
+            # models return HTTP 400 mentioning it), retry once without it and
+            # fall back to prompt-based JSON parsing downstream.
+            if structured_output_active and response.status_code == 400:
+                error_detail = ''
+                try:
+                    error_detail = response.json().get('error', {}).get('message', '')
+                except Exception:
+                    error_detail = response.text or ''
+                if 'output_config' in error_detail:
+                    unreal.log_warning(f"[Claude] Model {self.model} rejected output_config (structured outputs not supported). Retrying once without it.")
+                    request_body.pop('output_config', None)
+                    response = requests.post(
+                        self.base_url,
+                        headers=headers,
+                        json=request_body,
+                        timeout=request_timeout
+                    )
 
             response.raise_for_status()
             result = response.json()
@@ -335,7 +378,7 @@ class ClaudeProvider(BaseAIProvider):
                 'cost': 0.0,
                 'time': time.time() - start_time,
                 'success': False,
-                'error': 'Anthropic request timed out after 60s'
+                'error': f'Anthropic request timed out after {request_timeout}s'
             }
         except requests.exceptions.HTTPError as e:
             error_msg = f"Anthropic API error: {e}"
@@ -372,6 +415,56 @@ class ClaudeProvider(BaseAIProvider):
         """Check if API key is configured"""
         return self.api_key is not None and len(self.api_key) > 0
 
+    @classmethod
+    def list_available_models(cls, api_key: str) -> List[str]:
+        """
+        Query the Anthropic Models API (GET /v1/models) for available model IDs.
+
+        Args:
+            api_key: Anthropic API key to authenticate with
+
+        Returns:
+            List of model ID strings (e.g. ["claude-sonnet-4-6", ...]).
+            Returns an empty list and logs a warning on any failure.
+        """
+        if not api_key:
+            try:
+                unreal.log_warning("[Claude] Cannot list models: no API key provided")
+            except AttributeError:
+                print("[Claude] Cannot list models: no API key provided")
+            return []
+
+        try:
+            response = requests.get(
+                cls.MODELS_URL,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": cls.API_VERSION
+                },
+                params={"limit": 100},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json().get("data", [])
+
+            model_ids = []
+            for entry in data:
+                if isinstance(entry, dict) and entry.get("id"):
+                    model_ids.append(entry["id"])
+
+            try:
+                unreal.log(f"[Claude] Models API returned {len(model_ids)} models")
+            except AttributeError:
+                print(f"[Claude] Models API returned {len(model_ids)} models")
+            return model_ids
+
+        except Exception as e:
+            try:
+                unreal.log_warning(f"[Claude] Failed to list models from Anthropic API: {e}")
+            except AttributeError:
+                print(f"[Claude] Failed to list models from Anthropic API: {e}")
+            return []
+
     def get_cost_estimate(self, num_images: int, prompt_length: int = 500) -> float:
         """Estimate cost for analysis"""
         # Estimate tokens
@@ -403,6 +496,8 @@ class ClaudeProvider(BaseAIProvider):
             'api_key_configured': self.is_available(),
             'supports_prompt_caching': True,
             'prompt_caching_enabled': self.enable_caching,
+            'supports_structured_outputs': True,
+            'structured_outputs_enabled': self.use_structured_outputs,
             'cache_savings_total': self.total_cache_savings,
             'cache_read_tokens': self.cache_read_tokens,
             'cache_creation_tokens': self.cache_creation_tokens,

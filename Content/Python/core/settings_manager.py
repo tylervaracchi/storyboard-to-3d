@@ -117,6 +117,22 @@ class SettingsManager:
                 'use_optimized_prompts': True  # Enable 50-66% token reduction (Optimization #4)
             },
 
+            # External Validation Settings (optional cross-check of VLM self-scores)
+            # WHY: the SIGGRAPH 2026 calibration study behind this plugin found
+            # that models self-report ~84/100 regardless of actual quality
+            # (real success rates ranged 17-83% by model), so self-scores alone
+            # are not a reliable accept/stop signal.
+            # Read by ExternalValidator.get_configured() in core/external_validator.py.
+            # UI wiring comes later; this setting is the single source of truth.
+            'validation': {
+                # Options: 'off' (default), 'opencv', 'second_model', 'both'
+                'external_validation': 'off',
+                # Provider for the 'second_model' strategy:
+                # 'auto', 'llava', 'gpt4v', or 'claude'.
+                # Should DIFFER from the provider generating the scene.
+                'second_model_provider': 'auto'
+            },
+
             # Default Panel Settings
             'panel_defaults': {
                 'duration': 3.0,
