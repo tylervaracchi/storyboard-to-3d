@@ -11,7 +11,7 @@ verification inside a running Unreal Editor.
 
 **Done:** analysis/metric_validation.py, metrics_tracker.py, multi_model_tracker.py recovered and committed. core/external_validator.py (opencv / second_model / both strategies) shipped. The iteration loop's early-stop decision in active_panel_widget.py now cross-checks self-scores > 80 against the external validator when `validation.external_validation` is enabled (off by default; gate is min(self, external)). Settings UI toggle in General tab. analysis/calibration_dashboard.py renders a PIL scatter (self vs external, per-model colors, mean-error legend) from recorded metrics.
 
-**Still open:** a Qt tab embedding the dashboard PNG in the main window (small wiring pass).
+**Still open:** none. The dashboard PNG is now viewable in-window via Tools > Calibration Dashboard (scrollable dialog + open-in-viewer button).
 
 ## 2. One-click animatic: Movie Render Queue render of the master sequence  [PARTIAL]
 
@@ -19,15 +19,15 @@ verification inside a running Unreal Editor.
 
 **Done:** core/animatic_renderer.py (MRQ via MoviePipelineQueueSubsystem, PNG-sequence output with documented ffmpeg mux command, every class lookup version-guarded). create_master_sequence now honors per-panel durations (seconds) and sets the master playback range. MCP tool render_animatic exposed.
 
-**Still open (needs live editor):** verify MRQ render end-to-end in 5.4/5.6/5.8, a 'Render Animatic' button in ui/main_window.py, optional bundled-ffmpeg auto-mux. Note: re-running create_master_sequence on an existing master stacks duplicate sub tracks (pre-existing; clear or reuse the track on re-run).
+**Still open (needs live editor):** verify MRQ render end-to-end in 5.4/5.6/5.8, optional bundled-ffmpeg auto-mux. The 'Render Animatic' entry now exists in the main window's Tools menu (prefilled master-sequence path + existence pre-check). Note: re-running create_master_sequence on an existing master stacks duplicate sub tracks (pre-existing; clear or reuse the track on re-run).
 
-## 3. Per-run cost estimator + live token/cost strip in the UI  [PARTIAL]
+## 3. Per-run cost estimator + live token/cost strip in the UI  [SHIPPED]
 
 **Impact:** API cost anxiety is the top stated blocker for indie/hackathon users. All the data exists but is invisible: providers track total_cost, cache_savings, per-call tokens. Showing 'this 6-panel board at 10 iterations = $1.80' before the run converts fear into trust.
 
 **Done:** utils/cost_estimator.py (pricing table for current Claude models + gpt-4o, alias/prefix resolution, estimate_run/format_estimate, prompt-cache discount note). Scorer split: claude_provider score_images() runs cheap re-scoring passes on claude-haiku-4-5 with correct pricing swap. Files API support (upload once, reference by file_id instead of re-sending base64 every iteration). Batch API client (api/batch_client.py, 50% token discount) for overnight runs. New settings keys: cost.use_files_api, cost.scoring_model, cost.use_scoring_model.
 
-**Still open:** wiring the strip into ActivePanelWidget next to match_progress (:807) - supervised pass, the widget is 6k lines. ui/widgets/iteration_progress.py has the integration comment.
+**Still open:** none. The strip is wired into ActivePanelWidget under the comparison result: pre-run estimate at run start (cost_estimator + configured model + batch queue size), per-iteration score points, and running spend from the loop's own total_cost. Display-only; cancel uses the existing stop flags.
 
 ## 4. Downloadable sample UE project + genre starter asset libraries  [PARTIAL]
 
@@ -35,7 +35,7 @@ verification inside a running Unreal Editor.
 
 **Done:** samples/asset_library.fantasy.sample.json and asset_library.scifi.sample.json (BasicShapes-only, work in an empty project), samples/README.md updated.
 
-**Still open (needs a machine with UE installed):** package a minimal UE 5.6 project with the plugin pre-built as a GitHub Release artifact; 'Load Sample Show' button in show_manager.py.
+**Still open (needs a machine with UE installed):** package a minimal UE 5.6 project with the plugin pre-built as a GitHub Release artifact. The 'Load the sample show' button now ships in the first-run welcome panel (creates SampleShow + Episode 01 from bundled samples/).
 
 ## 5. Headless/overnight batch mode  [PARTIAL]
 
@@ -43,7 +43,7 @@ verification inside a running Unreal Editor.
 
 **Done:** core/batch_runner.py - UI-free run_batch(show, episode, provider, generate, max_panels, progress_cb): single-pass analyze + generate per panel, JSON report to Saved/StoryboardTo3D/batch_reports/, runnable from the UE Python console, provider/key bridging from plugin settings, graceful degradation without keys.
 
-**Still open (large):** porting the iterative refinement loop out of ActivePanelWidget (Qt-timer driven) into a headless state machine via slate post-tick callbacks, and `-ExecutePythonScript` offscreen capture verification (scout-camera path may not work offscreen; SceneCapture2D fallback).
+**Still open (large):** porting the iterative refinement loop out of ActivePanelWidget (Qt-timer driven) into a headless state machine via slate post-tick callbacks, and `-ExecutePythonScript` offscreen capture verification (scout-camera path may not work offscreen; SceneCapture2D fallback). An in-editor front end now exists: Tools > Overnight Batch... (show/episode/provider pickers, cancellable progress dialog over run_batch).
 
 ## 6. Semantic asset matching via embeddings  [SHIPPED]
 
@@ -61,13 +61,13 @@ verification inside a running Unreal Editor.
 
 **Still open:** register both in the Import Panels dialog (ui/main_window.py) as file-type filters; persist imported durations into panels_metadata.json (the managers only accept image paths today - importer returns the metadata for the caller).
 
-## 8. Iteration progress UI with live score graph and cancel button  [PARTIAL]
+## 8. Iteration progress UI with live score graph and cancel button  [SHIPPED]
 
 **Impact:** A 10-20-iteration run is minutes of apparent freeze today; a visible 'iteration 7/20, score 62 to 78, $0.34 spent, Stop & keep best' panel is what makes people trust the loop.
 
 **Done:** ui/widgets/iteration_progress.py - self-contained IterationProgressWidget with QPainter score sparkline, current-score readout, cost label, cancel button emitting a `cancelled` Signal. Integration point documented in-file.
 
-**Still open:** supervised wiring into ActivePanelWidget (instantiate near match_progress :807, feed from _record_iteration_metrics, check the cancel flag between capture steps).
+**Still open:** none. Wired into ActivePanelWidget: instantiated under the comparison result, fed once per iteration right after _record_iteration_metrics, cancel routed to the existing capture_workflow_active / auto_iterate / batch stop flags.
 
 ## 9. USD export of the generated scene  [PARTIAL]
 
@@ -75,7 +75,7 @@ verification inside a running Unreal Editor.
 
 **Done:** core/usd_exporter.py - export_level_usd() via AssetExportTask + LevelExporterUSD(Options), version-guarded, clear error when the USD plugin is disabled.
 
-**Still open (needs live editor):** LevelSequence USD export (camera animation), spawnable-to-possessable conversion or transform baking before export, menu items in ui/main_window.py.
+**Still open (needs live editor):** LevelSequence USD export (camera animation), spawnable-to-possessable conversion or transform baking before export. The menu item now exists (Tools > Export Level as USD, file picker + result dialog).
 
 ## 10. One-button A/B provider comparison mode  [PARTIAL]
 
@@ -112,6 +112,12 @@ core/gen3d/: provider-abstracted text-to-3D client (Meshy verified against live 
 
 ## 23. Parallel batch analysis  [SHIPPED]
 batch_runner run_batch(analysis_workers=3): analysis phase fans out on threads (per-worker client instances), generation stays strictly serial on the game thread. --workers N on the CLI.
+
+## 24. Generative animation fallback (Tripo / DeepMotion)  [SHIPPED - experimental]
+core/genanim/: mirrors core/gen3d. When the animation picker misses, TripoAnimProvider maps action text to a preset and runs animate_retarget against a pre-provisioned rig task id, or DeepMotionProvider (SayMotion, partner-gated) does true text-to-motion; the clip imports to /Game/StoryboardTo3D/GeneratedAnims, registers in the show's animation_library.json, and a sha256 manifest prevents regenerating the same action. Behind 'genanim.enabled' (off), per-run cap 'genanim.max_per_run' (default 2), Settings > Features row. Provider request/response shapes marked VERIFY-BEFORE-USE; needs a live API-key test before demoing. Clips arrive on provider skeletons; retarget via IK Retargeter.
+
+## 25. First-run welcome, Tools menu reachability, error surfacing  [SHIPPED]
+ui/main_window.py: inline welcome panel while no shows exist (create first show / load bundled sample show / Quick Start); Tools menu exposing animatic render, USD export, calibration dashboard, and overnight batch; notify_user() routing failures to a modeless box + status bar + Output Log; Analyze All gets a cancellable progress dialog, honest failure reporting, bulk persistence, and grid refresh; drag-reorder now persists via '__panel_order__' in panels_metadata.json; settings OK rebuilds the AI client without an editor restart.
 
 ---
 

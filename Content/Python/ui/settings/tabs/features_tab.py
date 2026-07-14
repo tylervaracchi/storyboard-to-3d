@@ -113,6 +113,41 @@ class FeaturesTab(QWidget):
         gen3d_row.addStretch()
         matching_layout.addLayout(gen3d_row)
 
+        self.genanim_check = QCheckBox("Generative animation fallback (create missing clips; needs Tripo or DeepMotion key)")
+        self.genanim_check.setToolTip(
+            "When no animation_library.json clip matches a character's action text, "
+            "generate one via an animation API, import it to "
+            "/Game/StoryboardTo3D/GeneratedAnims, and add it to the show library so "
+            "it is reused instead of regenerated. Generation can take 1-4 minutes per "
+            "clip and blocks the scene build while polling. Clips arrive on the "
+            "provider's skeleton; retarget them to your characters with UE's IK "
+            "Retargeter. Only runs when the Animation picker above is also on. "
+            "Tripo needs TRIPO_API_KEY plus a one-time rig task id "
+            "(genanim.tripo_rig_task_id); DeepMotion needs partner API credentials "
+            "and base URL.")
+        self.genanim_check.stateChanged.connect(self.on_change)
+        matching_layout.addWidget(self.genanim_check)
+
+        genanim_row = QHBoxLayout()
+        genanim_row.addSpacing(24)
+        genanim_row.addWidget(QLabel("Provider:"))
+        self.genanim_provider_combo = QComboBox()
+        self.genanim_provider_combo.addItems(["tripo", "deepmotion"])
+        self.genanim_provider_combo.setToolTip(
+            "tripo: preset clips (walk, run, jump...) retargeted onto a rigged proxy, "
+            "about $0.10 per clip. deepmotion: true text-to-animation prompts, "
+            "partner-gated API with unpublished pricing.")
+        self.genanim_provider_combo.currentTextChanged.connect(self.on_change)
+        genanim_row.addWidget(self.genanim_provider_combo)
+        genanim_row.addWidget(QLabel("Max generations per run:"))
+        self.genanim_max_spin = QSpinBox()
+        self.genanim_max_spin.setRange(0, 10)
+        self.genanim_max_spin.setValue(2)
+        self.genanim_max_spin.valueChanged.connect(self.on_change)
+        genanim_row.addWidget(self.genanim_max_spin)
+        genanim_row.addStretch()
+        matching_layout.addLayout(genanim_row)
+
         matching_group.setLayout(matching_layout)
         layout.addWidget(matching_group)
 
@@ -185,6 +220,7 @@ class FeaturesTab(QWidget):
         sequence = self.settings.get('sequence', {})
         asset_library = self.settings.get('asset_library', {})
         gen3d = self.settings.get('gen3d', {})
+        genanim = self.settings.get('genanim', {})
         performance = self.settings.get('performance', {})
         cost = self.settings.get('cost', {})
 
@@ -199,6 +235,13 @@ class FeaturesTab(QWidget):
             self.gen3d_max_spin.setValue(int(gen3d.get('max_per_run', 3)))
         except (TypeError, ValueError):
             self.gen3d_max_spin.setValue(3)
+
+        self.genanim_check.setChecked(bool(genanim.get('enabled', False)))
+        self.genanim_provider_combo.setCurrentText(str(genanim.get('provider', 'tripo')))
+        try:
+            self.genanim_max_spin.setValue(int(genanim.get('max_per_run', 2)))
+        except (TypeError, ValueError):
+            self.genanim_max_spin.setValue(2)
 
         self.optimize_images_check.setChecked(bool(performance.get('optimize_images', True)))
         self.reduced_views_check.setChecked(bool(performance.get('reduced_refinement_views', False)))
@@ -225,6 +268,13 @@ class FeaturesTab(QWidget):
         gen3d['provider'] = self.gen3d_provider_combo.currentText()
         gen3d['max_per_run'] = self.gen3d_max_spin.value()
 
+        # Copy-then-overwrite so sibling keys (e.g. genanim.timeout_seconds,
+        # genanim.tripo_rig_task_id) survive the dialog save
+        genanim = dict(self.settings.get('genanim', {}))
+        genanim['enabled'] = self.genanim_check.isChecked()
+        genanim['provider'] = self.genanim_provider_combo.currentText()
+        genanim['max_per_run'] = self.genanim_max_spin.value()
+
         performance = dict(self.settings.get('performance', {}))
         performance['optimize_images'] = self.optimize_images_check.isChecked()
         performance['reduced_refinement_views'] = self.reduced_views_check.isChecked()
@@ -238,6 +288,7 @@ class FeaturesTab(QWidget):
             'sequence': sequence,
             'asset_library': asset_library,
             'gen3d': gen3d,
+            'genanim': genanim,
             'performance': performance,
             'cost': cost
         }

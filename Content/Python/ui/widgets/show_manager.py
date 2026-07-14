@@ -96,13 +96,13 @@ class ShowManagerWidget(QWidget):
         btn_layout = QHBoxLayout(btn_widget)
         btn_layout.setContentsMargins(10, 5, 10, 10)
 
-        import_btn = QPushButton("")
-        import_btn.setToolTip("Import Show")
+        import_btn = QPushButton("📥")
+        import_btn.setToolTip("Import Show (not implemented yet)")
         import_btn.clicked.connect(self.import_show)
         btn_layout.addWidget(import_btn)
 
-        export_btn = QPushButton("")
-        export_btn.setToolTip("Export Show")
+        export_btn = QPushButton("📤")
+        export_btn.setToolTip("Export Show (not implemented yet)")
         export_btn.clicked.connect(self.export_show)
         btn_layout.addWidget(export_btn)
 
@@ -272,16 +272,26 @@ class ShowManagerWidget(QWidget):
                 unreal.log(f"Deleted show: {show['name']}")
 
     def import_show(self):
-        """Import show from folder"""
-        folder = QFileDialog.getExistingDirectory(self, "Import Show")
-        if folder:
-            unreal.log(f"Importing show from: {folder}")
-            # TODO: Implement import logic
+        """Import show from folder (not implemented yet)"""
+        # Honest placeholder: the old handler opened a folder picker and
+        # then silently did nothing, which looked like a broken import
+        QMessageBox.information(
+            self, "Import Show",
+            "Show import is not implemented yet.\n\n"
+            "To bring in an existing show, copy its folder into:\n"
+            "{0}\n"
+            "then click Refresh (↻).".format(self.shows_manager.shows_root))
 
     def export_show(self):
-        """Export show to folder"""
-        if self.current_show:
-            folder = QFileDialog.getExistingDirectory(self, "Export To")
-            if folder:
-                unreal.log(f"Exporting show to: {folder}")
-                # TODO: Implement export logic
+        """Export show to folder (not implemented yet)"""
+        if not self.current_show:
+            QMessageBox.information(
+                self, "Export Show", "Select a show first.")
+            return
+        QMessageBox.information(
+            self, "Export Show",
+            "Show export is not implemented yet.\n\n"
+            "The show's files live in:\n"
+            "{0}\n"
+            "and can be copied from there manually.".format(
+                self.shows_manager.shows_root / self.current_show.get('safe_name', '')))

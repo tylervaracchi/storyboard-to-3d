@@ -72,6 +72,10 @@ class ModernStoryboardWindow(QMainWindow):
         self.current_episode_path = None
         self.active_panel = None
 
+        # Keep references to modeless notification boxes so they are not
+        # garbage collected while visible (see notify_user)
+        self._notify_boxes = deque(maxlen=8)
+
         # Core modules - initialized without show context
         self.shows_manager = get_shows_manager()  # Use singleton
         self.episodes_manager = get_episodes_manager()  # Use singleton
@@ -163,6 +167,9 @@ class ModernStoryboardWindow(QMainWindow):
         # Panel selection updates active panel
         self.panel_grid.panel_clicked.connect(self.on_panel_clicked)
         self.panel_grid.panels_reordered.connect(self.on_panels_reordered)
+
+        # First-run welcome panel tracks whether any shows exist
+        self.show_manager.shows_updated.connect(self.update_welcome_visibility)
 
     def on_show_selected(self, show_data):
         """Handle show selection"""
@@ -258,7 +265,11 @@ class ModernStoryboardWindow(QMainWindow):
                     with open(metadata_file, 'r') as f:
                         panel_metadata = json.load(f)
                 except Exception as e:
-                    unreal.log_warning(f"Failed to load panel metadata: {e}")
+                    self.notify_user(
+                        "Panel Metadata Unreadable",
+                        "Could not read saved panel analyses for this episode:\n"
+                        f"{e}\n\nPanels will load without their saved analysis.",
+                        "warning")
 
             for panel_file in panel_files:
                 panel_name = panel_file.name
@@ -276,6 +287,15 @@ class ModernStoryboardWindow(QMainWindow):
                     'location': saved_data.get('location', ''),
                     'shot_type': saved_data.get('shot_type', '')
                 })
+
+            # Apply saved drag-and-drop order when present so reordering
+            # survives reloads (written by on_panels_reordered); panels not
+            # in the saved list keep their filename order at the end
+            saved_order = panel_metadata.get('__panel_order__')
+            if isinstance(saved_order, list) and saved_order:
+                order_index = {name: i for i, name in enumerate(saved_order)}
+                self.panels.sort(
+                    key=lambda p: order_index.get(p['name'], len(order_index)))
 
             self.panel_grid.set_panels(self.panels)
         else:
@@ -333,6 +353,31 @@ class ModernStoryboardWindow(QMainWindow):
         analyze_all = QAction("Analyze All", self)
         analyze_all.triggered.connect(self.analyze_all_panels)
         analyze_menu.addAction(analyze_all)
+
+        # Tools menu: export and research utilities that previously had no UI
+        tools_menu = menubar.addMenu(" Tools")
+
+        animatic_action = QAction("🎞️ Render Animatic", self)
+        animatic_action.setToolTip("Render the show's master sequence via Movie Render Queue")
+        animatic_action.triggered.connect(self.render_animatic_dialog)
+        tools_menu.addAction(animatic_action)
+
+        usd_action = QAction("📤 Export Level as USD", self)
+        usd_action.setToolTip("Export the currently loaded level to a USD file")
+        usd_action.triggered.connect(self.export_usd_dialog)
+        tools_menu.addAction(usd_action)
+
+        tools_menu.addSeparator()
+
+        dashboard_action = QAction("📊 Calibration Dashboard", self)
+        dashboard_action.setToolTip("Generate the multi-model calibration dashboard PNG")
+        dashboard_action.triggered.connect(self.show_calibration_dashboard)
+        tools_menu.addAction(dashboard_action)
+
+        batch_action = QAction("🌙 Overnight Batch...", self)
+        batch_action.setToolTip("Analyze and generate every panel in an episode, unattended")
+        batch_action.triggered.connect(self.overnight_batch_dialog)
+        tools_menu.addAction(batch_action)
 
     def create_main_toolbar(self):
         """Create main toolbar"""
@@ -402,6 +447,10 @@ class ModernStoryboardWindow(QMainWindow):
 
         panels_layout.addWidget(import_widget)
 
+        # First-run welcome panel (inline, hidden unless no shows exist)
+        self.welcome_panel = self.create_welcome_panel()
+        panels_layout.addWidget(self.welcome_panel)
+
         # Panel grid
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -444,6 +493,150 @@ class ModernStoryboardWindow(QMainWindow):
         layout.addWidget(label)
 
         return header
+
+    def create_welcome_panel(self):
+        """Build the inline first-run welcome panel (hidden by default)"""
+        panel = QFrame()
+        panel.setObjectName("welcomePanel")
+        panel.setStyleSheet("""
+            QFrame#welcomePanel {
+                background-color: #161616;
+                border: 1px solid #2A2A2A;
+                border-radius: 8px;
+                margin: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(10)
+
+        title = QLabel("Welcome to StoryboardTo3D")
+        title.setStyleSheet("color: #FFFFFF; font-size: 18px; font-weight: bold;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Turn storyboard panels into 3D scenes in Unreal.\n"
+            "Create a show to get started, or explore the bundled sample."
+        )
+        subtitle.setStyleSheet("color: #808080; font-size: 12px;")
+        subtitle.setAlignment(Qt.AlignCenter)
+        layout.addWidget(subtitle)
+
+        layout.addSpacing(8)
+
+        create_btn = QPushButton("🎬 Create your first show")
+        create_btn.setObjectName("primaryButton")
+        create_btn.clicked.connect(self.welcome_create_show)
+        layout.addWidget(create_btn)
+
+        sample_btn = QPushButton("📦 Load the sample show")
+        sample_btn.clicked.connect(self.load_sample_show)
+        layout.addWidget(sample_btn)
+
+        quickstart_btn = QPushButton("📖 Quick Start (opens README)")
+        quickstart_btn.clicked.connect(self.open_quick_start)
+        layout.addWidget(quickstart_btn)
+
+        panel.setVisible(False)
+        return panel
+
+    def update_welcome_visibility(self):
+        """Show the first-run welcome panel only while no shows exist"""
+        if not hasattr(self, 'welcome_panel'):
+            return
+        try:
+            has_shows = bool(self.shows_manager.get_all_shows())
+        except Exception as e:
+            unreal.log_warning(f"Welcome panel: could not check shows: {e}")
+            has_shows = True
+        self.welcome_panel.setVisible(not has_shows)
+
+    def welcome_create_show(self):
+        """Welcome panel action: create the first show"""
+        # new_show refreshes the shows list, which re-evaluates visibility
+        self.show_manager.new_show()
+
+    def load_sample_show(self):
+        """Welcome panel action: create 'SampleShow' from the bundled samples"""
+        try:
+            samples_dir = Path(__file__).resolve().parents[3] / "samples"
+            library_file = samples_dir / "asset_library.sample.json"
+            if not library_file.exists():
+                self.notify_user(
+                    "Sample Show",
+                    f"Bundled samples not found at:\n{samples_dir}\n\n"
+                    "Re-download the plugin to restore the samples folder.",
+                    "warning")
+                return
+
+            import shutil
+
+            # Create the sample show (reuse it if it already exists)
+            existing = None
+            for show in self.shows_manager.get_all_shows():
+                if show.get('safe_name') == 'SampleShow':
+                    existing = show
+                    break
+            if existing is None:
+                show_path, _metadata = self.shows_manager.create_show("SampleShow")
+            else:
+                show_path = self.shows_manager.shows_root / 'SampleShow'
+
+            # Copy the sample asset library into the show
+            shutil.copy2(library_file, show_path / "asset_library.json")
+
+            # Import bundled sample panels into a first episode, if present
+            sample_panels = (sorted(samples_dir.glob("sample_panel_*.png")) +
+                             sorted(samples_dir.glob("sample_panel_*.jpg")))
+            episode_name = "Episode 01"
+            episodes = self.episodes_manager.get_show_episodes('SampleShow')
+            episode = next((ep for ep in episodes if ep.get('name') == episode_name), None)
+            if episode is None:
+                _, episode = self.episodes_manager.create_episode('SampleShow', episode_name)
+            if sample_panels:
+                self.episodes_manager.import_panels_to_episode(
+                    'SampleShow', episode['safe_name'],
+                    [str(p) for p in sample_panels])
+
+            # Refresh the shows list and select the sample show
+            self.show_manager.refresh_shows_list()
+            for show in self.shows_manager.get_all_shows():
+                if show.get('safe_name') == 'SampleShow':
+                    self.show_manager.on_show_selected(show)
+                    break
+
+            QMessageBox.information(
+                self, "Sample Show Loaded",
+                "'SampleShow' is ready.\n\n"
+                "Select 'Episode 01' in the EPISODES column to open the "
+                "sample panels, then click a panel and use Analyze / GENERATE.")
+        except Exception as e:
+            self.notify_user(
+                "Sample Show Failed",
+                f"Could not load the sample show:\n{e}",
+                "error")
+
+    def open_quick_start(self):
+        """Welcome panel action: open the online README quick start"""
+        url = "https://github.com/tylervaracchi/storyboard-to-3d#readme"
+        opened = False
+        try:
+            opened = bool(QDesktopServices.openUrl(QUrl(url)))
+        except Exception:
+            opened = False
+        if not opened:
+            try:
+                import webbrowser
+                opened = webbrowser.open(url)
+            except Exception:
+                opened = False
+        if not opened:
+            self.notify_user(
+                "Quick Start",
+                f"Could not open a browser. Visit:\n{url}",
+                "warning")
 
     def import_panels_dialog(self):
         """Import panels dialog"""
@@ -494,7 +687,12 @@ class ModernStoryboardWindow(QMainWindow):
             self.ai_client = create_ai_client()
         except Exception as e:
             self.ai_client = None
-            unreal.log_warning(f"AI client initialization failed: {e}")
+            self.notify_user(
+                "AI Client Unavailable",
+                "AI client initialization failed:\n{0}\n\n"
+                "Analyze will fall back to filename heuristics until an "
+                "API key is configured in Settings.".format(e),
+                "warning")
 
     def load_settings(self):
         """Load application settings"""
@@ -510,9 +708,22 @@ class ModernStoryboardWindow(QMainWindow):
             dialog = SettingsDialog(self)
             if dialog.exec_():
                 self.settings = self.load_settings()
-                unreal.log("Settings updated")
+                # Rebuild the AI client and analyzer so provider/key/model
+                # changes take effect immediately instead of requiring an
+                # editor restart
+                self.setup_ai_client()
+                self.analyzer = PanelAnalyzer(ai_client=self.ai_client)
+                try:
+                    self.statusBar().showMessage(
+                        "Settings applied: AI client reloaded", 8000)
+                except Exception:
+                    pass
+                unreal.log("Settings updated; AI client and analyzer reloaded")
         except Exception as e:
-            unreal.log_error(f"Failed to open settings: {e}")
+            self.notify_user(
+                "Settings Failed",
+                "Could not open or apply Settings:\n{0}".format(e),
+                "error")
 
     def sync_content_browser(self):
         """Sync with Unreal Content Browser"""
@@ -641,13 +852,45 @@ class ModernStoryboardWindow(QMainWindow):
                 unreal.log(f"Card {i}: {card.panel_data['name']} - has_analysis: {has_it}")
 
         except Exception as e:
-            unreal.log_error(f"Failed to save panel metadata: {e}")
             import traceback
             unreal.log_error(traceback.format_exc())
+            self.notify_user(
+                "Panel Save Failed",
+                "Could not save panel metadata for "
+                "{0}:\n{1}".format(panel_data.get('name', '?'), e),
+                "error")
 
     def on_panels_reordered(self):
-        """Handle panels reorder"""
-        unreal.log("Panels reordered")
+        """Persist the new drag-and-drop panel order so it survives reloads"""
+        try:
+            # PanelGrid reorders its own panels list before emitting
+            self.panels = list(self.panel_grid.panels)
+            new_order = [p['name'] for p in self.panels]
+
+            if not self.current_episode_path:
+                return
+
+            metadata_file = self.current_episode_path / "panels_metadata.json"
+            panel_metadata = {}
+            if metadata_file.exists():
+                with open(metadata_file, 'r') as f:
+                    panel_metadata = json.load(f)
+
+            panel_metadata['__panel_order__'] = new_order
+
+            with open(metadata_file, 'w') as f:
+                json.dump(panel_metadata, f, indent=2)
+
+            unreal.log(f"Panels reordered; order saved ({len(new_order)} panels)")
+            try:
+                self.statusBar().showMessage("Panel order saved", 5000)
+            except Exception:
+                pass
+        except Exception as e:
+            self.notify_user(
+                "Reorder Not Saved",
+                "Could not save the new panel order:\n{0}".format(e),
+                "warning")
 
     def undo(self):
         """Undo last action"""
@@ -676,6 +919,364 @@ class ModernStoryboardWindow(QMainWindow):
         if hasattr(self, 'redo_menu_action'):
             self.redo_menu_action.setEnabled(bool(self.redo_stack))
 
+    def notify_user(self, title, message, level="error"):
+        """Surface a failure in the UI as well as the Output Log.
+
+        Non-blocking: errors and warnings get a modeless message box plus a
+        status bar entry; info level uses the status bar only. Everything is
+        mirrored to the Unreal log so nothing becomes UI-only either.
+        """
+        try:
+            log_line = "[StoryboardTo3D] {0}: {1}".format(
+                title, str(message).replace("\n", " | "))
+            if level == "error":
+                unreal.log_error(log_line)
+            elif level == "warning":
+                unreal.log_warning(log_line)
+            else:
+                unreal.log(log_line)
+        except Exception:
+            pass
+
+        try:
+            first_line = str(message).splitlines()[0] if message else ""
+            self.statusBar().showMessage(
+                "{0}: {1}".format(title, first_line), 15000)
+        except Exception:
+            pass
+
+        if level in ("error", "warning"):
+            try:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Critical if level == "error"
+                            else QMessageBox.Warning)
+                box.setWindowTitle(title)
+                box.setText(str(message))
+                box.setModal(False)
+                box.setAttribute(Qt.WA_DeleteOnClose, True)
+                box.show()
+                self._notify_boxes.append(box)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Tools menu actions
+    # ------------------------------------------------------------------
+
+    def render_animatic_dialog(self):
+        """Tools menu: render the master sequence to disk via MRQ"""
+        default_path = ""
+        if self.current_show:
+            default_path = "/Game/StoryboardSequences/{0}/{0}_Master_Sequence".format(
+                self.current_show)
+
+        path, ok = QInputDialog.getText(
+            self, "Render Animatic",
+            "Master sequence content path:",
+            text=default_path)
+        if not ok or not path.strip():
+            return
+        path = path.strip()
+
+        # Best-effort existence check before kicking off MRQ
+        try:
+            if hasattr(unreal, 'EditorAssetLibrary') and \
+                    not unreal.EditorAssetLibrary.does_asset_exist(path):
+                self.notify_user(
+                    "Render Animatic",
+                    "Sequence not found: {0}\n\n"
+                    "Generate scenes for this show first (the master sequence "
+                    "is created when shots are assembled).".format(path),
+                    "warning")
+                return
+        except Exception:
+            pass
+
+        try:
+            from core.animatic_renderer import render_animatic
+            result = render_animatic(path)
+        except Exception as e:
+            self.notify_user("Render Animatic Failed", str(e), "error")
+            return
+
+        if isinstance(result, dict) and result.get('status') == 'started':
+            QMessageBox.information(
+                self, "Render Animatic",
+                "Animatic render started.\n\nOutput folder:\n{0}\n\n{1}".format(
+                    result.get('output_dir', ''), result.get('notes', '')))
+        else:
+            notes = result.get('notes', 'Unknown error') if isinstance(result, dict) else result
+            self.notify_user("Render Animatic Failed", str(notes), "error")
+
+    def export_usd_dialog(self):
+        """Tools menu: export the loaded level to a USD file"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Level as USD",
+            "storyboard_level.usda",
+            "USD Files (*.usda *.usd *.usdc *.usdz)")
+        if not path:
+            return
+
+        try:
+            from core.usd_exporter import export_level_usd
+            result = export_level_usd(path)
+        except Exception as e:
+            self.notify_user("USD Export Failed", str(e), "error")
+            return
+
+        if isinstance(result, dict) and result.get('status') == 'success':
+            QMessageBox.information(
+                self, "USD Export",
+                "Level exported to:\n{0}".format(result.get('path', path)))
+        else:
+            error = result.get('error', 'Unknown error') if isinstance(result, dict) else result
+            self.notify_user("USD Export Failed", str(error), "error")
+
+    def show_calibration_dashboard(self):
+        """Tools menu: generate and display the calibration dashboard PNG"""
+        try:
+            from analysis.calibration_dashboard import generate_dashboard
+            png_path = generate_dashboard()
+        except Exception as e:
+            self.notify_user("Calibration Dashboard Failed", str(e), "error")
+            return
+
+        if not png_path:
+            self.notify_user(
+                "Calibration Dashboard",
+                "Dashboard could not be generated. Pillow may be missing "
+                "(pip install pillow); check the Output Log for details.",
+                "warning")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Calibration Dashboard")
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel()
+        label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(png_path)
+        if pixmap.isNull():
+            label.setText("Could not load image:\n{0}".format(png_path))
+        else:
+            if pixmap.width() > 1400:
+                pixmap = pixmap.scaledToWidth(1400, Qt.SmoothTransformation)
+            label.setPixmap(pixmap)
+
+        scroll = QScrollArea()
+        scroll.setWidget(label)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+
+        btn_row = QHBoxLayout()
+        open_btn = QPushButton("📂 Open in Default Viewer")
+
+        def _open_external():
+            try:
+                if hasattr(os, 'startfile'):
+                    os.startfile(png_path)
+                else:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(png_path))
+            except Exception as e2:
+                self.notify_user("Open Failed", str(e2), "warning")
+
+        open_btn.clicked.connect(_open_external)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(open_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dialog.resize(1000, 700)
+        dialog.exec_()
+
+    def overnight_batch_dialog(self):
+        """Tools menu: configure and run a single-pass batch over an episode"""
+        shows = self.shows_manager.get_all_shows()
+        if not shows:
+            self.notify_user(
+                "Overnight Batch",
+                "No shows found. Create a show and import panels first.",
+                "warning")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("🌙 Overnight Batch")
+        form = QFormLayout(dialog)
+
+        show_combo = QComboBox()
+        for show in shows:
+            show_combo.addItem(
+                show.get('name', show.get('safe_name', '')),
+                show.get('safe_name'))
+
+        episode_combo = QComboBox()
+
+        def refresh_episodes():
+            episode_combo.clear()
+            safe = show_combo.currentData()
+            try:
+                episodes = self.episodes_manager.get_show_episodes(safe) if safe else []
+            except Exception as e:
+                unreal.log_warning(f"Overnight batch: could not list episodes: {e}")
+                episodes = []
+            for ep in episodes:
+                episode_combo.addItem(
+                    ep.get('name', ep.get('safe_name', '')),
+                    ep.get('safe_name'))
+
+        show_combo.currentIndexChanged.connect(lambda _=None: refresh_episodes())
+        refresh_episodes()
+
+        provider_combo = QComboBox()
+        provider_combo.addItems([
+            "Auto",
+            "Claude (Anthropic)",
+            "GPT-4 Vision (OpenAI)",
+            "LLaVA (Local)"
+        ])
+
+        generate_check = QCheckBox("Generate 3D scenes (uncheck for analysis only)")
+        generate_check.setChecked(True)
+
+        max_spin = QSpinBox()
+        max_spin.setRange(0, 999)
+        max_spin.setValue(0)
+        max_spin.setSpecialValueText("All")
+
+        form.addRow("Show:", show_combo)
+        form.addRow("Episode:", episode_combo)
+        form.addRow("AI Provider:", provider_combo)
+        form.addRow("", generate_check)
+        form.addRow("Max panels:", max_spin)
+
+        warn = QLabel(
+            "Single-pass analyze + generate per panel.\n"
+            "Cloud providers will incur API costs.")
+        warn.setStyleSheet("color: #808080; font-size: 11px;")
+        form.addRow(warn)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("🌙 Run Batch")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        if not dialog.exec_():
+            return
+
+        show_safe = show_combo.currentData()
+        episode_safe = episode_combo.currentData()
+        if not show_safe or not episode_safe:
+            self.notify_user(
+                "Overnight Batch",
+                "Select a show and an episode with panels first.",
+                "warning")
+            return
+
+        max_panels = max_spin.value() or None
+        self.run_overnight_batch(
+            show_safe, episode_safe,
+            provider_combo.currentText(),
+            generate_check.isChecked(),
+            max_panels)
+
+    def run_overnight_batch(self, show, episode, provider, generate, max_panels):
+        """Run core.batch_runner.run_batch with a cancellable progress dialog"""
+        progress = QProgressDialog("Starting batch...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Overnight Batch")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        QApplication.processEvents()
+
+        def progress_cb(done, total, panel_result):
+            if total:
+                progress.setMaximum(total)
+                progress.setValue(done)
+            name = ""
+            try:
+                if panel_result and panel_result.get('panel'):
+                    name = Path(panel_result['panel']).name
+            except Exception:
+                name = ""
+            progress.setLabelText(
+                "Processed {0}/{1}: {2}".format(done, total, name))
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                # KeyboardInterrupt is a BaseException, so the batch runner's
+                # 'except Exception' progress guard does not swallow it; this
+                # is the cancellation channel out of run_batch's serial loop
+                raise KeyboardInterrupt()
+
+        try:
+            from core.batch_runner import run_batch
+        except Exception as e:
+            progress.close()
+            self.notify_user(
+                "Overnight Batch Failed",
+                "Could not load the batch runner:\n{0}".format(e),
+                "error")
+            return
+
+        summary = None
+        cancelled = False
+        try:
+            # analysis_workers=1 keeps the strictly-serial path so the
+            # cancel raise above aborts cleanly (no thread pool involved)
+            summary = run_batch(
+                show, episode,
+                provider=provider,
+                generate=generate,
+                max_panels=max_panels,
+                progress_cb=progress_cb,
+                analysis_workers=1)
+        except KeyboardInterrupt:
+            cancelled = True
+        except Exception as e:
+            progress.close()
+            self.notify_user("Overnight Batch Failed", str(e), "error")
+            return
+        finally:
+            progress.close()
+
+        if cancelled:
+            QMessageBox.information(
+                self, "Overnight Batch",
+                "Batch cancelled. Panels already processed keep their results.")
+            return
+
+        if not isinstance(summary, dict):
+            self.notify_user(
+                "Overnight Batch",
+                "Batch finished but returned no summary; check the Output Log.",
+                "warning")
+            return
+
+        if summary.get('error'):
+            self.notify_user("Overnight Batch Failed", str(summary['error']), "error")
+            return
+
+        msg = ("Batch finished.\n\n"
+               "Panels processed: {0}/{1}\n"
+               "Analyzed fresh: {2}\n"
+               "From cache: {3}\n"
+               "Scenes generated: {4}\n"
+               "Failed: {5}").format(
+                   summary.get('panels_processed', 0),
+                   summary.get('panels_total', 0),
+                   summary.get('analyzed_fresh', 0),
+                   summary.get('analyzed_from_cache', 0),
+                   summary.get('generated', 0),
+                   summary.get('failed', 0))
+        if summary.get('report_path'):
+            msg += "\n\nReport: {0}".format(summary['report_path'])
+        if summary.get('failed'):
+            self.notify_user("Overnight Batch Finished With Errors", msg, "warning")
+        else:
+            QMessageBox.information(self, "Overnight Batch", msg)
+
     def apply_modern_dark_theme(self):
         """Apply dark theme - moved to separate file for better organization"""
         from ui.themes.dark_theme import get_dark_stylesheet
@@ -692,10 +1293,33 @@ class ModernStoryboardWindow(QMainWindow):
             QMessageBox.warning(self, "No Show", "Please select a show first")
             return
 
+        if self.ai_client is None:
+            self.notify_user(
+                "AI Not Configured",
+                "No AI client is available, so analysis will use filename "
+                "heuristics only.\nAdd an API key in Settings for real AI "
+                "analysis.",
+                "warning")
+
         unreal.log(f"Analyzing {len(self.panels)} panels for show: {self.current_show}")
 
+        progress = QProgressDialog(
+            "Analyzing panels...", "Cancel", 0, len(self.panels), self)
+        progress.setWindowTitle("Analyze All")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+
         analyzed = 0
-        for panel in self.panels:
+        failures = []
+        cancelled = False
+        for i, panel in enumerate(self.panels):
+            progress.setValue(i)
+            progress.setLabelText("Analyzing {0}/{1}: {2}".format(
+                i + 1, len(self.panels), panel['name']))
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                cancelled = True
+                break
             try:
                 analysis = self.analyzer.analyze_panel(
                     panel['path'],
@@ -705,10 +1329,53 @@ class ModernStoryboardWindow(QMainWindow):
                 analyzed += 1
             except Exception as e:
                 unreal.log_error(f"Failed to analyze {panel['name']}: {e}")
+                failures.append("{0}: {1}".format(panel['name'], e))
+
+        progress.setValue(len(self.panels))
+        progress.close()
+
+        # Persist all results in one pass so analyses survive a restart
+        try:
+            if self.current_episode_path:
+                metadata_file = self.current_episode_path / "panels_metadata.json"
+                panel_metadata = {}
+                if metadata_file.exists():
+                    with open(metadata_file, 'r') as f:
+                        panel_metadata = json.load(f)
+                for panel in self.panels:
+                    if panel.get('analysis') is not None:
+                        entry = panel_metadata.get(panel['name'], {})
+                        entry['analysis'] = panel['analysis']
+                        entry.setdefault('characters', panel.get('characters', []))
+                        entry.setdefault('props', panel.get('props', []))
+                        entry.setdefault('location', panel.get('location', ''))
+                        entry.setdefault('shot_type', panel.get('shot_type', ''))
+                        panel_metadata[panel['name']] = entry
+                with open(metadata_file, 'w') as f:
+                    json.dump(panel_metadata, f, indent=2)
+        except Exception as e:
+            self.notify_user(
+                "Analysis Save Failed",
+                "Analyses completed but could not be saved:\n{0}".format(e),
+                "warning")
+
+        # Refresh grid indicators (analyzed checkmarks) once at the end
+        self.panel_grid.set_panels(self.panels)
 
         unreal.log(f"Analyzed {analyzed}/{len(self.panels)} panels")
-        QMessageBox.information(self, "Analysis Complete",
-                               f"Successfully analyzed {analyzed} of {len(self.panels)} panels")
+        summary = "Analyzed {0} of {1} panels".format(analyzed, len(self.panels))
+        if cancelled:
+            summary += " (cancelled)"
+        if failures:
+            shown = "\n".join(failures[:5])
+            if len(failures) > 5:
+                shown += "\n... and {0} more".format(len(failures) - 5)
+            self.notify_user(
+                "Analysis Finished With Errors",
+                summary + "\n\nFailures:\n" + shown,
+                "warning")
+        else:
+            QMessageBox.information(self, "Analysis Complete", summary)
 
     def analyze_active_panel(self):
         """Analyze active panel with show context"""

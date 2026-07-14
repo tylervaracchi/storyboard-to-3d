@@ -80,6 +80,16 @@ except ImportError:
     IntelligentViewSelector = None
     unreal.log_warning("IntelligentViewSelector not available - will use all 7 views")
 
+# [IterationProgress] Live iteration progress readout (score sparkline + cost
+# strip + cancel). Pure display wiring; the refinement loop is unchanged.
+try:
+    from ui.widgets.iteration_progress import IterationProgressWidget
+    ITERATION_PROGRESS_AVAILABLE = True
+except ImportError:
+    ITERATION_PROGRESS_AVAILABLE = False
+    IterationProgressWidget = None
+    unreal.log_warning("IterationProgressWidget not available - live iteration readout disabled")
+
 # Prompt optimization with feature flag (Optimization #4)
 # Conditional import based on settings - allows toggling between original and optimized prompts
 try:
@@ -289,6 +299,11 @@ class ActivePanelWidget(QWidget):
         # FEATURE #6: Cost tracking per iteration
         self.iteration_costs = []  # Track API costs per iteration
         self.total_cost = 0.0  # Cumulative cost across all iterations
+
+        # [IterationProgress] Live progress widget (created in setup_ui) and
+        # the pre-run cost estimate text shown on its cost strip. Display only.
+        self.iteration_progress_widget = None
+        self._iteration_run_estimate_text = ''
 
         # CHECKPOINTING: Track best score and state (monotonic improvement)
         self.enable_checkpointing = True  # User can disable via UI checkbox
@@ -819,6 +834,18 @@ class ActivePanelWidget(QWidget):
 
         self.comparison_result.hide()
         scroll_layout.addWidget(self.comparison_result)
+
+        # [IterationProgress] Live progress readout for the refinement loop
+        # (score sparkline + cost strip + cancel). Hidden until a run starts.
+        if ITERATION_PROGRESS_AVAILABLE:
+            try:
+                self.iteration_progress_widget = IterationProgressWidget(self)
+                self.iteration_progress_widget.cancelled.connect(self._on_iteration_progress_cancelled)
+                self.iteration_progress_widget.hide()
+                scroll_layout.addWidget(self.iteration_progress_widget)
+            except Exception as e:
+                self.iteration_progress_widget = None
+                unreal.log_warning(f"[IterationProgress] Could not create progress widget: {e}")
 
         # Generate button
         generate_btn = QPushButton(" GENERATE")
@@ -1659,6 +1686,10 @@ class ActivePanelWidget(QWidget):
         unreal.log(f"Auto-iteration enabled: {self.max_iterations} iterations")
         unreal.log(f"Current iteration: {self.current_iteration}")
         unreal.log(f"Iteration scores list initialized")
+
+        # [IterationProgress] Reset the live progress readout and show the
+        # pre-run cost estimate. Display only; never blocks the workflow.
+        self._iteration_progress_start_run()
 
         # Initialize metrics tracker for thesis evaluation (fully automatic!)
         if METRICS_AVAILABLE:
@@ -5206,6 +5237,10 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             # Record metrics for thesis evaluation
             self._record_iteration_metrics()
 
+            # [IterationProgress] Push this iteration's score and running spend
+            # into the live progress readout. Display only; loop unchanged.
+            self._iteration_progress_record_iteration()
+
         unreal.log("\n" + "="*70)
         unreal.log("CAPTURE ITERATION COMPLETE!")
         unreal.log("="*70)
@@ -5520,6 +5555,136 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         else:
             enabled = bool(value)
         return enabled and self.current_iteration > 1
+
+    # ------------------------------------------------------------------
+    # [IterationProgress] Live progress readout helpers. All of these are
+    # pure display: they never raise into the capture chain and never touch
+    # loop state (except the Cancel handler, which only sets the same stop
+    # flags the loop already checks between QTimer hops).
+    # ------------------------------------------------------------------
+
+    def _resolve_configured_model(self):
+        """[IterationProgress] Best-effort model name for cost estimates.
+
+        Mirrors api/ai_client.py's settings resolution (provider then
+        per-provider model key) without instantiating AIClient, so no keys
+        are read and nothing is logged on the happy path. Falls back to
+        'gpt-4o' (AIClient's own default provider family) when settings are
+        unavailable. Never raises.
+        """
+        try:
+            from core.settings_manager import get_setting
+            provider = str(get_setting('ai_settings.active_provider',
+                                       get_setting('ai_settings.provider', '')) or '')
+            provider_lower = provider.lower()
+            if 'gpt' in provider_lower or 'openai' in provider_lower:
+                return get_setting('ai_settings.openai_model', 'gpt-4o') or 'gpt-4o'
+            if 'claude' in provider_lower:
+                return get_setting('ai_settings.claude_model', 'claude-sonnet-4-6') or 'claude-sonnet-4-6'
+            if 'gemini' in provider_lower or 'google' in provider_lower:
+                return get_setting('ai_settings.gemini_model', 'gemini-2.5-flash') or 'gemini-2.5-flash'
+            if 'llava' in provider_lower or 'local' in provider_lower or 'ollama' in provider_lower:
+                return (get_setting('ai_settings.llava_model', '') or
+                        get_setting('ollama.default_vision_model', '') or
+                        'llava:latest')
+        except Exception:
+            pass
+        return 'gpt-4o'
+
+    def _iteration_progress_start_run(self):
+        """[IterationProgress] Reset and show the live readout at run start.
+
+        Also computes the pre-run cost estimate via utils/cost_estimator with
+        the real panel count (remaining batch panels + current one when in
+        batch mode, else 1), the configured max iterations, and the configured
+        model. Display only; never raises into test_positioning_phase3.
+        """
+        widget = getattr(self, 'iteration_progress_widget', None)
+        if widget is None:
+            return
+        try:
+            widget.reset()
+            widget.show()
+        except Exception as e:
+            unreal.log_warning(f"[IterationProgress] Could not reset progress widget: {e}")
+            return
+
+        self._iteration_run_estimate_text = ''
+        try:
+            from utils.cost_estimator import estimate_run
+            num_panels = 1
+            if getattr(self, 'batch_capture_mode', False):
+                num_panels = 1 + len(getattr(self, 'batch_capture_queue', None) or [])
+            estimate = estimate_run(
+                num_panels=num_panels,
+                avg_iterations=self.max_iterations,
+                model=self._resolve_configured_model(),
+            )
+            self._iteration_run_estimate_text = "est ${:.2f} for this run".format(estimate.get('usd', 0.0))
+            widget.set_cost_text(self._iteration_run_estimate_text)
+        except Exception as e:
+            unreal.log_warning(f"[IterationProgress] Cost estimate unavailable: {e}")
+
+    def _iteration_progress_record_iteration(self):
+        """[IterationProgress] Record this iteration's score on the sparkline
+        and refresh the cost strip with actual running spend (from the same
+        self.total_cost the loop already accumulates). Display only.
+        """
+        widget = getattr(self, 'iteration_progress_widget', None)
+        if widget is None:
+            return
+        try:
+            widget.add_score(self.current_iteration, self.last_match_score)
+
+            estimate_text = getattr(self, '_iteration_run_estimate_text', '') or ''
+            total_cost = 0.0
+            try:
+                total_cost = float(getattr(self, 'total_cost', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                total_cost = 0.0
+
+            if total_cost > 0:
+                spent_text = "spent ${:.4f} so far".format(total_cost)
+                if estimate_text:
+                    widget.set_cost_text("{} ({})".format(spent_text, estimate_text))
+                else:
+                    widget.set_cost_text(spent_text)
+            elif estimate_text:
+                widget.set_cost_text(estimate_text)
+        except Exception as e:
+            unreal.log_warning(f"[IterationProgress] Could not update progress widget: {e}")
+
+    def _on_iteration_progress_cancelled(self):
+        """[IterationProgress] User clicked Cancel on the progress widget.
+
+        Uses only the existing stop flags: every QTimer hop in the capture
+        chain already aborts when capture_workflow_active is False, and
+        _finish_capture_sequence stops looping when auto_iterate is False.
+        Batch state is cleared too so a cancelled batch does not advance to
+        the next panel. No other loop behavior is touched.
+        """
+        try:
+            was_running = bool(getattr(self, 'capture_workflow_active', False) or
+                               getattr(self, 'batch_capture_mode', False))
+
+            self.capture_workflow_active = False
+            self.auto_iterate = False
+            if getattr(self, 'batch_capture_mode', False):
+                self.batch_capture_mode = False
+                self.batch_capture_queue = []
+
+            if not was_running:
+                return
+
+            unreal.log("[IterationProgress] Run cancelled from progress widget - pending capture steps will abort")
+            widget = getattr(self, 'iteration_progress_widget', None)
+            if widget is not None:
+                try:
+                    widget.set_cost_text("Cancelled - pending steps will stop")
+                except Exception:
+                    pass
+        except Exception as e:
+            unreal.log_warning(f"[IterationProgress] Cancel handler error: {e}")
 
     def _start_next_iteration(self):
         """Start the next capture iteration"""

@@ -98,8 +98,12 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 - **Generative 3D Fallback** — When the library has no match at all, optionally generate the missing asset via Meshy or Tripo3D, import it, and add it to the show library so it is reused, not re-bought (off by default; `gen3d.enabled`, capped by `gen3d.max_per_run`)
 - **Mood Lighting** — Maps the panel's analyzed mood (night, golden hour, noir, tense...) to directional/sky light and fog presets (off by default; `scene.apply_mood_lighting`)
 - **Animation Picker** — Matches each character's action text ("running", "sits on a bench") to a tagged animation library and plays it on skeletal actors (off by default; `scene.auto_animation`, see `samples/animation_library.sample.json`)
+- **Generative Animation Fallback** — When the animation library has no clip for an action, optionally generate one via Tripo (preset animate-retarget) or DeepMotion SayMotion (true text-to-motion), import it to `/Game/StoryboardTo3D/GeneratedAnims`, and add it to the show library so it is reused, not regenerated (off by default; `genanim.enabled`, capped by `genanim.max_per_run`; clips arrive on the provider's skeleton and retarget via UE's IK Retargeter)
 - **Camera Moves** — Shot type drives a subtle camera move in the shot sequence: close-ups push in, mediums drift, wides pan (off by default; `sequence.camera_moves`)
 - **Cost Controls** — Pre-run cost estimates (`utils/cost_estimator.py`), cheap-model re-scoring, Files API image reuse, and a 50%-off Batch API client
+- **Live Iteration Progress** — Score sparkline, pre-run cost estimate, running spend, and a Cancel button shown next to the refinement loop while it runs (`ui/widgets/iteration_progress.py`)
+- **First-Run Welcome** — When no shows exist yet, the main window offers one-click actions: create a first show, load a bundled sample show (sample panels plus starter asset library), or open the Quick Start
+- **Tools Menu** — Render Animatic, Export Level as USD, Calibration Dashboard, and Overnight Batch are reachable from the main window's Tools menu (previously console-only)
 - **A/B Provider Comparison** — Same panel through two providers with transform snapshot/restore (`core/ab_comparison.py`)
 - **Metrics Tracking** — Logs accuracy, iterations, confidence per model, plus a calibration dashboard chart (`analysis/calibration_dashboard.py`)
 
