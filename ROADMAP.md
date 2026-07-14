@@ -51,6 +51,8 @@ verification inside a running Unreal Editor.
 
 **Done:** core/asset_matcher.py - optional OpenAI text-embedding-3-small matching as PRIORITY 3 (between exact cache and fuzzy), cosine similarity >= 0.55, embeddings cached to ~/.storyboard_to_3d/embedding_cache.json keyed by text hash, batched, query cache, off by default (`asset_library.semantic_matching` + OpenAI key required), every failure falls through to the unchanged fuzzy path.
 
+**Done (AI Librarian follow-on):** matching is only as good as the text it matches against, so the library can now describe itself. core/asset_cataloger.py describes each asset from its thumbnail (rendering one first when missing) and fills empty/placeholder descriptions plus merged aliases; core/animation_cataloger.py does the same for animation clips from a 3-pose contact sheet (10/50/90 percent scrub, SceneCapture2D chain), exposed as the `catalog_animations` MCP tool. core/animation_matcher.py gained the same embedding tier as asset_matcher (tier 3, cosine >= 0.5, own cache file `anim_embedding_cache.json`), governed by the same `asset_library.semantic_matching` toggle.
+
 **Still open:** local-model fallback via the pytorch_server.py subprocess pattern (/embed endpoint with sentence-transformers) for keyless users.
 
 ## 7. Storyboarder (.storyboarder) and ComfyUI folder import  [SHIPPED]

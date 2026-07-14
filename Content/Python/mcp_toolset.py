@@ -642,6 +642,58 @@ else:
                 return _json_ok({"result": result})
 
             @_tool_call
+            def catalog_animations(self, show_name: str, overwrite: bool = False) -> str:
+                """AI-catalog a show's animation library with descriptions and aliases.
+
+                For every AnimSequence entry in the show's
+                animation_library.json, spawns a compatible skeletal mesh
+                far from the user's scene, samples three poses (10/50/90
+                percent of the clip), captures them into a contact sheet,
+                and asks the configured vision provider what single action
+                the character is performing. Each entry's 'description'
+                field and empty or placeholder alias lists are filled so
+                meaning-based animation matching works; the library file is
+                saved once at the end. Requires an open level and a
+                configured AI vision provider; may take a while for large
+                libraries (one vision call per entry).
+
+                Args:
+                    show_name: Show folder name under the plugin's Shows
+                        root (the same name the asset library uses).
+                    overwrite: When True, re-describe entries that already
+                        carry a description and aliases (existing aliases
+                        are merged, never dropped). Default False only
+                        fills missing or placeholder data.
+
+                Returns:
+                    JSON string: {"success": true, "show_name": ...,
+                    "result": {"cataloged": [...], "skipped": [...],
+                    "failed": [...], "library_path": ..., "saved": bool}}
+                    or an error.
+                """
+                if not show_name or not str(show_name).strip():
+                    return _json_error("show_name is required")
+
+                try:
+                    # Lazy import to avoid import-order problems at discovery time.
+                    from core.animation_cataloger import catalog_animation_library
+                except Exception as e:
+                    return _json_error(
+                        "Animation cataloger unavailable: {0}".format(e))
+
+                try:
+                    result = catalog_animation_library(
+                        str(show_name), overwrite=bool(overwrite))
+                except Exception as e:
+                    return _json_error(
+                        "Animation cataloging failed: {0}".format(e))
+
+                return _json_ok({
+                    "show_name": str(show_name),
+                    "result": result,
+                })
+
+            @_tool_call
             def get_project_info(self) -> str:
                 """Return plugin version, engine version, and the configured AI provider.
 
@@ -721,10 +773,11 @@ else:
         STORYBOARD_TOOLSET = StoryboardTo3DToolset
 
         unreal.log(
-            "[MCP] StoryboardTo3DToolset registered (7 tools: "
+            "[MCP] StoryboardTo3DToolset registered (8 tools: "
             "list_asset_library, analyze_storyboard_panel, "
             "generate_scene_from_panel, capture_scene_views, "
-            "validate_scene, render_animatic, get_project_info)"
+            "validate_scene, render_animatic, catalog_animations, "
+            "get_project_info)"
         )
 
     except Exception as registration_error:

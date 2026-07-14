@@ -95,6 +95,14 @@ class AssetEditDialog(QDialog):
         self.generate_btn.clicked.connect(self.generate_thumbnail)
         thumb_btn_layout.addWidget(self.generate_btn)
 
+        self.ai_describe_btn = QPushButton("🤖 AI Describe")
+        self.ai_describe_btn.setToolTip(
+            "Send this asset's thumbnail to the configured AI provider and "
+            "fill the Description and Aliases fields for review (one small "
+            "image call; nothing is saved until you click Save Changes)")
+        self.ai_describe_btn.clicked.connect(self.ai_describe_asset)
+        thumb_btn_layout.addWidget(self.ai_describe_btn)
+
         self.clear_btn = QPushButton("❌ Clear Thumbnail")
         self.clear_btn.clicked.connect(self.clear_thumbnail)
         thumb_btn_layout.addWidget(self.clear_btn)
@@ -452,6 +460,94 @@ class AssetEditDialog(QDialog):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate thumbnails: {e}")
+
+    def ai_describe_asset(self):
+        """Describe the open asset with the configured AI provider and fill
+        the Description/Aliases fields for user review BEFORE saving.
+
+        Costs one small image call. If the asset has no usable thumbnail
+        yet, one is auto-generated first (same pipeline as Auto Generate).
+        Nothing touches the library until the user clicks Save Changes."""
+        try:
+            asset_path = self.path_edit.text().strip()
+
+            # Build a working entry from the form's current state so the
+            # cataloger sees exactly what the user is editing
+            entry = {
+                'asset_path': asset_path,
+                'description': self.desc_edit.toPlainText(),
+                'aliases': [a.strip() for a in self.aliases_edit.text().split(',') if a.strip()],
+            }
+            if self.thumbnail_path:
+                entry['thumbnail'] = {'type': 'manual', 'path': self.thumbnail_path}
+            else:
+                thumb = self.original_data.get('thumbnail')
+                entry['thumbnail'] = thumb if isinstance(thumb, dict) else {'type': 'none', 'path': None}
+
+            has_thumb = bool(entry['thumbnail'].get('path')) and \
+                Path(str(entry['thumbnail'].get('path'))).exists()
+            if not asset_path and not has_thumb:
+                QMessageBox.warning(
+                    self, "AI Describe",
+                    "Set an asset path or a thumbnail first.\n\n"
+                    "The AI needs an image; without a thumbnail one is "
+                    "rendered from the asset path.")
+                return
+
+            from core.asset_cataloger import describe_asset
+
+            progress = QProgressDialog("Asking the AI provider about this asset...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.show()
+            QApplication.processEvents()
+
+            try:
+                result = describe_asset(self.asset_name, entry,
+                                        thumb_dir=self._get_thumbnail_dir())
+            finally:
+                progress.close()
+
+            if not result:
+                QMessageBox.warning(
+                    self, "AI Describe",
+                    "AI description failed.\n\n"
+                    "Check the Output Log for the reason (provider "
+                    "configured? asset path valid? thumbnail renderable?)")
+                return
+
+            # Fill the form for review; Save Changes persists it
+            self.desc_edit.setPlainText(result.get('description', ''))
+
+            existing_aliases = [a.strip() for a in self.aliases_edit.text().split(',') if a.strip()]
+            merged = list(existing_aliases)
+            seen = {a.lower() for a in existing_aliases}
+            for alias in result.get('aliases', []):
+                if alias and alias.lower() not in seen:
+                    seen.add(alias.lower())
+                    merged.append(alias)
+            self.aliases_edit.setText(', '.join(merged))
+
+            # describe_asset may have rendered a thumbnail; show it
+            new_thumb = entry.get('thumbnail', {})
+            new_path = new_thumb.get('path') if isinstance(new_thumb, dict) else None
+            if new_path and new_path != self.thumbnail_path and Path(str(new_path)).exists():
+                pixmap = QPixmap(str(new_path))
+                if not pixmap.isNull():
+                    scaled = pixmap.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self.thumbnail_label.setPixmap(scaled)
+                self.thumbnail_path = str(new_path)
+                self.thumbnail_info.setText("🎨 Auto-generated")
+
+            message = ("Description and aliases filled in for review.\n"
+                       "Click Save Changes to keep them.")
+            guess = result.get('category_guess')
+            if guess and guess != self.category:
+                message += ("\n\nNote: the AI thinks this looks like a "
+                            "'{0}' asset (currently under '{1}').".format(guess, self.category))
+            QMessageBox.information(self, "AI Describe", message)
+
+        except Exception as e:
+            QMessageBox.warning(self, "AI Describe", f"AI describe failed: {e}")
 
     def clear_thumbnail(self):
         """Clear the current thumbnail"""

@@ -359,11 +359,22 @@ class AssetLibraryWidget(QWidget):
 
         button_layout.addLayout(row2_layout)
 
-        # Row 3: Refresh
+        # Row 3: Refresh and AI cataloging
+        row3_layout = QHBoxLayout()
+
         refresh_btn = QPushButton("🔄 Refresh Library")
         refresh_btn.clicked.connect(self.force_refresh)
         refresh_btn.setToolTip("Reload assets from disk")
-        button_layout.addWidget(refresh_btn)
+        row3_layout.addWidget(refresh_btn)
+
+        ai_describe_all_btn = QPushButton("🤖 AI Describe All")
+        ai_describe_all_btn.clicked.connect(self.ai_describe_all_assets)
+        ai_describe_all_btn.setToolTip(
+            "AI-describe every asset in this show that has no description "
+            "yet (one small image call per asset; user aliases are kept)")
+        row3_layout.addWidget(ai_describe_all_btn)
+
+        button_layout.addLayout(row3_layout)
 
         layout.addWidget(button_container)
 
@@ -1090,6 +1101,82 @@ class AssetLibraryWidget(QWidget):
             f"Locations: {loc_count}\n\n"
             f"Total: {char_count + prop_count + loc_count} assets"
         )
+
+    def ai_describe_all_assets(self):
+        """AI-describe every asset in this show's library that is missing a
+        description (existing descriptions and user aliases are preserved).
+        Costs roughly one small image call per described asset."""
+        if not self.current_show:
+            QMessageBox.warning(self, "No Show", "Please select a show first")
+            return
+
+        try:
+            from core.asset_cataloger import catalog_library
+        except Exception as e:
+            QMessageBox.warning(
+                self, "AI Describe All",
+                f"AI cataloger is unavailable: {e}")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "AI Describe All",
+            "Send every asset without a description to the configured AI "
+            "provider?\n\nCost: about one small image call per asset. "
+            "Assets that already have descriptions are skipped, and your "
+            "existing aliases are kept.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        progress = QProgressDialog(
+            "AI describing assets...", "Cancel", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QApplication.processEvents()
+
+        def report(index, total, name):
+            progress.setMaximum(max(total, 1))
+            progress.setValue(min(index, total))
+            if name:
+                progress.setLabelText(f"AI describing {index + 1} of {total}:\n{name}")
+            QApplication.processEvents()
+            return not progress.wasCanceled()
+
+        try:
+            result = catalog_library(
+                self.current_show, overwrite=False, progress_cb=report)
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "AI Describe All", f"Cataloging failed: {e}")
+            return
+        finally:
+            progress.close()
+
+        # catalog_library saved asset_library.json on disk; reload the
+        # shared in-memory library so the widget matches, then refresh
+        self.library.load_library()
+        self.refresh_library()
+        self.library_updated.emit()
+
+        described = len(result.get('described', []))
+        skipped = len(result.get('skipped', []))
+        failed = result.get('failed', [])
+        summary = (
+            f"Described: {described}\n"
+            f"Skipped (already described or cancelled): {skipped}\n"
+            f"Failed: {len(failed)}"
+        )
+        cost = result.get('cost', 0.0)
+        if cost:
+            summary += f"\n\nEstimated AI cost: ${cost:.4f}"
+        if result.get('error'):
+            summary += f"\n\n{result['error']}"
+        if failed:
+            summary += "\n\nFailed entries (see Output Log):\n" + ", ".join(failed[:10])
+        QMessageBox.information(self, "AI Describe All", summary)
 
     def filter_assets(self, text):
         """Filter assets based on search text"""
