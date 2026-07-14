@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QPushButton, QComboBox, QFileDialog, QMessageBox,
-    QGroupBox, QScrollArea, QWidget, QFrame
+    QGroupBox, QScrollArea, QWidget, QFrame, QProgressDialog, QApplication
 )
 from PySide6.QtCore import Qt, QSize, Signal, QTimer
 from PySide6.QtGui import QPixmap, QIcon, QPainter, QColor
@@ -98,6 +98,12 @@ class AssetEditDialog(QDialog):
         self.clear_btn = QPushButton(" Clear Thumbnail")
         self.clear_btn.clicked.connect(self.clear_thumbnail)
         thumb_btn_layout.addWidget(self.clear_btn)
+
+        self.generate_all_btn = QPushButton(" Generate All (Show)")
+        self.generate_all_btn.setToolTip(
+            "Auto-generate thumbnails for every asset in this show's library")
+        self.generate_all_btn.clicked.connect(self.generate_all_thumbnails)
+        thumb_btn_layout.addWidget(self.generate_all_btn)
 
         thumbnail_layout.addLayout(thumb_btn_layout)
         thumbnail_layout.addStretch()
@@ -331,43 +337,121 @@ class AssetEditDialog(QDialog):
 
         QTimer.singleShot(100, lambda: self._poll_viewport_capture(screenshot_path, max_attempts))
 
+    def _get_thumbnail_dir(self):
+        """Show-local Thumbnails folder, falling back to the legacy
+        content-wide AssetThumbnails folder when no show is loaded."""
+        show_path = getattr(self.lib, 'show_path', None)
+        if show_path:
+            thumb_dir = Path(show_path) / "Thumbnails"
+        else:
+            thumb_dir = Path(unreal.Paths.project_content_dir()) / "StoryboardTo3D" / "AssetThumbnails"
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        return thumb_dir
+
     def generate_thumbnail(self):
-        """Auto-generate thumbnail from asset"""
+        """Auto-generate a real thumbnail by spawning the asset off-scene
+        and capturing it with a temporary SceneCapture2D."""
         try:
-            asset_path = self.path_edit.text()
+            asset_path = self.path_edit.text().strip()
             if not asset_path:
                 QMessageBox.warning(self, "Error", "Please specify an asset path first")
                 return
 
-            # Try to generate a placeholder for now
-            # In production, this would capture from Content Browser
-            thumb_dir = Path(unreal.Paths.project_content_dir()) / "StoryboardTo3D" / "AssetThumbnails"
-            thumb_dir.mkdir(parents=True, exist_ok=True)
+            from core.thumbnail_generator import (
+                generate_asset_thumbnail, safe_thumbnail_filename
+            )
 
-            # Create a simple placeholder
-            thumb_path = thumb_dir / f"{self.asset_name}_auto.png"
+            thumb_dir = self._get_thumbnail_dir()
+            thumb_path = thumb_dir / (safe_thumbnail_filename(self.asset_name) + ".png")
 
-            # For now, just create a colored placeholder
-            pixmap = QPixmap(256, 256)
-            if 'character' in self.category.lower():
-                pixmap.fill(QColor(100, 150, 255))  # Blue
-            elif 'prop' in self.category.lower():
-                pixmap.fill(QColor(100, 255, 150))  # Green
+            progress = QProgressDialog("Generating thumbnail...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.show()
+            QApplication.processEvents()
+
+            try:
+                success = generate_asset_thumbnail(asset_path, str(thumb_path))
+            finally:
+                progress.close()
+
+            if success:
+                pixmap = QPixmap(str(thumb_path))
+                if not pixmap.isNull():
+                    scaled = pixmap.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self.thumbnail_label.setPixmap(scaled)
+                self.thumbnail_path = str(thumb_path)
+                self.thumbnail_info.setText(" Auto-generated")
+                QMessageBox.information(self, "Success", "Thumbnail generated!")
             else:
-                pixmap.fill(QColor(200, 100, 255))  # Purple
-
-            pixmap.save(str(thumb_path))
-
-            # Display it
-            scaled = pixmap.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.thumbnail_label.setPixmap(scaled)
-            self.thumbnail_path = str(thumb_path)
-            self.thumbnail_info.setText(" Auto-generated")
-
-            QMessageBox.information(self, "Success", "Placeholder thumbnail generated!")
+                QMessageBox.warning(
+                    self, "Error",
+                    "Thumbnail generation failed.\n\n"
+                    "Check the Output Log for the reason (asset path valid? "
+                    "asset spawnable as an actor?)")
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to generate thumbnail: {e}")
+
+    def generate_all_thumbnails(self):
+        """Generate thumbnails for every asset in the current show's library"""
+        try:
+            show_path = getattr(self.lib, 'show_path', None)
+            if not show_path:
+                QMessageBox.warning(
+                    self, "No Show",
+                    "No show is selected.\n\nSelect a show first so its "
+                    "asset library and Thumbnails folder can be found.")
+                return
+
+            from core.thumbnail_generator import generate_library_thumbnails
+
+            show_name = Path(show_path).name
+
+            progress = QProgressDialog(
+                "Generating thumbnails...", "Cancel", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.show()
+            QApplication.processEvents()
+
+            def report(index, total, name):
+                progress.setMaximum(max(total, 1))
+                progress.setValue(min(index, total))
+                if name:
+                    progress.setLabelText(f"Generating thumbnail {index + 1} of {total}:\n{name}")
+                QApplication.processEvents()
+                return not progress.wasCanceled()
+
+            try:
+                result = generate_library_thumbnails(
+                    show_name, overwrite=False, progress_cb=report)
+            finally:
+                progress.close()
+
+            # The generator wrote asset_library.json on disk; reload the
+            # shared in-memory library so the widget (same object) matches,
+            # then let the parent widget refresh its lists.
+            if hasattr(self.lib, 'load_library'):
+                self.lib.load_library()
+            self.load_asset_data()
+            self.asset_updated.emit(self.asset_name, self.category)
+
+            generated = len(result.get('generated', []))
+            skipped = len(result.get('skipped', []))
+            failed = result.get('failed', [])
+            summary = (
+                f"Generated: {generated}\n"
+                f"Skipped (already had thumbnails): {skipped}\n"
+                f"Failed: {len(failed)}"
+            )
+            if result.get('thumb_dir'):
+                summary += f"\n\nSaved to:\n{result['thumb_dir']}"
+            if failed:
+                summary += "\n\nFailed entries (see Output Log):\n" + ", ".join(failed[:10])
+            QMessageBox.information(self, "Generate Thumbnails", summary)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate thumbnails: {e}")
 
     def clear_thumbnail(self):
         """Clear the current thumbnail"""
@@ -419,6 +503,11 @@ class AssetEditDialog(QDialog):
                     thumb_type = 'content_browser'
                 elif '_auto' in self.thumbnail_path:
                     thumb_type = 'placeholder'
+                elif 'Thumbnails' in self.thumbnail_path:
+                    # Generated by core.thumbnail_generator into the show's
+                    # Thumbnails folder (checked after _manual/_viewport/_auto
+                    # so legacy AssetThumbnails files keep their types)
+                    thumb_type = 'content_browser'
                 else:
                     thumb_type = 'placeholder'
 

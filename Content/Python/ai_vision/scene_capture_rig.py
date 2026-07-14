@@ -111,6 +111,181 @@ def _to_rotator(value):
     return unreal.Rotator(pitch=float(value[0]), yaw=float(value[1]), roll=float(value[2]))
 
 
+# ----------------------------------------------------------------------
+# Module-level guarded plumbing (every unreal attribute guarded: names
+# vary across 5.4-5.8). Shared by SceneCaptureRig below and by
+# core/thumbnail_generator.py; behavior is identical to the original
+# SceneCaptureRig private methods, which now delegate here.
+# ----------------------------------------------------------------------
+
+def get_actor_subsystem():
+    try:
+        if hasattr(unreal, 'get_editor_subsystem') and hasattr(unreal, 'EditorActorSubsystem'):
+            return unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    except Exception as e:
+        _warn('EditorActorSubsystem unavailable: {0}'.format(e))
+    return None
+
+
+def get_editor_world():
+    try:
+        if hasattr(unreal, 'get_editor_subsystem') and hasattr(unreal, 'UnrealEditorSubsystem'):
+            sub = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            if sub is not None and hasattr(sub, 'get_editor_world'):
+                world = sub.get_editor_world()
+                if world:
+                    return world
+    except Exception as e:
+        _warn('UnrealEditorSubsystem world lookup failed: {0}'.format(e))
+    ell = getattr(unreal, 'EditorLevelLibrary', None)
+    if ell is not None and hasattr(ell, 'get_editor_world'):
+        try:
+            return ell.get_editor_world()
+        except Exception as e:
+            _warn('EditorLevelLibrary.get_editor_world failed: {0}'.format(e))
+    return None
+
+
+def get_all_level_actors():
+    sub = get_actor_subsystem()
+    if sub is not None and hasattr(sub, 'get_all_level_actors'):
+        try:
+            return list(sub.get_all_level_actors())
+        except Exception as e:
+            _warn('get_all_level_actors failed: {0}'.format(e))
+    ell = getattr(unreal, 'EditorLevelLibrary', None)
+    if ell is not None and hasattr(ell, 'get_all_level_actors'):
+        try:
+            return list(ell.get_all_level_actors())
+        except Exception as e:
+            _warn('EditorLevelLibrary.get_all_level_actors failed: {0}'.format(e))
+    return []
+
+
+def spawn_capture_actor(location, rotation):
+    actor_cls = getattr(unreal, 'SceneCapture2D', None)
+    if actor_cls is None:
+        _error('unreal.SceneCapture2D class not found in this engine version')
+        return None
+    sub = get_actor_subsystem()
+    if sub is not None and hasattr(sub, 'spawn_actor_from_class'):
+        try:
+            return sub.spawn_actor_from_class(actor_cls, location, rotation)
+        except Exception as e:
+            _warn('EditorActorSubsystem spawn failed, trying fallback: {0}'.format(e))
+    ell = getattr(unreal, 'EditorLevelLibrary', None)
+    if ell is not None and hasattr(ell, 'spawn_actor_from_class'):
+        try:
+            return ell.spawn_actor_from_class(actor_cls, location, rotation)
+        except Exception as e:
+            _error('EditorLevelLibrary spawn failed: {0}'.format(e))
+    return None
+
+
+def get_capture_component(actor):
+    for prop in ('capture_component2d', 'capture_component2_d'):
+        try:
+            comp = actor.get_editor_property(prop)
+            if comp is not None:
+                return comp
+        except Exception:
+            continue
+    comp_cls = getattr(unreal, 'SceneCaptureComponent2D', None)
+    if comp_cls is not None and hasattr(actor, 'get_component_by_class'):
+        try:
+            return actor.get_component_by_class(comp_cls)
+        except Exception as e:
+            _warn('get_component_by_class fallback failed: {0}'.format(e))
+    return None
+
+
+def make_render_target(name, width, height):
+    world = get_editor_world()
+    lib = getattr(unreal, 'RenderingLibrary', None)
+    if lib is not None and hasattr(lib, 'create_render_target_2d'):
+        try:
+            fmt_enum = getattr(unreal, 'RenderTargetFormat', None)
+            # RTF_RGBA8 makes export_render_target write PNG (float formats write HDR)
+            fmt = getattr(fmt_enum, 'RTF_RGBA8', None) if fmt_enum is not None else None
+            if fmt is not None:
+                rt = lib.create_render_target_2d(world, width, height, fmt)
+            else:
+                rt = lib.create_render_target_2d(world, width, height)
+            if rt is not None:
+                return rt
+        except Exception as e:
+            _warn('create_render_target_2d failed for {0}: {1}'.format(name, e))
+    # Fallback: construct the object directly and set size properties
+    rt_cls = getattr(unreal, 'TextureRenderTarget2D', None)
+    if rt_cls is None:
+        _error('TextureRenderTarget2D class unavailable; cannot create render target')
+        return None
+    try:
+        rt = rt_cls()
+        for prop, value in (('size_x', width), ('size_y', height)):
+            try:
+                rt.set_editor_property(prop, value)
+            except Exception as e:
+                _warn('Could not set render target {0}: {1}'.format(prop, e))
+        return rt
+    except Exception as e:
+        _error('Render target fallback construction failed for {0}: {1}'.format(name, e))
+        return None
+
+
+def configure_capture_component(comp, render_target):
+    try:
+        comp.set_editor_property('texture_target', render_target)
+    except Exception as e:
+        _warn('Could not assign texture_target: {0}'.format(e))
+    enum_cls = getattr(unreal, 'SceneCaptureSource', None)
+    source = None
+    if enum_cls is not None:
+        for candidate in ('SCS_FINAL_COLOR_LDR', 'FINAL_COLOR_LDR'):
+            source = getattr(enum_cls, candidate, None)
+            if source is not None:
+                break
+    if source is not None:
+        try:
+            comp.set_editor_property('capture_source', source)
+        except Exception as e:
+            _warn('Could not set capture_source, keeping engine default: {0}'.format(e))
+    else:
+        _log('SceneCaptureSource FINAL_COLOR_LDR enum not found; keeping engine default')
+    # Property names vary across 5.4-5.8; guard each individually.
+    flag_specs = [
+        (('capture_every_frame', 'b_capture_every_frame'), False),
+        (('always_persist_rendering_state', 'b_always_persist_rendering_state'), True),
+        (('capture_on_movement', 'b_capture_on_movement'), False),
+    ]
+    for prop_names, value in flag_specs:
+        applied = False
+        for prop in prop_names:
+            try:
+                comp.set_editor_property(prop, value)
+                applied = True
+                break
+            except Exception:
+                continue
+        if not applied:
+            _warn('Could not set any of {0} to {1}'.format('/'.join(prop_names), value))
+
+
+def resolve_export_function():
+    tried = []
+    for lib_name in ('RenderingLibrary', 'KismetRenderingLibrary'):
+        lib = getattr(unreal, lib_name, None)
+        if lib is None:
+            tried.append('unreal.' + lib_name + ' (module attribute missing)')
+            continue
+        for fn_name in ('export_render_target', 'ExportRenderTarget'):
+            fn = getattr(lib, fn_name, None)
+            if callable(fn):
+                return fn, '{0}.{1}'.format(lib_name, fn_name)
+            tried.append('{0}.{1}'.format(lib_name, fn_name))
+    return None, tried
+
+
 def compute_default_views(center=(0.0, 0.0, 150.0), radius=1350.0):
     """Build the 7-view set on a ring around ``center`` at ``radius``.
 
@@ -152,68 +327,21 @@ class SceneCaptureRig:
         self._resolution = DEFAULT_RESOLUTION
 
     # ------------------------------------------------------------------
-    # Editor plumbing (every unreal attribute guarded: names vary 5.4-5.8)
+    # Editor plumbing: thin delegations to the module-level helpers above
+    # (kept as methods so the public/instance API stays identical).
     # ------------------------------------------------------------------
 
     def _get_actor_subsystem(self):
-        try:
-            if hasattr(unreal, 'get_editor_subsystem') and hasattr(unreal, 'EditorActorSubsystem'):
-                return unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-        except Exception as e:
-            _warn('EditorActorSubsystem unavailable: {0}'.format(e))
-        return None
+        return get_actor_subsystem()
 
     def _get_world(self):
-        try:
-            if hasattr(unreal, 'get_editor_subsystem') and hasattr(unreal, 'UnrealEditorSubsystem'):
-                sub = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
-                if sub is not None and hasattr(sub, 'get_editor_world'):
-                    world = sub.get_editor_world()
-                    if world:
-                        return world
-        except Exception as e:
-            _warn('UnrealEditorSubsystem world lookup failed: {0}'.format(e))
-        ell = getattr(unreal, 'EditorLevelLibrary', None)
-        if ell is not None and hasattr(ell, 'get_editor_world'):
-            try:
-                return ell.get_editor_world()
-            except Exception as e:
-                _warn('EditorLevelLibrary.get_editor_world failed: {0}'.format(e))
-        return None
+        return get_editor_world()
 
     def _all_level_actors(self):
-        sub = self._get_actor_subsystem()
-        if sub is not None and hasattr(sub, 'get_all_level_actors'):
-            try:
-                return list(sub.get_all_level_actors())
-            except Exception as e:
-                _warn('get_all_level_actors failed: {0}'.format(e))
-        ell = getattr(unreal, 'EditorLevelLibrary', None)
-        if ell is not None and hasattr(ell, 'get_all_level_actors'):
-            try:
-                return list(ell.get_all_level_actors())
-            except Exception as e:
-                _warn('EditorLevelLibrary.get_all_level_actors failed: {0}'.format(e))
-        return []
+        return get_all_level_actors()
 
     def _spawn_capture_actor(self, location, rotation):
-        actor_cls = getattr(unreal, 'SceneCapture2D', None)
-        if actor_cls is None:
-            _error('unreal.SceneCapture2D class not found in this engine version')
-            return None
-        sub = self._get_actor_subsystem()
-        if sub is not None and hasattr(sub, 'spawn_actor_from_class'):
-            try:
-                return sub.spawn_actor_from_class(actor_cls, location, rotation)
-            except Exception as e:
-                _warn('EditorActorSubsystem spawn failed, trying fallback: {0}'.format(e))
-        ell = getattr(unreal, 'EditorLevelLibrary', None)
-        if ell is not None and hasattr(ell, 'spawn_actor_from_class'):
-            try:
-                return ell.spawn_actor_from_class(actor_cls, location, rotation)
-            except Exception as e:
-                _error('EditorLevelLibrary spawn failed: {0}'.format(e))
-        return None
+        return spawn_capture_actor(location, rotation)
 
     def _find_existing(self, label):
         rig_tag = unreal.Name(RIG_TAG)
@@ -242,90 +370,13 @@ class SceneCaptureRig:
             _warn('Could not tag actor: {0}'.format(e))
 
     def _get_capture_component(self, actor):
-        for prop in ('capture_component2d', 'capture_component2_d'):
-            try:
-                comp = actor.get_editor_property(prop)
-                if comp is not None:
-                    return comp
-            except Exception:
-                continue
-        comp_cls = getattr(unreal, 'SceneCaptureComponent2D', None)
-        if comp_cls is not None and hasattr(actor, 'get_component_by_class'):
-            try:
-                return actor.get_component_by_class(comp_cls)
-            except Exception as e:
-                _warn('get_component_by_class fallback failed: {0}'.format(e))
-        return None
+        return get_capture_component(actor)
 
     def _make_render_target(self, name, width, height):
-        world = self._get_world()
-        lib = getattr(unreal, 'RenderingLibrary', None)
-        if lib is not None and hasattr(lib, 'create_render_target_2d'):
-            try:
-                fmt_enum = getattr(unreal, 'RenderTargetFormat', None)
-                # RTF_RGBA8 makes export_render_target write PNG (float formats write HDR)
-                fmt = getattr(fmt_enum, 'RTF_RGBA8', None) if fmt_enum is not None else None
-                if fmt is not None:
-                    rt = lib.create_render_target_2d(world, width, height, fmt)
-                else:
-                    rt = lib.create_render_target_2d(world, width, height)
-                if rt is not None:
-                    return rt
-            except Exception as e:
-                _warn('create_render_target_2d failed for {0}: {1}'.format(name, e))
-        # Fallback: construct the object directly and set size properties
-        rt_cls = getattr(unreal, 'TextureRenderTarget2D', None)
-        if rt_cls is None:
-            _error('TextureRenderTarget2D class unavailable; cannot create render target')
-            return None
-        try:
-            rt = rt_cls()
-            for prop, value in (('size_x', width), ('size_y', height)):
-                try:
-                    rt.set_editor_property(prop, value)
-                except Exception as e:
-                    _warn('Could not set render target {0}: {1}'.format(prop, e))
-            return rt
-        except Exception as e:
-            _error('Render target fallback construction failed for {0}: {1}'.format(name, e))
-            return None
+        return make_render_target(name, width, height)
 
     def _configure_component(self, comp, render_target):
-        try:
-            comp.set_editor_property('texture_target', render_target)
-        except Exception as e:
-            _warn('Could not assign texture_target: {0}'.format(e))
-        enum_cls = getattr(unreal, 'SceneCaptureSource', None)
-        source = None
-        if enum_cls is not None:
-            for candidate in ('SCS_FINAL_COLOR_LDR', 'FINAL_COLOR_LDR'):
-                source = getattr(enum_cls, candidate, None)
-                if source is not None:
-                    break
-        if source is not None:
-            try:
-                comp.set_editor_property('capture_source', source)
-            except Exception as e:
-                _warn('Could not set capture_source, keeping engine default: {0}'.format(e))
-        else:
-            _log('SceneCaptureSource FINAL_COLOR_LDR enum not found; keeping engine default')
-        # Property names vary across 5.4-5.8; guard each individually.
-        flag_specs = [
-            (('capture_every_frame', 'b_capture_every_frame'), False),
-            (('always_persist_rendering_state', 'b_always_persist_rendering_state'), True),
-            (('capture_on_movement', 'b_capture_on_movement'), False),
-        ]
-        for prop_names, value in flag_specs:
-            applied = False
-            for prop in prop_names:
-                try:
-                    comp.set_editor_property(prop, value)
-                    applied = True
-                    break
-                except Exception:
-                    continue
-            if not applied:
-                _warn('Could not set any of {0} to {1}'.format('/'.join(prop_names), value))
+        configure_capture_component(comp, render_target)
 
     # ------------------------------------------------------------------
     # Public API
@@ -418,18 +469,7 @@ class SceneCaptureRig:
             return False
 
     def _resolve_export_function(self):
-        tried = []
-        for lib_name in ('RenderingLibrary', 'KismetRenderingLibrary'):
-            lib = getattr(unreal, lib_name, None)
-            if lib is None:
-                tried.append('unreal.' + lib_name + ' (module attribute missing)')
-                continue
-            for fn_name in ('export_render_target', 'ExportRenderTarget'):
-                fn = getattr(lib, fn_name, None)
-                if callable(fn):
-                    return fn, '{0}.{1}'.format(lib_name, fn_name)
-                tried.append('{0}.{1}'.format(lib_name, fn_name))
-        return None, tried
+        return resolve_export_function()
 
     def capture_all(self, output_dir=None):
         """Capture every view and export PNGs with the legacy filenames. Never raises."""

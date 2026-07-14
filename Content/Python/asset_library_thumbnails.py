@@ -60,18 +60,21 @@ class AssetLibraryWithThumbnails:
 
     def capture_asset_thumbnail(self, asset, output_path: Path):
         """
-        Capture a thumbnail of an asset using a temporary viewport
-        This is a placeholder for the actual implementation
+        Capture a real thumbnail via core.thumbnail_generator (temp spawn +
+        SceneCapture2D + render target export). Falls back to a placeholder
+        PNG when the generator is unavailable or the capture fails.
         """
-        # For now, just create a placeholder
-        # In production, this would:
-        # 1. Spawn the asset in a clean level
-        # 2. Position camera
-        # 3. Take screenshot
-        # 4. Save to output_path
-        # 5. Clean up
+        try:
+            from core.thumbnail_generator import generate_asset_thumbnail
+            asset_path = asset.get_path_name()
+            if generate_asset_thumbnail(asset_path, str(output_path)):
+                return
+            unreal.log_warning(
+                f"Thumbnail generation failed for {asset_path}; writing placeholder")
+        except Exception as e:
+            unreal.log_warning(f"Thumbnail generator unavailable ({e}); writing placeholder")
 
-        # Create a simple placeholder image
+        # Fallback: minimal placeholder image
         placeholder_data = self.create_placeholder_thumbnail(asset.get_name())
         with open(output_path, 'wb') as f:
             f.write(placeholder_data)
