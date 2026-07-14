@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 ENHANCED ASSET LIBRARY WITH DESCRIPTIONS
 Stores asset mappings with descriptions to help AI recognize elements

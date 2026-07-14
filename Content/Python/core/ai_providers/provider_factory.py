@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 # AI Provider Factory
 from .llava_provider import LLaVAProvider
 from .gpt4v_provider import GPT4VisionProvider
@@ -69,7 +69,7 @@ class AIProviderFactory:
 
             elif 'Claude' in provider_name or 'Anthropic' in provider_name:
                 api_key = ai_settings.get('claude_api_key', '')
-                model = ai_settings.get('claude_model', 'claude-3-5-sonnet-20241022')
+                model = ai_settings.get('claude_model', 'claude-sonnet-4-6')
                 if api_key:
                     unreal.log(f"[AI] Trying Claude with model: {model}")
                     claude = ClaudeProvider(api_key=api_key, model=model)
@@ -95,7 +95,7 @@ class AIProviderFactory:
             # 2. Try Claude (excellent spatial reasoning)
             claude_key = ai_settings.get('claude_api_key', '')
             if claude_key:
-                model = ai_settings.get('claude_model', 'claude-3-5-sonnet-20241022')
+                model = ai_settings.get('claude_model', 'claude-sonnet-4-6')
                 unreal.log(f"[AI] Found Claude API key, testing with {model}...")
                 claude = ClaudeProvider(api_key=claude_key, model=model)
                 if claude.is_available():
@@ -161,7 +161,7 @@ class AIProviderFactory:
 
         # Check Claude
         claude_key = config.get('claude_api_key') or ai_settings.get('claude_api_key', '')
-        claude_model = config.get('claude_model') or ai_settings.get('claude_model', 'claude-3-5-sonnet-20241022')
+        claude_model = config.get('claude_model') or ai_settings.get('claude_model', 'claude-sonnet-4-6')
         if claude_key:
             claude = ClaudeProvider(api_key=claude_key, model=claude_model)
             if claude.is_available():

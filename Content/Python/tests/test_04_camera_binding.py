@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 Test 04: Camera Binding Methods
 Tests different methods for binding camera to camera cut track in UE 5.6

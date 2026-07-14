@@ -9,7 +9,7 @@
 
 An Unreal Engine plugin that automatically converts 2D storyboard panels into positioned 3D scenes using vision-language models. Developed as MS Thesis research at Drexel University.
 
-> 🔧 **SensAI Worlds in Action Hack [02-LA] (July 18–19, 2026):** this plugin is in the hacker toolkit. Clone it, build with it — I'm on site Saturday for questions, and at SIGGRAPH all week (poster: West Hall Lobby, Mon–Wed 12–1).
+> 🔧 **SensAI Worlds in Action Hack [02-LA] (July 18–19, 2026):** this plugin is in the hacker toolkit. Clone it, build with it. I'm on site Saturday for questions, and at SIGGRAPH all week (poster: West Hall Lobby, Mon–Wed 12–1).
 
 <p align="center">
   <a href="https://vimeo.com/1152943813"><img src="docs/stb-demo-thumb.png" alt="Watch Demo Video" width="80%"></a>
@@ -95,7 +95,7 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 
 ### Requirements
 
-- Unreal Engine 5.4+
+- Unreal Engine 5.4 – 5.8
 - Python 3.11+
 - PySide6 (`pip install PySide6`)
 - API key for Claude or OpenAI (optional: Ollama for local inference)

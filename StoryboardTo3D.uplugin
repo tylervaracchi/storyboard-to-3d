@@ -14,7 +14,6 @@
     "IsBetaVersion": false,
     "IsExperimentalVersion": true,
     "Installed": false,
-    "EngineVersion": "5.4.0",
     "Modules": [
         {
             "Name": "StoryboardTo3D",

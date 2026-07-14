@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 Enhanced Prompt Builder for AI Positioning
 Creates context-aware, shot-specific prompts for better positioning accuracy

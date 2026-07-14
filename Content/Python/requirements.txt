@@ -6,6 +6,9 @@
 # CORE DEPENDENCIES (Required)
 # ============================================================================
 
+# Qt UI (the plugin window)
+PySide6>=6.5.0
+
 # HTTP Requests
 requests>=2.31.0
 

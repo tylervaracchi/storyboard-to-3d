@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 AI Vision System for StoryboardTo3D
 Phase 1: Viewport capture and comparison

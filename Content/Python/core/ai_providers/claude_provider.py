@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 Claude Provider - Anthropic API
 Best spatial reasoning, excellent accuracy, requires API key
@@ -23,7 +23,7 @@ except ImportError:
 class ClaudeProvider(BaseAIProvider):
     """Anthropic Claude Sonnet 4.5 - Excellent for spatial reasoning with extended thinking"""
 
-    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-5-20250929", use_extended_thinking: bool = True, enable_caching: bool = True):
+    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6", use_extended_thinking: bool = True, enable_caching: bool = True):
         super().__init__("Claude Sonnet 4.5 (Extended Thinking)")
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model

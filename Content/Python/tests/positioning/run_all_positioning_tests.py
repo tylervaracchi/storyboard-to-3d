@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 MASTER TEST RUNNER - All Positioning System Tests
 Runs all 5 phases sequentially with comprehensive reporting

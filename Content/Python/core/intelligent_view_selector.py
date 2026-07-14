@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 Intelligent View Selector for AI-Powered 3D Positioning
 Optimizes image selection to minimize token costs while maintaining accuracy

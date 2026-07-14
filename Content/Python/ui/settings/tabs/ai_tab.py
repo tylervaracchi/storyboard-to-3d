@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 AI Settings Tab for StoryboardTo3D - COMPLETE MODEL LIST
 ALL VISION MODELS + GPT-5 PRO + ALL CLAUDE MODELS
@@ -175,22 +175,14 @@ class AISettingsTab(QWidget):
         claude_model_layout.addWidget(QLabel("Model:"))
         self.claude_model_combo = QComboBox()
         self.claude_model_combo.addItems([
-            # === CLAUDE 4 SERIES (2025) ===
-            "claude-sonnet-4-5-20250929",    # Sept 2025 - NEWEST! Best coding
-            "claude-opus-4-1-20250805",      # Aug 2025 - Most powerful
-            "claude-sonnet-4-20250514",      # May 2025 - Claude Sonnet 4
-            "claude-opus-4-20250514",        # May 2025 - Claude Opus 4
+            # === CURRENT GENERATION ===
+            "claude-sonnet-4-6",             # Recommended default (vision + sampling params)
+            "claude-haiku-4-5",              # Fast + cheap for scoring passes
+            "claude-opus-4-1-20250805",      # Most powerful of the sampling-compatible line
 
-            # === CLAUDE 3.7 SERIES (Feb 2025) ===
-            "claude-3-7-sonnet-20250219",    # Feb 2025 - Claude Sonnet 3.7
-
-            # === CLAUDE 3.5 SERIES (Oct 2024) ===
-            "claude-3-5-sonnet-20241022",    # Oct 2024 - Claude Sonnet 3.5
-            "claude-3-5-haiku-20241022",     # Oct 2024 - Claude Haiku 3.5
-
-            # === CLAUDE 3 SERIES (Mar 2024) ===
-            "claude-3-opus-20240229",        # Mar 2024 - Claude Opus 3
-            "claude-3-haiku-20240307"        # Mar 2024 - Claude Haiku 3
+            # === LEGACY (thesis study model) ===
+            "claude-sonnet-4-5-20250929",    # Model used in the published calibration research
+            "claude-sonnet-4-20250514",
         ])
         self.claude_model_combo.currentTextChanged.connect(self.on_change)
         claude_model_layout.addWidget(self.claude_model_combo)
@@ -198,7 +190,7 @@ class AISettingsTab(QWidget):
         claude_layout.addLayout(claude_model_layout)
 
         # Claude info label
-        claude_info_label = QLabel(" Recommended: Sonnet 4.5 for best spatial reasoning | All support vision")
+        claude_info_label = QLabel(" Recommended: claude-sonnet-4-6 for best spatial reasoning | All support vision")
         claude_info_label.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
         claude_info_label.setWordWrap(True)
         claude_layout.addWidget(claude_info_label)
@@ -443,7 +435,7 @@ class AISettingsTab(QWidget):
 
         # Claude (SEPARATE KEY) - Default to Sonnet 4.5 with extended thinking
         self.claude_api_key_edit.setText(ai_settings.get('claude_api_key', ''))
-        self.claude_model_combo.setCurrentText(ai_settings.get('claude_model', 'claude-sonnet-4-5-20250929'))
+        self.claude_model_combo.setCurrentText(ai_settings.get('claude_model', 'claude-sonnet-4-6'))
 
         # Model settings
         temp = int(ai_settings.get('temperature', 0.7) * 100)

@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 ASSET LIBRARY EDIT DIALOG WITH THUMBNAIL SUPPORT
 Enhanced UI for editing assets with image preview and upload

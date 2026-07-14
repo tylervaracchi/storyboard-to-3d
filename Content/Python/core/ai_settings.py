@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 AI Settings Manager
 Handles configuration for AI providers (API keys, preferences, etc.)
@@ -36,7 +36,7 @@ class AISettings:
             'claude': {
                 'enabled': True,
                 'api_key': '',
-                'model': 'claude-3-5-sonnet-20241022'
+                'model': 'claude-sonnet-4-6'
             },
             'cost_limits': {
                 'max_per_panel': 0.50,
@@ -173,7 +173,7 @@ class AISettings:
         elif provider == 'claude':
             return {
                 'api_key': self.get('claude.api_key', ''),
-                'model': self.get('claude.model', 'claude-3-5-sonnet-20241022')
+                'model': self.get('claude.model', 'claude-sonnet-4-6')
             }
         return {}
 

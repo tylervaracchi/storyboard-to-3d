@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 TEST: GENERATE BUTTON FLOW WITH CAMERA BINDING
 Tests the exact flow when clicking the green GENERATE button

@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 AI Client Module - Optimized Version
 Secure API integration with configuration management
@@ -62,12 +62,12 @@ class AIClient:
             "env_var": "OPENAI_API_KEY"
         },
         "Claude 3.5 Sonnet": {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": "claude-sonnet-4-6",
             "endpoint": "https://api.anthropic.com/v1/messages",
             "env_var": "ANTHROPIC_API_KEY"
         },
         "Claude 3 Opus": {
-            "model": "claude-3-opus-20240229",
+            "model": "claude-opus-4-1-20250805",
             "endpoint": "https://api.anthropic.com/v1/messages",
             "env_var": "ANTHROPIC_API_KEY"
         }
@@ -101,7 +101,7 @@ class AIClient:
                         else:
                             provider = "OpenAI GPT-4 Vision"
                     elif 'claude' in active_provider.lower():
-                        self.selected_model = get_setting('ai_settings.claude_model', 'claude-3-5-sonnet-20241022')
+                        self.selected_model = get_setting('ai_settings.claude_model', 'claude-sonnet-4-6')
                         provider = "Claude 3.5 Sonnet"
 
                     if provider:
@@ -133,7 +133,7 @@ class AIClient:
                             else:
                                 provider = "OpenAI GPT-4 Vision"
                         elif 'claude' in settings_provider.lower():
-                            self.selected_model = ai_settings.get('claude_model', 'claude-3-5-sonnet-20241022')
+                            self.selected_model = ai_settings.get('claude_model', 'claude-sonnet-4-6')
                             provider = "Claude 3.5 Sonnet"
 
                         if provider:

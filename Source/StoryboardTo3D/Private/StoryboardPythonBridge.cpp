@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-// This code is proprietary. Unauthorized copying or use is prohibited.
+// Licensed under the MIT License. See LICENSE in the repository root.
 // StoryboardPythonBridge.cpp - Implementation of bridge functions
 
 #include "StoryboardPythonBridge.h"
@@ -22,8 +22,8 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "EditorLevelLibrary.h"
-#include "EditorAssetLibrary.h"
+#include "Subsystems/EditorActorSubsystem.h"
+#include "Subsystems/EditorAssetSubsystem.h"
 #include "LevelSequenceActor.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
@@ -95,7 +95,10 @@ ULevelSequence* UStoryboardPythonBridge::CreateSequenceForPanel(const FStoryboar
         }
         
         // Save the sequence
-        UEditorAssetLibrary::SaveAsset(PackagePath);
+        if (UEditorAssetSubsystem* AssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>())
+        {
+            AssetSubsystem->SaveAsset(PackagePath);
+        }
         
         UE_LOG(LogStoryboardTo3D, Log, TEXT("Created sequence: %s"), *SequenceName);
     }
@@ -105,15 +108,16 @@ ULevelSequence* UStoryboardPythonBridge::CreateSequenceForPanel(const FStoryboar
 
 void UStoryboardPythonBridge::PlaceActorInScene(const FString& AssetPath, FVector Location, FRotator Rotation)
 {
-    UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+    UEditorAssetSubsystem* AssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>();
+    UObject* Asset = AssetSubsystem ? AssetSubsystem->LoadAsset(AssetPath) : nullptr;
     if (!Asset)
     {
         UE_LOG(LogStoryboardTo3D, Warning, TEXT("Failed to load asset: %s"), *AssetPath);
         return;
     }
-    
-    // Note: This is deprecated but still works in UE 5.6
-    AActor* SpawnedActor = UEditorLevelLibrary::SpawnActorFromObject(Asset, Location, Rotation);
+
+    UEditorActorSubsystem* ActorSubsystem = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+    AActor* SpawnedActor = ActorSubsystem ? ActorSubsystem->SpawnActorFromObject(Asset, Location, Rotation) : nullptr;
     
     if (SpawnedActor)
     {

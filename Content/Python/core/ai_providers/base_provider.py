@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 Base AI Provider Abstract Class
 Defines interface for all AI vision providers (LLaVA, GPT-4V, Claude, etc.)

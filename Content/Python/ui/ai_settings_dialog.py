@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 AI Settings Dialog - FIXED VERSION
 Separate API key fields for OpenAI and Anthropic
@@ -322,9 +322,9 @@ class AISettingsDialog(QDialog):
         model_layout.addWidget(QLabel("Model:"))
         self.anthropic_model = QComboBox()
         self.anthropic_model.addItems([
-            "claude-3-5-sonnet-20241022",
+            "claude-sonnet-4-6",
             "claude-sonnet-4-20250514",
-            "claude-3-opus-20240229"
+            "claude-opus-4-1-20250805"
         ])
         model_layout.addWidget(self.anthropic_model)
         model_layout.addStretch()
@@ -385,7 +385,7 @@ class AISettingsDialog(QDialog):
         if anthropic_key:
             self.anthropic_key.setText(anthropic_key)
 
-        anthropic_model = self.settings.get('claude.model', 'claude-3-5-sonnet-20241022')
+        anthropic_model = self.settings.get('claude.model', 'claude-sonnet-4-6')
         index = self.anthropic_model.findText(anthropic_model)
         if index >= 0:
             self.anthropic_model.setCurrentIndex(index)

@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 Enhanced AI Client Module with Confidence Scoring and Caching
 Includes advanced analysis capabilities for scene continuity, asset matching, and motion planning
@@ -161,12 +161,12 @@ class EnhancedAIClient:
             "env_var": "OPENAI_API_KEY"
         },
         "Claude 3.5 Sonnet": {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": "claude-sonnet-4-6",
             "endpoint": "https://api.anthropic.com/v1/messages",
             "env_var": "ANTHROPIC_API_KEY"
         },
         "Claude 3 Opus": {
-            "model": "claude-3-opus-20240229",
+            "model": "claude-opus-4-1-20250805",
             "endpoint": "https://api.anthropic.com/v1/messages",
             "env_var": "ANTHROPIC_API_KEY"
         }

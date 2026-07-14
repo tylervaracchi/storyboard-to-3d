@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-// This code is proprietary. Unauthorized copying or use is prohibited.
+// Licensed under the MIT License. See LICENSE in the repository root.
 // Copyright Epic Games, Inc.
 
 #include "StoryboardTo3D.h"
@@ -14,12 +14,30 @@
 #include "Widgets/Input/SButton.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Engine/Engine.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
 
 static const FName StoryboardTo3DTabName("StoryboardTo3D");
 
 #define LOCTEXT_NAMESPACE "FStoryboardTo3DModule"
 
 DEFINE_LOG_CATEGORY(LogStoryboardTo3D);
+
+// Launch the Python UI using the plugin's own install location, wherever it lives.
+static void LaunchStoryboardPythonUI()
+{
+    TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("StoryboardTo3D"));
+    if (!Plugin.IsValid() || !GEngine)
+    {
+        UE_LOG(LogStoryboardTo3D, Error, TEXT("StoryboardTo3D plugin not found; cannot launch Python UI."));
+        return;
+    }
+    const FString PythonDir = FPaths::ConvertRelativePathToFull(Plugin->GetBaseDir() / TEXT("Content/Python"));
+    const FString Cmd = FString::Printf(
+        TEXT("py import sys; p = r'%s'; sys.path.append(p) if p not in sys.path else None; import main; main.show_window()"),
+        *PythonDir);
+    GEngine->Exec(nullptr, *Cmd);
+}
 
 void FStoryboardTo3DModule::StartupModule()
 {
@@ -58,7 +76,7 @@ void FStoryboardTo3DModule::ShutdownModule()
 TSharedRef<SDockTab> FStoryboardTo3DModule::OnSpawnPluginTab(const FSpawnTabArgs& SpawnTabArgs)
 {
     // Launch Python UI with auto-initialization
-    GEngine->Exec(nullptr, TEXT("py import sys; sys.path.append(r'D:/PythonStoryboardToUE/Plugins/StoryboardTo3D/Content/Python'); import main; main.show_window()"));
+    LaunchStoryboardPythonUI();
     
     // Return a simple tab with launch button as backup
     return SNew(SDockTab)
@@ -86,7 +104,7 @@ TSharedRef<SDockTab> FStoryboardTo3DModule::OnSpawnPluginTab(const FSpawnTabArgs
                     .Text(FText::FromString(TEXT("Launch Python UI")))
                     .OnClicked_Lambda([]() -> FReply
                     {
-                        GEngine->Exec(nullptr, TEXT("py import sys; sys.path.append(r'D:/PythonStoryboardToUE/Plugins/StoryboardTo3D/Content/Python'); import main; main.show_window()"));
+                        LaunchStoryboardPythonUI();
                         return FReply::Handled();
                     })
                 ]

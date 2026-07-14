@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 PHASE 4: Test Single Positioning Iteration
 Tests complete cycle: Capture → AI Analysis → Move Actor → Verify

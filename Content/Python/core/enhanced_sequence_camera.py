@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
-# This code is proprietary. Unauthorized copying or use is prohibited.
+# Licensed under the MIT License. See LICENSE in the repository root.
 """
 Enhanced Camera Cut Track and Viewport Locking for Unreal Engine 5.6
 Properly creates camera cut tracks and locks viewport when generating scenes
