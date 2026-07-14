@@ -11,6 +11,7 @@ via vision-language models and basic heuristic analysis as fallback.
 
 import unreal
 import json
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -168,14 +169,19 @@ class PanelAnalyzer:
 
         filename = Path(image_path).stem.lower()
 
-        # Infer shot type from filename conventions
+        # Split into tokens so we match whole words, not substrings
+        # (avoids "cu" matching inside "rescue", "ws" matching inside "shows", etc).
+        tokens = re.split(r'[^a-z0-9]+', filename)
+
+        # Infer shot type from filename conventions. Check the more specific
+        # "extreme" tokens first, then fall back to plain close/wide.
         shot_type = "medium"
-        if "close" in filename or "cu" in filename:
+        if "ecu" in tokens or "ews" in tokens or "extreme" in tokens:
+            shot_type = "extreme_close" if ("close" in tokens or "cu" in tokens or "ecu" in tokens) else "extreme_wide"
+        elif "close" in tokens or "cu" in tokens:
             shot_type = "close"
-        elif "wide" in filename or "ws" in filename:
+        elif "wide" in tokens or "ws" in tokens:
             shot_type = "wide"
-        elif "extreme" in filename or "ecu" in filename or "ews" in filename:
-            shot_type = "extreme_close" if "close" in filename else "extreme_wide"
 
         return {
             'shot_type': shot_type,

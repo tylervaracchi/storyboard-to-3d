@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from io import BytesIO
+from collections import deque
 import threading
 import queue
 
@@ -60,6 +61,12 @@ class DepthAnalyzer:
         self.available = False
         self.process = None
         self.device = "unknown"
+        # Persistent stdout queue and bounded stderr buffer, fed by single
+        # long-lived reader threads (started after the subprocess spawns)
+        self._stdout_queue = queue.Queue()
+        self._stderr_buffer = deque(maxlen=200)
+        self._stdout_thread = None
+        self._stderr_thread = None
 
         log(" Initializing DepthAnalyzer (subprocess mode)...")
 
@@ -125,6 +132,25 @@ class DepthAnalyzer:
                 bufsize=1  # Line buffered
             )
 
+            # Single long-lived reader threads:
+            # - stdout lines go into a persistent queue (no per-call thread
+            #   churn, no lost lines on timeout)
+            # - stderr is continuously drained into a bounded buffer so the
+            #   pipe never fills and blocks the child (e.g. transformers
+            #   writes download progress bars to stderr on first run)
+            self._stdout_thread = threading.Thread(
+                target=self._drain_pipe_to_queue,
+                args=(self.process.stdout, self._stdout_queue),
+                daemon=True
+            )
+            self._stdout_thread.start()
+            self._stderr_thread = threading.Thread(
+                target=self._drain_pipe_to_buffer,
+                args=(self.process.stderr, self._stderr_buffer),
+                daemon=True
+            )
+            self._stderr_thread.start()
+
             log("⏳ Waiting for server initialization...")
 
             # Wait for ready signal (with timeout)
@@ -142,7 +168,11 @@ class DepthAnalyzer:
                         # Process died
                         log_error(f" PyTorch server crashed during startup (exit code: {exit_code})")
                         try:
-                            stderr_output = self.process.stderr.read()
+                            # stderr is drained by a daemon thread; give it a
+                            # moment to flush, then report the buffered output
+                            if self._stderr_thread:
+                                self._stderr_thread.join(timeout=2)
+                            stderr_output = ''.join(self._stderr_buffer)
                             if stderr_output:
                                 log_error(f"   Stderr output:")
                                 for err_line in stderr_output.split('\n')[:20]:  # Limit to 20 lines
@@ -192,34 +222,40 @@ class DepthAnalyzer:
             log_error(traceback.format_exc())
             self._cleanup()
 
+    @staticmethod
+    def _drain_pipe_to_queue(pipe, line_queue):
+        """Continuously read lines from a pipe into a queue (daemon thread)"""
+        try:
+            for line in pipe:
+                line_queue.put(line)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _drain_pipe_to_buffer(pipe, buffer):
+        """Continuously read lines from a pipe into a bounded buffer (daemon thread)"""
+        try:
+            for line in pipe:
+                buffer.append(line)
+        except Exception:
+            pass
+
     def _read_line_with_timeout(self, timeout_seconds):
         """
         Read a line from subprocess stdout with timeout
+
+        Lines are delivered by a single long-lived reader thread into a
+        persistent queue, so a timeout here never abandons a blocked thread
+        or loses a line to an orphaned reader.
 
         Returns:
             (line, timed_out) tuple
             - line: str or None
             - timed_out: True if timeout occurred
         """
-        result_queue = queue.Queue()
-
-        def reader():
-            try:
-                line = self.process.stdout.readline()
-                result_queue.put(('line', line))
-            except Exception as e:
-                result_queue.put(('error', str(e)))
-
-        reader_thread = threading.Thread(target=reader, daemon=True)
-        reader_thread.start()
-
         try:
-            result_type, result_value = result_queue.get(timeout=timeout_seconds)
-            if result_type == 'line':
-                return (result_value, False)
-            else:
-                log_error(f"Error reading from subprocess: {result_value}")
-                return (None, True)
+            line = self._stdout_queue.get(timeout=max(0, timeout_seconds))
+            return (line, False)
         except queue.Empty:
             # Timeout occurred
             return (None, True)
@@ -362,7 +398,7 @@ class DepthAnalyzer:
             log_error(traceback.format_exc())
             return {'success': False, 'error': str(e)}
 
-    def analyze_depth_relationships(self, depth_array: np.ndarray,
+    def analyze_depth_relationships(self, depth_array: "np.ndarray",
                                    character_positions: list) -> Dict[str, Any]:
         """
         Analyze depth relationships between characters

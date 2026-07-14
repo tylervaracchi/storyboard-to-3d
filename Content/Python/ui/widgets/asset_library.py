@@ -2,6 +2,11 @@
 # Licensed under the MIT License. See LICENSE in the repository root.
 """
 Asset Library management widget for StoryboardTo3D
+
+DEPRECATED / ORPHANED: This module is not imported anywhere in the codebase.
+ui/widgets/__init__.py imports AssetLibraryWidget from asset_library_widget.py,
+which is the active implementation. Do not import this module; it is kept only
+for reference and may be removed.
 """
 
 import json
@@ -390,10 +395,10 @@ class AssetLibraryWidget(QWidget):
         asset_registry = unreal.AssetRegistryHelpers.get_asset_registry()
 
         # Count assets by type
-        skeletal_meshes = asset_registry.get_assets_by_class("SkeletalMesh")
-        static_meshes = asset_registry.get_assets_by_class("StaticMesh")
-        blueprints = asset_registry.get_assets_by_class("Blueprint")
-        worlds = asset_registry.get_assets_by_class("World")
+        skeletal_meshes = asset_registry.get_assets_by_class(unreal.TopLevelAssetPath("/Script/Engine", "SkeletalMesh"))
+        static_meshes = asset_registry.get_assets_by_class(unreal.TopLevelAssetPath("/Script/Engine", "StaticMesh"))
+        blueprints = asset_registry.get_assets_by_class(unreal.TopLevelAssetPath("/Script/Engine", "Blueprint"))
+        worlds = asset_registry.get_assets_by_class(unreal.TopLevelAssetPath("/Script/Engine", "World"))
 
         msg = f"Found:\n"
         msg += f"• {len(skeletal_meshes)} Skeletal Meshes\n"

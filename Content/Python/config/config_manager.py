@@ -7,6 +7,7 @@ Centralized settings and environment management
 
 import os
 import json
+import copy
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -95,9 +96,11 @@ class Config:
         ]
 
         for location in locations:
-            if location.exists() or not location.exists():
+            try:
                 location.mkdir(parents=True, exist_ok=True)
                 return location
+            except OSError:
+                continue
 
         return locations[0]
 
@@ -121,13 +124,13 @@ class Config:
                 with open(self.config_file, 'r') as f:
                     loaded = json.load(f)
                     # Merge with defaults to ensure all keys exist
-                    return self._deep_merge(self.DEFAULTS.copy(), loaded)
+                    return self._deep_merge(copy.deepcopy(self.DEFAULTS), loaded)
             except Exception as e:
                 print(f"Warning: Could not load config file: {e}")
 
         # Create default config
         self.save_config(self.DEFAULTS)
-        return self.DEFAULTS.copy()
+        return copy.deepcopy(self.DEFAULTS)
 
     def save_config(self, config: Optional[Dict[str, Any]] = None):
         """Save configuration to file"""
@@ -258,9 +261,9 @@ class Config:
         """Reset configuration to defaults"""
         if section:
             if section in self.DEFAULTS:
-                self.config[section] = self.DEFAULTS[section].copy()
+                self.config[section] = copy.deepcopy(self.DEFAULTS[section])
         else:
-            self.config = self.DEFAULTS.copy()
+            self.config = copy.deepcopy(self.DEFAULTS)
 
         self.save_config()
 
@@ -279,7 +282,7 @@ class Config:
         try:
             with open(file_path, 'r') as f:
                 imported = json.load(f)
-                self.config = self._deep_merge(self.DEFAULTS.copy(), imported)
+                self.config = self._deep_merge(copy.deepcopy(self.DEFAULTS), imported)
                 self.save_config()
             return True
         except Exception as e:

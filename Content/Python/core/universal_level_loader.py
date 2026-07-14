@@ -88,28 +88,23 @@ def load_any_level_from_library(location_name, show_name):
     actual_path = None
 
     # Try without extension first
-    if unreal.EditorAssetLibrary.does_asset_exist(level_path):
+    editor_asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+    if editor_asset_subsystem.does_asset_exist(level_path):
         exists = True
         actual_path = level_path
         unreal.log(f"Found at: {level_path}")
     else:
-        # Try with .umap extension
-        if unreal.EditorAssetLibrary.does_asset_exist(f"{level_path}.umap"):
-            exists = True
-            actual_path = f"{level_path}.umap"
-            unreal.log(f"Found at: {actual_path}")
-        else:
-            unreal.log(f"Not found at: {level_path} or {level_path}.umap")
+        unreal.log(f"Not found at: {level_path}")
 
     if not exists:
         unreal.log(f"\n Level asset not found")
-        unreal.log(f"Please ensure the level exists at one of these paths:")
+        unreal.log(f"Please ensure the level exists at:")
         unreal.log(f"- {level_path}")
-        unreal.log(f"- {level_path}.umap")
         return False
 
     # Step 6: Get current level for comparison
-    current_world = unreal.EditorLevelLibrary.get_editor_world()
+    unreal_editor_subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+    current_world = unreal_editor_subsystem.get_editor_world()
     current_level_name = current_world.get_name() if current_world else "Unknown"
     unreal.log(f"\n Current level: {current_level_name}")
 
@@ -153,7 +148,7 @@ def load_any_level_from_library(location_name, show_name):
     # Step 8: Wait and verify
     time.sleep(1.0)  # Give it time to load
 
-    new_world = unreal.EditorLevelLibrary.get_editor_world()
+    new_world = unreal_editor_subsystem.get_editor_world()
     new_level_name = new_world.get_name() if new_world else "Unknown"
 
     unreal.log(f"\n New level: {new_level_name}")
@@ -172,7 +167,8 @@ def load_any_level_from_library(location_name, show_name):
 
         # Sometimes the level loads but keeps the same name
         # Check if any actors changed
-        actors = unreal.EditorLevelLibrary.get_all_level_actors()
+        actor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        actors = actor_subsystem.get_all_level_actors()
         unreal.log(f"Current actor count: {len(actors)}")
 
         unreal.log("="*60)

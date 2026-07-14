@@ -1019,8 +1019,10 @@ class ActivePanelWidget(QWidget):
         self.active_panel['location'] = self.location_combo.currentText()
         self.active_panel['shot_type'] = self.shot_type_combo.currentText()
 
-        # Save to file via parent window
+        # Save to file via main window (direct parent is a container widget, so walk up the tree)
         parent = self.parent()
+        while parent and not hasattr(parent, 'save_panel_metadata'):
+            parent = parent.parent()
         if parent and hasattr(parent, 'save_panel_metadata'):
             parent.save_panel_metadata(self.active_panel)
 
@@ -4078,7 +4080,11 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 section = sections[0]
 
                 # Get all channels (0-2: Location XYZ, 3-5: Rotation Roll/Pitch/Yaw, 6-8: Scale XYZ)
-                channels = unreal.MovieSceneSectionExtensions.get_all_channels(section)
+                # get_all_channels fails in UE 5.6 with "Type cannot be hashed" - use get_channels_by_type
+                channels = unreal.MovieSceneSectionExtensions.get_channels_by_type(
+                    section,
+                    unreal.MovieSceneScriptingDoubleChannel
+                )
 
                 if len(channels) < 6:  # Need at least location + rotation
                     continue
@@ -4360,7 +4366,11 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                         sections = track.get_sections()
                         if sections:
                             section = sections[0]
-                            channels = section.get_all_channels()
+                            # get_all_channels fails in UE 5.6 with "Type cannot be hashed" - use get_channels_by_type
+                            channels = unreal.MovieSceneSectionExtensions.get_channels_by_type(
+                                section,
+                                unreal.MovieSceneScriptingDoubleChannel
+                            )
 
                             # Read keyframe at frame 0
                             # Channel order: [0-2] Location X/Y/Z, [3-5] Rotation Roll/Pitch/Yaw
@@ -4500,8 +4510,8 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                         from pathlib import Path
                         from datetime import datetime
 
-                        # Create diagnostic file in debug folder
-                        panel_name = self.active_panel.get('path', 'unknown').replace('.png', '') if self.active_panel else 'unknown'
+                        # Create diagnostic file in debug folder (use stem, not the absolute path)
+                        panel_name = Path(self.active_panel.get('path', 'unknown')).stem if self.active_panel else 'unknown'
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         debug_root = Path(unreal.Paths.project_saved_dir()) / "StoryboardTo3D_Debug" / panel_name
                         debug_root.mkdir(parents=True, exist_ok=True)
@@ -4646,6 +4656,8 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 # ACCEPT - Score improved or stayed the same (allow refinements)
                 improvement = current_score - self.best_score
                 self.best_score = current_score
+                # Record the score even when no adjustments were applied (e.g. score >= 80 with empty adjustments)
+                self.last_match_score = current_score
                 self.best_actor_transforms = self._capture_actor_transforms(sequence_asset)
 
                 if improvement > 0:
@@ -5274,7 +5286,11 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 section = sections[0]
 
                 # Get channels
-                channels = unreal.MovieSceneSectionExtensions.get_all_channels(section)
+                # get_all_channels fails in UE 5.6 with "Type cannot be hashed" - use get_channels_by_type
+                channels = unreal.MovieSceneSectionExtensions.get_channels_by_type(
+                    section,
+                    unreal.MovieSceneScriptingDoubleChannel
+                )
                 unreal.log(f"DEBUG: Got {len(channels)} channels")
 
                 if len(channels) < 3:
@@ -5532,7 +5548,8 @@ Shot Type: {panel_info['shot_type']}"""
             # Import and run analyzer
             unreal.log("Setting up analyzer import path...")
             import sys
-            analyzer_path = r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python'
+            # Derive the plugin Python root from this file (Content/Python/ui/widgets -> Content/Python)
+            analyzer_path = str(Path(__file__).resolve().parents[2])
             if analyzer_path not in sys.path:
                 sys.path.append(analyzer_path)
                 unreal.log(f"Added path: {analyzer_path}")
@@ -5702,8 +5719,10 @@ Shot Type: {panel_info['shot_type']}"""
                 # Store analysis in panel data
                 self.active_panel['analysis'] = result
 
-                # Save panel metadata to file
+                # Save panel metadata to file (direct parent is a container widget, so walk up the tree)
                 parent = self.parent()
+                while parent and not hasattr(parent, 'save_panel_metadata'):
+                    parent = parent.parent()
                 if parent and hasattr(parent, 'save_panel_metadata'):
                     parent.save_panel_metadata(self.active_panel)
 
@@ -5818,9 +5837,11 @@ You can edit them before generating the scene.{available_info}"""
         latest_sequence = None
         latest_time = 0
 
+        asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+
         for seq_dir in sequence_dirs:
-            if unreal.EditorAssetLibrary.does_directory_exist(seq_dir):
-                assets = unreal.EditorAssetLibrary.list_assets(seq_dir, recursive=False)
+            if asset_subsystem.does_directory_exist(seq_dir):
+                assets = asset_subsystem.list_assets(seq_dir, recursive=False)
 
                 unreal.log(f"[FIND] Checking directory: {seq_dir}")
                 unreal.log(f"[FIND] Found {len(assets)} assets")

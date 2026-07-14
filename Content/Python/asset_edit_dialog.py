@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QPushButton, QComboBox, QFileDialog, QMessageBox,
     QGroupBox, QScrollArea, QWidget, QFrame
 )
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTimer
 from PySide6.QtGui import QPixmap, QIcon, QPainter, QColor
 from pathlib import Path
 
@@ -282,19 +282,38 @@ class AssetEditDialog(QDialog):
 
             screenshot_path = thumb_dir / f"{self.asset_name}_viewport.png"
 
+            # Remove any stale capture left over from a previous run so we
+            # never mistake an old file for a fresh one below
+            if screenshot_path.exists():
+                try:
+                    screenshot_path.unlink()
+                except OSError:
+                    pass
+
             # Use Unreal's screenshot command
             unreal.SystemLibrary.execute_console_command(
                 None,
                 f'HighResShot 256x256 filename="{screenshot_path}"'
             )
 
-            # Wait a moment for screenshot to save
-            import time
-            time.sleep(0.5)
+            # HighResShot is latent - the file is written on a later engine
+            # tick, which cannot happen while this call blocks the game
+            # thread. Poll for it on the Qt event loop instead of sleeping.
+            self.capture_btn.setEnabled(False)
+            self._capture_poll_attempts = 0
+            self._poll_viewport_capture(screenshot_path)
 
-            # Load and display
-            if screenshot_path.exists():
-                pixmap = QPixmap(str(screenshot_path))
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to capture viewport: {e}")
+
+    def _poll_viewport_capture(self, screenshot_path, max_attempts=20):
+        """Poll for the async HighResShot output without blocking the game thread"""
+        self._capture_poll_attempts += 1
+
+        if screenshot_path.exists():
+            self.capture_btn.setEnabled(True)
+            pixmap = QPixmap(str(screenshot_path))
+            if not pixmap.isNull():
                 scaled = pixmap.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.thumbnail_label.setPixmap(scaled)
                 self.thumbnail_path = str(screenshot_path)
@@ -303,9 +322,14 @@ class AssetEditDialog(QDialog):
                 QMessageBox.information(self, "Success", "Viewport captured!\n\nMake sure the asset was visible in the viewport.")
             else:
                 QMessageBox.warning(self, "Error", "Failed to capture viewport")
+            return
 
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to capture viewport: {e}")
+        if self._capture_poll_attempts >= max_attempts:
+            self.capture_btn.setEnabled(True)
+            QMessageBox.warning(self, "Error", "Failed to capture viewport")
+            return
+
+        QTimer.singleShot(100, lambda: self._poll_viewport_capture(screenshot_path, max_attempts))
 
     def generate_thumbnail(self):
         """Auto-generate thumbnail from asset"""
@@ -377,7 +401,7 @@ class AssetEditDialog(QDialog):
                 aliases = [a.strip() for a in aliases_text.split(',') if a.strip()]
 
             # Update thumbnail in library structure
-            asset_dict = self.lib.library.get(self.category, {})
+            asset_dict = self.lib.library.setdefault(self.category, {})
             if self.asset_name not in asset_dict:
                 asset_dict[self.asset_name] = {}
 

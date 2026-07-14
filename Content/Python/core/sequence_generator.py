@@ -77,13 +77,15 @@ class SequenceGenerator:
 
         unreal.log(f"Creating sequence: {sequence_name} for show: {self.show_name or 'No show'}")
 
+        asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+
         # Ensure directory exists
-        if not unreal.EditorAssetLibrary.does_directory_exist(self.sequence_dir):
-            unreal.EditorAssetLibrary.make_directory(self.sequence_dir)
+        if not asset_subsystem.does_directory_exist(self.sequence_dir):
+            asset_subsystem.make_directory(self.sequence_dir)
 
         # Load existing or create new
-        if unreal.EditorAssetLibrary.does_asset_exist(sequence_path):
-            sequence = unreal.EditorAssetLibrary.load_asset(sequence_path)
+        if asset_subsystem.does_asset_exist(sequence_path):
+            sequence = asset_subsystem.load_asset(sequence_path)
             unreal.log(f"Loaded existing sequence: {sequence_name}")
         else:
             sequence = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
@@ -109,7 +111,8 @@ class SequenceGenerator:
         fps = 30
         start_frame = 0
         end_frame = int(duration * fps)
-        movie_scene.set_playback_range(start_frame, end_frame)
+        sequence.set_playback_start(start_frame)
+        sequence.set_playback_end(end_frame)
 
         # Bind camera
         if scene_data.get('camera'):
@@ -120,7 +123,7 @@ class SequenceGenerator:
             self.add_actor_to_sequence(sequence, actor, duration)
 
         # Save
-        unreal.EditorAssetLibrary.save_asset(sequence_path)
+        asset_subsystem.save_asset(sequence_path)
 
         unreal.log(f"Sequence created successfully: {sequence_name}")
         return sequence
@@ -150,7 +153,7 @@ class SequenceGenerator:
             return
 
         # Add camera cuts track
-        camera_cut_track = movie_scene.add_track(unreal.MovieSceneCameraCutTrack)
+        camera_cut_track = sequence.add_track(unreal.MovieSceneCameraCutTrack)
 
         # Configure cut section
         camera_cut_section = camera_cut_track.add_section()
@@ -216,13 +219,15 @@ class SequenceGenerator:
 
         unreal.log(f"Creating master sequence with {len(sequences)} shots")
 
+        asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+
         # Ensure directory exists
-        if not unreal.EditorAssetLibrary.does_directory_exist(self.sequence_dir):
-            unreal.EditorAssetLibrary.make_directory(self.sequence_dir)
+        if not asset_subsystem.does_directory_exist(self.sequence_dir):
+            asset_subsystem.make_directory(self.sequence_dir)
 
         # Load existing or create new
-        if unreal.EditorAssetLibrary.does_asset_exist(master_path):
-            master = unreal.EditorAssetLibrary.load_asset(master_path)
+        if asset_subsystem.does_asset_exist(master_path):
+            master = asset_subsystem.load_asset(master_path)
         else:
             master = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
                 asset_name=master_name,
@@ -242,7 +247,7 @@ class SequenceGenerator:
             return None
 
         # Add subsequence track
-        sub_track = movie_scene.add_track(unreal.MovieSceneSubTrack)
+        sub_track = master.add_track(unreal.MovieSceneSubTrack)
 
         # Add each sequence
         current_time = 0
@@ -261,8 +266,7 @@ class SequenceGenerator:
             # Get duration from sequence
             seq_movie_scene = seq.get_movie_scene()
             if seq_movie_scene:
-                playback_range = seq_movie_scene.get_playback_range()
-                duration = playback_range.get_end_frame() - playback_range.get_start_frame()
+                duration = seq.get_playback_end() - seq.get_playback_start()
             else:
                 duration = 90  # Default 3 seconds at 30fps
 
@@ -274,7 +278,7 @@ class SequenceGenerator:
             unreal.log(f"Added subsequence: {seq.get_name()}")
 
         # Save master
-        unreal.EditorAssetLibrary.save_asset(master_path)
+        asset_subsystem.save_asset(master_path)
 
         unreal.log(f"Master sequence created: {master_name}")
         return master

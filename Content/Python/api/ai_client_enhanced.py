@@ -322,7 +322,7 @@ class EnhancedAIClient:
                     result['from_cache'] = False
                     return result
 
-                except json.JSONDecodeError:
+                except ValueError:
                     return {"raw_response": response, "from_cache": False}
 
         except Exception as e:
@@ -745,7 +745,7 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
 
                     print("Script analysis successful")
                     return result
-                except json.JSONDecodeError:
+                except ValueError:
                     print("Failed to parse JSON response")
                     return {"raw_response": response, "from_cache": False}
         except Exception as e:
@@ -865,7 +865,39 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
                 print(f"Response status: {response.status_code}")
 
                 if response.status_code == 200:
-                    result = self._parse_response(response.json())
+                    data = response.json()
+                    status = data.get('status')
+
+                    # GPT-5 Responses API: only poll while the response is still
+                    # running. 'incomplete' is a terminal status (e.g. truncated by
+                    # max_output_tokens), not a signal to keep polling.
+                    if status in ('in_progress', 'queued') and 'id' in data:
+                        response_id = data['id']
+                        print(f"Response {status}, polling for result...")
+
+                        # Poll for up to 120 seconds (GPT-5 reasoning models can take time)
+                        for poll_attempt in range(60):  # 60 attempts, 2s each = 120s max
+                            time.sleep(2)
+                            poll_response = self.session.get(
+                                f"{self.endpoint}/{response_id}",
+                                timeout=self.timeout
+                            )
+
+                            if poll_response.status_code == 200:
+                                data = poll_response.json()
+                                status = data.get('status')
+                                print(f"Poll {poll_attempt + 1}: status={status}")
+
+                                if status in ('in_progress', 'queued'):
+                                    continue
+                                break
+                            else:
+                                print(f"Poll failed: {poll_response.status_code}")
+
+                    if status == 'incomplete':
+                        print(f"Response incomplete: {data.get('incomplete_details')}")
+
+                    result = self._parse_response(data)
                     print(f"Successfully parsed response")
                     return result
                 elif response.status_code == 429:

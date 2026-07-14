@@ -127,7 +127,7 @@ class SceneBuilder:
         with unreal.ScopedEditorTransaction(f"Generate Panel {panel_index}") as trans:
             unreal.log(f"Starting build_scene with panel_index={panel_index}")
 
-            self.world = unreal.EditorLevelLibrary.get_editor_world()
+            self.world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
             if not self.world:
                 unreal.log_error("No editor world found")
                 trans.cancel()
@@ -244,7 +244,7 @@ class SceneBuilder:
                             location_data['level_path'] = location_path
                             location_data['found'] = True
                             
-                            success = unreal.EditorLevelLibrary.load_level(location_path)
+                            success = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).load_level(location_path)
                             location_data['loaded'] = success
                             
                             if success:
@@ -285,13 +285,13 @@ class SceneBuilder:
             if self.show_name:
                 sequence_path = f"/Game/StoryboardSequences/{self.show_name}"
 
-            if not unreal.EditorAssetLibrary.does_directory_exist(sequence_path):
-                unreal.EditorAssetLibrary.make_directory(sequence_path)
+            if not unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).does_directory_exist(sequence_path):
+                unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).make_directory(sequence_path)
 
             full_path = f"{sequence_path}/{sequence_name}"
 
-            if unreal.EditorAssetLibrary.does_asset_exist(full_path):
-                sequence = unreal.EditorAssetLibrary.load_asset(full_path)
+            if unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).does_asset_exist(full_path):
+                sequence = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).load_asset(full_path)
                 unreal.log(f"Using existing sequence: {sequence_name}")
             else:
                 factory = unreal.LevelSequenceFactoryNew()
@@ -360,7 +360,7 @@ class SceneBuilder:
                 unreal.log(f"Position: X={position.x:.0f}, Y={position.y:.0f}, Z={position.z:.0f}")
 
                 if char_path:
-                    if not unreal.EditorAssetLibrary.does_asset_exist(char_path):
+                    if not unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).does_asset_exist(char_path):
                         error_collector.add_error(char_name, f"Asset does not exist: {char_path}")
                         character_configs.append(self._create_placeholder_config(char_name, position))
                         continue
@@ -417,7 +417,7 @@ class SceneBuilder:
                 position = unreal.Vector(0, 0, 0)  # AI positioning handles placement
 
                 if prop_path:
-                    if not unreal.EditorAssetLibrary.does_asset_exist(prop_path):
+                    if not unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).does_asset_exist(prop_path):
                         error_collector.add_error(prop_name, f"Asset does not exist: {prop_path}")
                         prop_configs.append(self._create_placeholder_config(prop_name, position))
                         continue
@@ -572,13 +572,14 @@ class SceneBuilder:
         
         Removes all actors tagged with 'StoryboardGenerated'.
         """
-        all_actors = unreal.EditorLevelLibrary.get_all_level_actors()
+        actor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        all_actors = actor_subsystem.get_all_level_actors()
         cleared_count = 0
 
         for actor in all_actors:
             if actor and hasattr(actor, 'tags'):
                 if 'StoryboardGenerated' in actor.tags:
-                    unreal.EditorLevelLibrary.destroy_actor(actor)
+                    actor_subsystem.destroy_actor(actor)
                     cleared_count += 1
 
         if cleared_count > 0:
@@ -700,7 +701,7 @@ class SceneBuilder:
                     if object_template:
                         static_mesh_component = object_template.static_mesh_component
                         if static_mesh_component:
-                            cube = unreal.EditorAssetLibrary.load_asset('/Engine/BasicShapes/Cube')
+                            cube = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).load_asset('/Engine/BasicShapes/Cube')
                             if cube:
                                 static_mesh_component.set_static_mesh(cube)
                         object_template.set_actor_scale3d(unreal.Vector(0.5, 0.5, 2.0))
@@ -714,11 +715,11 @@ class SceneBuilder:
                     unreal.log_error(f"No asset path for {name}")
                     return None
 
-                if not unreal.EditorAssetLibrary.does_asset_exist(asset_path):
+                if not unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).does_asset_exist(asset_path):
                     unreal.log_error(f"Asset doesn't exist: {asset_path}")
                     return None
 
-                asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+                asset = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).load_asset(asset_path)
                 if not asset:
                     unreal.log_error(f"Failed to load asset: {asset_path}")
                     return None
@@ -728,7 +729,7 @@ class SceneBuilder:
                 # Try as blueprint
                 if 'BP_' in asset_path or 'blueprint' in asset_path.lower():
                     try:
-                        blueprint_class = unreal.EditorAssetLibrary.load_blueprint_class(asset_path)
+                        blueprint_class = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).load_blueprint_class(asset_path)
                         if blueprint_class:
                             spawnable = sequence.add_spawnable_from_class(blueprint_class)
                     except:
@@ -947,7 +948,7 @@ class SceneBuilder:
 
         # Save
         try:
-            unreal.EditorAssetLibrary.save_asset(sequence_path)
+            unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).save_asset(sequence_path)
             unreal.log(f"Sequence saved: {sequence_path}")
         except Exception as e:
             unreal.log_error(f"Failed to save sequence: {e}")

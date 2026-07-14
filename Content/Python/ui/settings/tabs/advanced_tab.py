@@ -23,6 +23,7 @@ class AdvancedTab(QWidget):
     """Advanced settings tab"""
 
     settings_changed = Signal()
+    reset_all_requested = Signal()
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
@@ -205,7 +206,7 @@ class AdvancedTab(QWidget):
         """Calculate cache size"""
         try:
             from pathlib import Path
-            cache_path = Path(__file__).parent.parent.parent / ".cache"
+            cache_path = Path(__file__).parent.parent.parent.parent / ".cache"
 
             if cache_path.exists():
                 size = sum(f.stat().st_size for f in cache_path.rglob('*') if f.is_file())
@@ -228,7 +229,7 @@ class AdvancedTab(QWidget):
 
         if reply == QMessageBox.Yes:
             try:
-                cache_path = Path(__file__).parent.parent.parent / ".cache" / "ai_analysis"
+                cache_path = Path(__file__).parent.parent.parent.parent / ".cache" / "ai_analysis"
                 if cache_path.exists():
                     import shutil
                     shutil.rmtree(cache_path)
@@ -249,7 +250,7 @@ class AdvancedTab(QWidget):
 
         if reply == QMessageBox.Yes:
             try:
-                cache_path = Path(__file__).parent.parent.parent / ".cache" / "thumbnails"
+                cache_path = Path(__file__).parent.parent.parent.parent / ".cache" / "thumbnails"
                 if cache_path.exists():
                     import shutil
                     shutil.rmtree(cache_path)
@@ -322,8 +323,9 @@ class AdvancedTab(QWidget):
         )
 
         if reply == QMessageBox.Yes:
-            # This would trigger a full reset in the parent dialog
-            self.parent().parent().reset_all_settings()
+            # Let the parent dialog handle the full reset; do not walk the
+            # Qt parent chain, it does not lead to the dialog.
+            self.reset_all_requested.emit()
 
     def load_settings(self):
         """Load settings into UI"""

@@ -296,7 +296,7 @@ class EpisodesManager:
             asset_registry.scan_paths_synchronous([content_path], force_rescan=True)
 
             # Refresh content browser
-            unreal.EditorAssetLibrary.sync_browser_to_objects([content_path])
+            unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).sync_browser_to_objects([content_path])
 
         except Exception as e:
             unreal.log_warning(f"Failed to sync content browser: {e}")

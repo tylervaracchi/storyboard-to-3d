@@ -243,7 +243,7 @@ class ModernStoryboardWindow(QMainWindow):
         panels_path = self.current_episode_path / "Panels"
         if panels_path.exists():
             self.panels = []
-            panel_files = sorted(panels_path.glob("*.png")) + sorted(panels_path.glob("*.jpg"))
+            panel_files = sorted(panels_path.glob("*.png")) + sorted(panels_path.glob("*.jpg")) + sorted(panels_path.glob("*.jpeg"))
 
             # Load panel metadata
             metadata_file = self.current_episode_path / "panels_metadata.json"
@@ -493,9 +493,9 @@ class ModernStoryboardWindow(QMainWindow):
     def sync_content_browser(self):
         """Sync with Unreal Content Browser"""
         try:
-            unreal.EditorAssetLibrary.sync_browser_to_objects([])
-        except:
-            pass
+            unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).sync_browser_to_objects([])
+        except Exception as e:
+            unreal.log_warning(f"Content browser sync failed: {e}")
 
     def setup_periodic_sync(self):
         """Setup periodic content browser sync"""

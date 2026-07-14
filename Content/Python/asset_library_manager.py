@@ -23,8 +23,14 @@ class AssetLibraryManager:
             try:
                 with open(self.library_path, 'r') as f:
                     return json.load(f)
-            except:
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                unreal.log_error(f"Failed to load asset library from {self.library_path}: {e}")
+                try:
+                    backup_path = self.library_path.with_name(self.library_path.name + ".bak")
+                    self.library_path.replace(backup_path)
+                    unreal.log_error(f"Corrupt asset library backed up to {backup_path}")
+                except OSError as backup_error:
+                    unreal.log_error(f"Failed to back up corrupt asset library: {backup_error}")
 
         # Default library structure with descriptions
         #  STANDARDIZED: Using 'asset_path' everywhere

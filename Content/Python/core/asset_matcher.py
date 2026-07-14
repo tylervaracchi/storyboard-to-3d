@@ -16,6 +16,11 @@ from difflib import SequenceMatcher
 from typing import Optional, Dict, Any, List
 
 
+def _get_editor_asset_subsystem():
+    """Get the EditorAssetSubsystem, replacing the deprecated EditorAssetLibrary."""
+    return unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+
+
 class AssetMatcher:
     """
     Matches object names to Unreal Engine assets with show-specific priority.
@@ -101,7 +106,7 @@ class AssetMatcher:
             for asset_data in meshes:
                 if asset_data.asset_class_path.asset_name == 'StaticMesh':
                     asset_name = str(asset_data.asset_name)
-                    asset_path = str(asset_data.get_full_name())
+                    asset_path = str(asset_data.get_soft_object_path())
                     self.asset_cache[asset_name.lower()] = asset_path
 
         unreal.log(f"Asset cache built with {len(self.asset_cache)} general assets")
@@ -137,8 +142,10 @@ class AssetMatcher:
 
         # PRIORITY 2: Exact match in general cache
         if object_name_lower in self.asset_cache:
-            unreal.log(f"Matched '{object_name}' in general cache")
-            return self.load_asset(self.asset_cache[object_name_lower])
+            asset = self.load_asset(self.asset_cache[object_name_lower])
+            if asset:
+                unreal.log(f"Matched '{object_name}' in general cache")
+                return asset
 
         # PRIORITY 3: Fuzzy matching
         asset = self._fuzzy_match(object_name_lower)
@@ -250,7 +257,7 @@ class AssetMatcher:
             if "'" in asset_path:
                 asset_path = asset_path.split("'")[1]
 
-            asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+            asset = _get_editor_asset_subsystem().load_asset(asset_path)
 
             if asset:
                 return asset
@@ -289,12 +296,12 @@ class AssetMatcher:
 
         for keyword, shape_path in shape_map.items():
             if keyword in object_name.lower():
-                asset = unreal.EditorAssetLibrary.load_asset(shape_path)
+                asset = _get_editor_asset_subsystem().load_asset(shape_path)
                 if asset:
                     unreal.log(f"Using fallback shape for '{object_name}'")
                     return asset
 
-        default = unreal.EditorAssetLibrary.load_asset('/Engine/BasicShapes/Cube')
+        default = _get_editor_asset_subsystem().load_asset('/Engine/BasicShapes/Cube')
         if default:
             unreal.log(f"Using default cube for '{object_name}'")
 
@@ -329,11 +336,11 @@ class AssetMatcher:
         ]
 
         for path in character_paths:
-            asset = unreal.EditorAssetLibrary.load_asset(path)
+            asset = _get_editor_asset_subsystem().load_asset(path)
             if asset:
                 return asset
 
-        return unreal.EditorAssetLibrary.load_asset('/Engine/BasicShapes/Cylinder')
+        return _get_editor_asset_subsystem().load_asset('/Engine/BasicShapes/Cylinder')
 
     def find_prop_assets(self, prop_names: List[str]) -> List[Dict[str, Any]]:
         """
@@ -392,7 +399,11 @@ class AssetMatcher:
         filter = unreal.ARFilter()
         filter.package_paths = ['/Game']
         filter.recursive_paths = True
-        filter.class_paths = ['StaticMesh', 'SkeletalMesh', 'Blueprint']
+        filter.class_paths = [
+            unreal.TopLevelAssetPath('/Script/Engine', 'StaticMesh'),
+            unreal.TopLevelAssetPath('/Script/Engine', 'SkeletalMesh'),
+            unreal.TopLevelAssetPath('/Script/Engine', 'Blueprint'),
+        ]
 
         assets = asset_registry.get_assets(filter)
 
@@ -405,7 +416,7 @@ class AssetMatcher:
             if search_lower in asset_name:
                 matches.append({
                     'name': str(asset_data.asset_name),
-                    'path': str(asset_data.get_full_name()),
+                    'path': str(asset_data.get_soft_object_path()),
                     'type': str(asset_data.asset_class_path.asset_name)
                 })
 

@@ -27,10 +27,13 @@ class SceneAdjuster:
         """Find an actor in the current level by name"""
         all_actors = self.editor_actor_subsystem.get_all_level_actors()
 
+        # First pass: look for an exact label match across all actors
         for actor in all_actors:
             if actor.get_actor_label() == actor_name:
                 return actor
-            # Also check if the name is part of the label
+
+        # Second pass: fall back to substring matching only if no exact match exists
+        for actor in all_actors:
             if actor_name.lower() in actor.get_actor_label().lower():
                 return actor
 
@@ -285,8 +288,11 @@ class SceneAdjuster:
                             current_z = key.get_value()
                             break
 
-                except:
-                    pass
+                except Exception as e:
+                    unreal.log_warning(f"Failed to read current keyframe values: {e}")
+                    if not self.use_absolute_positioning:
+                        unreal.log_warning("Aborting relative move: cannot safely compute delta from unknown current position")
+                        return False
 
                 # Apply positioning based on mode
                 if self.use_absolute_positioning:
@@ -495,6 +501,29 @@ class SceneAdjuster:
 
         return None
 
+    def _get_character_binding_names(self) -> List[str]:
+        """Get binding names in the sequence that are not cameras or lights
+
+        Used in place of hardcoded character names so this logic works for any show,
+        not just ones with actors named 'Oat'/'Sprout'.
+        """
+        names = []
+        if not self.sequence_asset:
+            return names
+
+        try:
+            bindings = self.sequence_asset.get_bindings()
+            for binding in bindings:
+                binding_name = str(binding.get_display_name())
+                lower_name = binding_name.lower()
+                if 'camera' in lower_name or 'light' in lower_name:
+                    continue
+                names.append(binding_name)
+        except Exception as e:
+            unreal.log_error(f"Error enumerating sequence bindings: {e}")
+
+        return names
+
     def get_character_position_from_sequence(self, character_name: str) -> Optional[Dict]:
         """
         Get character position from sequence keyframes at frame 0
@@ -568,13 +597,11 @@ class SceneAdjuster:
             import traceback
             unreal.log_error(traceback.format_exc())
 
-        # Fallback: assume origin with sitting head height for framing
-        # If character is at Z=90 (sitting simulation), head is at ~Z=140 (90 base + 50 head offset)
-        # Camera should look at head/face level (~140cm for sitting, ~160cm standing)
-        unreal.log_warning(f"\n FALLBACK TRIGGERED: Character '{character_name}' not found in sequence!")
-        unreal.log_warning(f"Using fallback position: (0, 0, 140) [sitting head height]")
-        unreal.log_warning(f"This may cause incorrect camera look-at calculations!")
-        return {'x': 0, 'y': 0, 'z': 140}  # Assume sitting character head at ~140cm height
+        # Character not found (or an error occurred while searching above).
+        # Return None so callers can apply their own fallback logic instead of
+        # silently receiving a fabricated position.
+        unreal.log_warning(f"Character '{character_name}' not found - returning None, caller should handle fallback")
+        return None
 
     def apply_camera_adjustment(self, camera_adjustments: Dict[str, Any]) -> bool:
         """
@@ -615,7 +642,7 @@ class SceneAdjuster:
                     camera_current_pos = self._get_actor_position_from_sequence(camera_name, skip_cameras=False)
 
                     # Get characters' average X position to determine "front" vs "behind"
-                    character_names = ['Oat', 'Sprout']
+                    character_names = self._get_character_binding_names()
                     character_x_positions = []
                     for char_name in character_names:
                         char_pos = self.get_character_position_from_sequence(char_name)
@@ -651,7 +678,7 @@ class SceneAdjuster:
 
                 # IMPROVED: For multiple characters, look at CENTER point between them
                 # This gives better medium shot framing than focusing on one character
-                character_names_to_try = ['Oat', 'Sprout']
+                character_names_to_try = self._get_character_binding_names()
                 character_positions = []
 
                 unreal.log(f"Searching for characters: {character_names_to_try}")

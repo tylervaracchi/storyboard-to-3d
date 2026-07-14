@@ -25,18 +25,18 @@ class AssetLibraryWithThumbnails:
         Returns path to thumbnail image or None
         """
         try:
+            # Get thumbnail from editor subsystem
+            asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+
             # Check if asset exists
-            if not unreal.EditorAssetLibrary.does_asset_exist(asset_path):
+            if not asset_subsystem.does_asset_exist(asset_path):
                 unreal.log(f"Asset doesn't exist: {asset_path}")
                 return None
 
             # Load the asset
-            asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+            asset = asset_subsystem.load_asset(asset_path)
             if not asset:
                 return None
-
-            # Get thumbnail from editor subsystem
-            thumbnail_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
 
             # Generate thumbnail path
             asset_name = Path(asset_path).stem
@@ -46,9 +46,9 @@ class AssetLibraryWithThumbnails:
             # Note: This is a simplified approach - actual implementation might need more complex thumbnail extraction
 
             # Alternative: Use viewport capture for 3D assets
-            if asset_path.endswith(('.uasset', '.BP')):
-                # For blueprints/meshes, we could capture a viewport image
-                self.capture_asset_thumbnail(asset, thumbnail_path)
+            # Content Browser object paths (e.g. /Game/Characters/BP_OatDog) never carry
+            # a .uasset/.BP suffix, so always attempt capture after a successful load.
+            self.capture_asset_thumbnail(asset, thumbnail_path)
 
             if thumbnail_path.exists():
                 return str(thumbnail_path)
@@ -123,18 +123,33 @@ class AssetLibraryWithThumbnails:
 
         thumbnail_path = self.thumbnails_dir / f"{name}_manual.png"
 
-        # Take screenshot of current viewport
-        unreal.SystemLibrary.execute_console_command(None, f"Screenshot {thumbnail_path}")
+        # Take screenshot of current viewport (quote the path so spaces in the
+        # project path don't truncate the filename argument)
+        unreal.SystemLibrary.execute_console_command(None, f'Screenshot "{thumbnail_path}"')
+        unreal.log("Note: Screenshot will be available in 30-40 seconds")
 
-        # Update library with new thumbnail
-        if category in self.library and name in self.library[category]:
-            self.library[category][name]["thumbnail"] = str(thumbnail_path)
-            self.save_library()
-            unreal.log(f"Manual thumbnail saved for {name}")
-            unreal.log("Note: Screenshot will be available in 30-40 seconds")
-            return str(thumbnail_path)
+        if not (category in self.library and name in self.library[category]):
+            return None
 
-        return None
+        # The screenshot is written asynchronously by the engine, so poll for the
+        # file across ticks and only persist the path into the library once it
+        # actually exists, instead of assuming it succeeded immediately.
+        state = {"elapsed": 0.0, "handle": None}
+
+        def _check_screenshot_ready(delta_time):
+            state["elapsed"] += delta_time
+            if thumbnail_path.exists():
+                self.library[category][name]["thumbnail"] = str(thumbnail_path)
+                self.save_library()
+                unreal.log(f"Manual thumbnail saved for {name}")
+                unreal.unregister_slate_post_tick_callback(state["handle"])
+            elif state["elapsed"] > 60.0:
+                unreal.log_warning(f"Screenshot for {name} never appeared at {thumbnail_path}")
+                unreal.unregister_slate_post_tick_callback(state["handle"])
+
+        state["handle"] = unreal.register_slate_post_tick_callback(_check_screenshot_ready)
+
+        return str(thumbnail_path)
 
     def get_thumbnail_for_ui(self, category: str, name: str) -> str:
         """Get thumbnail path for UI display"""
@@ -154,8 +169,14 @@ class AssetLibraryWithThumbnails:
             try:
                 with open(self.library_path, 'r') as f:
                     return json.load(f)
-            except:
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                unreal.log_error(f"Failed to load asset library from {self.library_path}: {e}")
+                try:
+                    backup_path = self.library_path.with_suffix(self.library_path.suffix + ".bak")
+                    self.library_path.replace(backup_path)
+                    unreal.log_error(f"Backed up corrupt asset library to {backup_path}")
+                except OSError as backup_error:
+                    unreal.log_error(f"Failed to back up corrupt asset library: {backup_error}")
         return {"characters": {}, "props": {}, "locations": {}}
 
 def setup_with_thumbnails():

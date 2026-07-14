@@ -314,11 +314,12 @@ class VisualMarkerRenderer:
                     depth_colored = cv2.applyColorMap(depth_array, cv2.COLORMAP_TURBO)
                     img = cv2.addWeighted(img, 0.7, depth_colored, 0.3, 0)
 
-                    # Add depth legend (TURBO colormap: dark blue=near, red=far)
+                    # Add depth legend (TURBO colormap: dark blue=low value, red=high value;
+                    # Depth-Anything-V2 output has higher value=closer to camera, so near=red, far=blue)
                     legend_x, legend_y = 20, 20
-                    cv2.putText(img, 'Depth: Near (Blue)', (legend_x, legend_y),
+                    cv2.putText(img, 'Depth: Near (Red)', (legend_x, legend_y),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                    cv2.putText(img, 'Depth: Far (Red)', (legend_x, legend_y + 20),
+                    cv2.putText(img, 'Depth: Far (Blue)', (legend_x, legend_y + 20),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
                 print("DEBUG: Depth map overlay complete")

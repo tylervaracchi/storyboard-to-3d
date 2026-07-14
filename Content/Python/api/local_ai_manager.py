@@ -242,13 +242,30 @@ Be precise with measurements in Unreal units."""
             unreal.log_error(f"[DEBUG InternVL2] Call failed: {e}")
             return {"error": str(e)}
 
-    def capture_viewport(self) -> str:
-        """Capture current viewport"""
+    def capture_viewport(self, callback=None, timeout: float = 5.0) -> str:
+        """Capture current viewport.
+
+        take_high_res_screenshot() is latent - the file is written on a
+        later engine tick, not immediately. Sleeping on the game thread
+        blocks the engine from ticking, so the file can never be written
+        during the wait. Instead, any stale capture is removed up front
+        and a Slate post-tick callback polls for the new file across
+        ticks. Pass callback to be notified with the path on success or
+        None on timeout/failure.
+        """
         viewport_path = Path(unreal.Paths.project_saved_dir()) / "viewport_capture.png"
 
         unreal.log(f"[DEBUG InternVL2] Capturing viewport to {viewport_path}")
 
-        # Use Unreal's screenshot functionality
+        # Remove any stale capture left over from a previous run so it
+        # can't be mistaken for a fresh screenshot.
+        try:
+            if viewport_path.exists():
+                viewport_path.unlink()
+        except Exception as e:
+            unreal.log_warning(f"[DEBUG InternVL2] Could not remove stale capture: {e}")
+
+        # Use Unreal's screenshot functionality (latent - written on a later tick)
         unreal.AutomationLibrary.take_high_res_screenshot(
             1920, 1080,
             str(viewport_path),
@@ -256,13 +273,25 @@ Be precise with measurements in Unreal units."""
             capture_hdr=False
         )
 
-        # Wait for file to be written
-        time.sleep(0.5)
+        # Poll for the file across engine ticks instead of blocking the
+        # game thread with time.sleep(), which would prevent the ticks
+        # the screenshot needs in order to be written.
+        start_time = time.time()
+        handle_container = []
 
-        if viewport_path.exists():
-            unreal.log("[DEBUG InternVL2] Viewport captured successfully")
-        else:
-            unreal.log_error("[DEBUG InternVL2] Failed to capture viewport")
+        def _check_capture(delta_seconds):
+            if viewport_path.exists():
+                unreal.unregister_slate_post_tick_callback(handle_container[0])
+                unreal.log("[DEBUG InternVL2] Viewport captured successfully")
+                if callback:
+                    callback(str(viewport_path))
+            elif time.time() - start_time > timeout:
+                unreal.unregister_slate_post_tick_callback(handle_container[0])
+                unreal.log_error("[DEBUG InternVL2] Failed to capture viewport (timeout)")
+                if callback:
+                    callback(None)
+
+        handle_container.append(unreal.register_slate_post_tick_callback(_check_capture))
 
         return str(viewport_path)
 

@@ -9,21 +9,21 @@ Contains visual markers, sketch analysis, and depth estimation modules
 try:
     from .visual_markers import VisualMarkerRenderer
     VISUAL_MARKERS_AVAILABLE = True
-except ImportError as e:
+except (ImportError, NameError) as e:
     VISUAL_MARKERS_AVAILABLE = False
     print(f"Could not load VisualMarkerRenderer: {e}")
 
 try:
     from .sketch_analyzer import SketchAnalyzer
     SKETCH_ANALYZER_AVAILABLE = True
-except ImportError as e:
+except (ImportError, NameError) as e:
     SKETCH_ANALYZER_AVAILABLE = False
     print(f"Could not load SketchAnalyzer: {e}")
 
 try:
     from .depth_analyzer import DepthAnalyzer
     DEPTH_ANALYZER_AVAILABLE = True
-except ImportError as e:
+except (ImportError, NameError) as e:
     DEPTH_ANALYZER_AVAILABLE = False
     print(f"Could not load DepthAnalyzer: {e}")
 

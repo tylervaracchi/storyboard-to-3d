@@ -728,7 +728,7 @@ NOT: "characters": ["Oat"]  ← WRONG! Missing the rabbit!
         available = self.asset_library[category].keys()
 
         for item in detected_items:
-            match = self.find_best_match(item, available)
+            match = self.find_best_match(item, available, category)
             if match:
                 matches.append(match)
 

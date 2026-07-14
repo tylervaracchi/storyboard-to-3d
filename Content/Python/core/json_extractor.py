@@ -54,12 +54,7 @@ class RobustJSONExtractor:
         try:
             return json.loads(llm_response)
         except json.JSONDecodeError:
-            # Try repair immediately on direct input
-            if JSON_REPAIR_AVAILABLE:
-                try:
-                    return repair_json(llm_response, return_objects=True)
-                except:
-                    pass
+            pass
 
         # Strategy 2: Extract from markdown code blocks
         result = RobustJSONExtractor._try_markdown_extraction(llm_response)
@@ -71,7 +66,18 @@ class RobustJSONExtractor:
         if result is not None:
             return result
 
-        # Strategy 4: Clean control characters and repair
+        # Strategy 4: Try repair on the raw input (after markdown/boundary strategies
+        # have had a chance, so a markdown-fenced/prose-wrapped response isn't
+        # repaired-with-fences-included before those better strategies run)
+        if JSON_REPAIR_AVAILABLE:
+            try:
+                repaired = repair_json(llm_response, return_objects=True)
+                if isinstance(repaired, (dict, list)) and repaired:
+                    return repaired
+            except:
+                pass
+
+        # Strategy 5: Clean control characters and repair
         result = RobustJSONExtractor._try_clean_and_repair(llm_response)
         if result is not None:
             return result
@@ -106,7 +112,9 @@ class RobustJSONExtractor:
                 # Try repair if available
                 if JSON_REPAIR_AVAILABLE:
                     try:
-                        return repair_json(json_str, return_objects=True)
+                        repaired = repair_json(json_str, return_objects=True)
+                        if isinstance(repaired, (dict, list)) and repaired:
+                            return repaired
                     except:
                         pass
 
@@ -150,7 +158,9 @@ class RobustJSONExtractor:
             # Try repair if available
             if JSON_REPAIR_AVAILABLE:
                 try:
-                    return repair_json(json_str, return_objects=True)
+                    repaired = repair_json(json_str, return_objects=True)
+                    if isinstance(repaired, (dict, list)) and repaired:
+                        return repaired
                 except:
                     pass
 
@@ -172,7 +182,9 @@ class RobustJSONExtractor:
         # Try repair if available
         if JSON_REPAIR_AVAILABLE:
             try:
-                return repair_json(cleaned, return_objects=True)
+                repaired = repair_json(cleaned, return_objects=True)
+                if isinstance(repaired, (dict, list)) and repaired:
+                    return repaired
             except:
                 pass
 

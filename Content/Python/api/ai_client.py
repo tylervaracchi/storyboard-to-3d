@@ -93,8 +93,8 @@ class AIClient:
                     # Map settings provider to AIClient provider
                     if 'gpt' in active_provider.lower() or 'openai' in active_provider.lower():
                         self.selected_model = get_setting('ai_settings.openai_model', 'gpt-4o')
-                        # Map model to provider name
-                        if self.selected_model == 'gpt-5':
+                        # Map model to provider name (prefix match, mirrors _build_openai_payload's is_gpt5 check)
+                        if self.selected_model.startswith(('gpt-5', 'o3', 'o4')):
                             provider = "OpenAI GPT-5"
                         elif self.selected_model == 'gpt-4o':
                             provider = "OpenAI GPT-4o"
@@ -125,8 +125,8 @@ class AIClient:
                         # Map settings provider to AIClient provider
                         if 'gpt' in settings_provider.lower() or 'openai' in settings_provider.lower():
                             self.selected_model = ai_settings.get('openai_model', 'gpt-4o')
-                            # Map model to provider name
-                            if self.selected_model == 'gpt-5':
+                            # Map model to provider name (prefix match, mirrors _build_openai_payload's is_gpt5 check)
+                            if self.selected_model.startswith(('gpt-5', 'o3', 'o4')):
                                 provider = "OpenAI GPT-5"
                             elif self.selected_model == 'gpt-4o':
                                 provider = "OpenAI GPT-4o"
@@ -341,7 +341,7 @@ class AIClient:
             # Make request with retries
             response = self._make_request(custom_prompt, image_base64=image_base64)
 
-            if response:
+            if response is not None:  # Check for None, not truthiness (empty string is valid)
                 # Try to parse as JSON
                 try:
                     return json.loads(response)
@@ -352,7 +352,10 @@ class AIClient:
         except Exception as e:
             print(f"Panel analysis error: {e}")
 
-        return self._mock_panel_analysis()
+        # No real response obtained - flag this so callers can tell mock data from a real analysis
+        mock_result = self._mock_panel_analysis()
+        mock_result["mock"] = True
+        return mock_result
 
     def analyze_script(self, script_text: str) -> Dict[str, Any]:
         """
@@ -382,13 +385,16 @@ class AIClient:
 
         response = self._make_request(prompt)
 
-        if response:
+        if response is not None:  # Check for None, not truthiness (empty string is valid)
             try:
                 return json.loads(response)
             except json.JSONDecodeError:
                 return {"raw_response": response}
 
-        return self._mock_script_analysis()
+        # No real response obtained - flag this so callers can tell mock data from a real analysis
+        mock_result = self._mock_script_analysis()
+        mock_result["mock"] = True
+        return mock_result
 
     def _make_request(self, prompt: str, image_base64: Optional[str] = None,
                      max_tokens: Optional[int] = None) -> Optional[str]:
@@ -441,10 +447,12 @@ class AIClient:
                     data = response.json()
                     print(f"[_make_request] Initial status: {data.get('status')}")
 
-                    # GPT-5: Poll if incomplete
-                    if data.get('status') == 'incomplete' and 'id' in data:
+                    # GPT-5: Poll only while the response is still processing.
+                    # 'incomplete' is a TERMINAL status (e.g. truncated by max_output_tokens),
+                    # not a signal to keep polling - fall through and parse the partial data.
+                    if data.get('status') in ('in_progress', 'queued') and 'id' in data:
                         response_id = data['id']
-                        print(f"[_make_request] Response incomplete, polling for result...")
+                        print(f"[_make_request] Response {data.get('status')}, polling for result...")
 
                         # Poll for up to 120 seconds (GPT-5 reasoning models can take time)
                         for poll_attempt in range(60):  # 60 attempts, 2s each = 120s max
@@ -462,11 +470,20 @@ class AIClient:
                                 if status == 'completed':
                                     print(f"[_make_request] Response completed!")
                                     break
+                                elif status == 'incomplete':
+                                    # Terminal: response was truncated. Log why and return the partial text.
+                                    print(f"[_make_request] Response incomplete: {data.get('incomplete_details')}")
+                                    break
                                 elif status == 'failed':
                                     print(f"[_make_request] Response failed: {data.get('error')}")
                                     return None
+                                elif status not in ('in_progress', 'queued'):
+                                    # Unknown terminal status - stop polling and parse what we have
+                                    break
                             else:
                                 print(f"[_make_request] Poll failed: {poll_response.status_code}")
+                    elif data.get('status') == 'incomplete':
+                        print(f"[_make_request] Response incomplete: {data.get('incomplete_details')}")
 
                     result = self._parse_response(data)
                     print(f"[_make_request] Parsed result: {result[:100] if result else None}")

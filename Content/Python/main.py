@@ -37,8 +37,8 @@ def initialize_core_systems():
     unreal.log("Initializing StoryboardTo3D Plugin...")
     
     try:
-        from auto_setup import auto_setup
-        auto_setup()
+        from asset_library_manager import get_asset_library
+        get_asset_library()
         unreal.log("Asset library initialized")
     except Exception as e:
         unreal.log_warning(f"Asset library initialization: {e}")
