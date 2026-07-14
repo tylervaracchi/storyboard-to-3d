@@ -395,7 +395,7 @@ class ModernStoryboardWindow(QMainWindow):
         import_layout = QHBoxLayout(import_widget)
         import_layout.setContentsMargins(10, 10, 10, 10)
 
-        import_btn = QPushButton(" Import Panels")
+        import_btn = QPushButton("🎬 Import Panels")
         import_btn.setObjectName("importButton")
         import_btn.clicked.connect(self.import_panels_dialog)
         import_layout.addWidget(import_btn)

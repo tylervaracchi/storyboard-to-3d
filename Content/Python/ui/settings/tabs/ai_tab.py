@@ -109,7 +109,7 @@ class AISettingsTab(QWidget):
         layout.addWidget(provider_group)
 
         # === LLAVA (LOCAL) SETTINGS ===
-        llava_group = QGroupBox(" LLaVA (Local) - Free")
+        llava_group = QGroupBox("🏠 LLaVA (Local) - Free")
         llava_layout = QVBoxLayout()
 
         llava_url_layout = QHBoxLayout()
@@ -128,7 +128,7 @@ class AISettingsTab(QWidget):
         layout.addWidget(llava_group)
 
         # === OPENAI SETTINGS ===
-        openai_group = QGroupBox(" GPT Vision (OpenAI) - Paid")
+        openai_group = QGroupBox("🚀 GPT Vision (OpenAI) - Paid")
         openai_layout = QVBoxLayout()
 
         # OpenAI API Key (SEPARATE)
@@ -140,7 +140,7 @@ class AISettingsTab(QWidget):
         self.openai_api_key_edit.textChanged.connect(self.on_change)
         openai_key_layout.addWidget(self.openai_api_key_edit)
 
-        self.show_openai_key_btn = QPushButton("")
+        self.show_openai_key_btn = QPushButton("👁")
         self.show_openai_key_btn.setCheckable(True)
         self.show_openai_key_btn.toggled.connect(lambda checked: self.toggle_key_visibility(
             self.openai_api_key_edit, self.show_openai_key_btn, checked
@@ -158,7 +158,7 @@ class AISettingsTab(QWidget):
         openai_model_layout.addWidget(self.openai_model_combo)
 
         # Refresh the dropdown from the live OpenAI Models API
-        self.refresh_openai_models_btn = QPushButton("Refresh Models")
+        self.refresh_openai_models_btn = QPushButton("🔄 Refresh Models")
         self.refresh_openai_models_btn.setToolTip("Fetch the current model list from the OpenAI API (requires API key)")
         self.refresh_openai_models_btn.clicked.connect(self.refresh_openai_models)
         openai_model_layout.addWidget(self.refresh_openai_models_btn)
@@ -167,7 +167,7 @@ class AISettingsTab(QWidget):
         openai_layout.addLayout(openai_model_layout)
 
         # Model info label
-        info_label = QLabel(" All models support vision | o-series = reasoning | GPT-5 = newest")
+        info_label = QLabel("💡 All models support vision | o-series = reasoning | GPT-5 = newest")
         info_label.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
         info_label.setWordWrap(True)
         openai_layout.addWidget(info_label)
@@ -180,7 +180,7 @@ class AISettingsTab(QWidget):
         layout.addWidget(openai_group)
 
         # === ANTHROPIC (CLAUDE) SETTINGS ===
-        claude_group = QGroupBox(" Claude (Anthropic) - Paid")
+        claude_group = QGroupBox("🧠 Claude (Anthropic) - Paid")
         claude_layout = QVBoxLayout()
 
         # Claude API Key (SEPARATE)
@@ -192,7 +192,7 @@ class AISettingsTab(QWidget):
         self.claude_api_key_edit.textChanged.connect(self.on_change)
         claude_key_layout.addWidget(self.claude_api_key_edit)
 
-        self.show_claude_key_btn = QPushButton("")
+        self.show_claude_key_btn = QPushButton("👁")
         self.show_claude_key_btn.setCheckable(True)
         self.show_claude_key_btn.toggled.connect(lambda checked: self.toggle_key_visibility(
             self.claude_api_key_edit, self.show_claude_key_btn, checked
@@ -210,7 +210,7 @@ class AISettingsTab(QWidget):
         claude_model_layout.addWidget(self.claude_model_combo)
 
         # Refresh the dropdown from the live Anthropic Models API
-        self.refresh_claude_models_btn = QPushButton("Refresh Models")
+        self.refresh_claude_models_btn = QPushButton("🔄 Refresh Models")
         self.refresh_claude_models_btn.setToolTip("Fetch the current model list from the Anthropic API (requires API key)")
         self.refresh_claude_models_btn.clicked.connect(self.refresh_claude_models)
         claude_model_layout.addWidget(self.refresh_claude_models_btn)
@@ -219,7 +219,7 @@ class AISettingsTab(QWidget):
         claude_layout.addLayout(claude_model_layout)
 
         # Claude info label
-        claude_info_label = QLabel(" Recommended: claude-sonnet-4-6 for best spatial reasoning | All support vision")
+        claude_info_label = QLabel("⭐ Recommended: claude-sonnet-4-6 for best spatial reasoning | All support vision")
         claude_info_label.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
         claude_info_label.setWordWrap(True)
         claude_layout.addWidget(claude_info_label)
@@ -232,7 +232,7 @@ class AISettingsTab(QWidget):
         layout.addWidget(claude_group)
 
         # === GOOGLE GEMINI SETTINGS ===
-        gemini_group = QGroupBox(" Google Gemini - Paid")
+        gemini_group = QGroupBox("✨ Google Gemini - Paid")
         gemini_layout = QVBoxLayout()
 
         # Gemini API Key (SEPARATE)
@@ -244,7 +244,7 @@ class AISettingsTab(QWidget):
         self.gemini_api_key_edit.textChanged.connect(self.on_change)
         gemini_key_layout.addWidget(self.gemini_api_key_edit)
 
-        self.show_gemini_key_btn = QPushButton("")
+        self.show_gemini_key_btn = QPushButton("👁")
         self.show_gemini_key_btn.setCheckable(True)
         self.show_gemini_key_btn.toggled.connect(lambda checked: self.toggle_key_visibility(
             self.gemini_api_key_edit, self.show_gemini_key_btn, checked
@@ -262,7 +262,7 @@ class AISettingsTab(QWidget):
         gemini_model_layout.addWidget(self.gemini_model_combo)
 
         # Refresh the dropdown from the live Gemini Models API
-        self.refresh_gemini_models_btn = QPushButton("Refresh Models")
+        self.refresh_gemini_models_btn = QPushButton("🔄 Refresh Models")
         self.refresh_gemini_models_btn.setToolTip("Fetch the current model list from the Google Gemini API (requires API key)")
         self.refresh_gemini_models_btn.clicked.connect(self.refresh_gemini_models)
         gemini_model_layout.addWidget(self.refresh_gemini_models_btn)
@@ -271,7 +271,7 @@ class AISettingsTab(QWidget):
         gemini_layout.addLayout(gemini_model_layout)
 
         # Gemini info label
-        gemini_info_label = QLabel(" Recommended: gemini-2.5-flash for fast, low-cost analysis | Both support vision")
+        gemini_info_label = QLabel("⭐ Recommended: gemini-2.5-flash for fast, low-cost analysis | Both support vision")
         gemini_info_label.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
         gemini_info_label.setWordWrap(True)
         gemini_layout.addWidget(gemini_info_label)
@@ -323,7 +323,7 @@ class AISettingsTab(QWidget):
         self.use_multiview_check.stateChanged.connect(self.on_change)
         analysis_layout.addWidget(self.use_multiview_check)
 
-        multiview_note = QLabel(" Disable this if positioning doesn't change captures\n(Uses viewport screenshot instead - works with spawnables)")
+        multiview_note = QLabel("⚠️ Disable this if positioning doesn't change captures\n(Uses viewport screenshot instead - works with spawnables)")
         multiview_note.setStyleSheet("color: #ff8800; font-size: 10px; padding-left: 20px;")
         multiview_note.setWordWrap(True)
         analysis_layout.addWidget(multiview_note)

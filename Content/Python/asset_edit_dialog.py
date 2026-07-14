@@ -83,23 +83,23 @@ class AssetEditDialog(QDialog):
         # Thumbnail buttons
         thumb_btn_layout = QVBoxLayout()
 
-        self.browse_btn = QPushButton(" Browse Image...")
+        self.browse_btn = QPushButton("📁 Browse Image...")
         self.browse_btn.clicked.connect(self.browse_thumbnail)
         thumb_btn_layout.addWidget(self.browse_btn)
 
-        self.capture_btn = QPushButton(" Capture from Viewport")
+        self.capture_btn = QPushButton("📷 Capture from Viewport")
         self.capture_btn.clicked.connect(self.capture_viewport)
         thumb_btn_layout.addWidget(self.capture_btn)
 
-        self.generate_btn = QPushButton(" Auto Generate")
+        self.generate_btn = QPushButton("🎨 Auto Generate")
         self.generate_btn.clicked.connect(self.generate_thumbnail)
         thumb_btn_layout.addWidget(self.generate_btn)
 
-        self.clear_btn = QPushButton(" Clear Thumbnail")
+        self.clear_btn = QPushButton("❌ Clear Thumbnail")
         self.clear_btn.clicked.connect(self.clear_thumbnail)
         thumb_btn_layout.addWidget(self.clear_btn)
 
-        self.generate_all_btn = QPushButton(" Generate All (Show)")
+        self.generate_all_btn = QPushButton("🖼️ Generate All (Show)")
         self.generate_all_btn.setToolTip(
             "Auto-generate thumbnails for every asset in this show's library")
         self.generate_all_btn.clicked.connect(self.generate_all_thumbnails)
@@ -128,7 +128,7 @@ class AssetEditDialog(QDialog):
         details_layout.addWidget(self.path_edit)
 
         # Browse for asset
-        self.browse_asset_btn = QPushButton(" Browse Unreal Asset...")
+        self.browse_asset_btn = QPushButton("📂 Browse Unreal Asset...")
         self.browse_asset_btn.clicked.connect(self.browse_unreal_asset)
         details_layout.addWidget(self.browse_asset_btn)
 
@@ -160,7 +160,7 @@ class AssetEditDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self.save_btn = QPushButton(" Save Changes")
+        self.save_btn = QPushButton("💾 Save Changes")
         self.save_btn.clicked.connect(self.save_changes)
         self.save_btn.setStyleSheet("""
             QPushButton {
@@ -227,17 +227,17 @@ class AssetEditDialog(QDialog):
 
                 # Update info
                 if thumb_type == 'manual':
-                    self.thumbnail_info.setText(" Manual thumbnail")
+                    self.thumbnail_info.setText("📸 Manual thumbnail")
                 elif thumb_type == 'content_browser':
-                    self.thumbnail_info.setText(" Auto-generated")
+                    self.thumbnail_info.setText("🎨 Auto-generated")
                 else:
-                    self.thumbnail_info.setText(" Placeholder")
+                    self.thumbnail_info.setText("📦 Placeholder")
             else:
                 self.show_placeholder_thumbnail()
-                self.thumbnail_info.setText(" Thumbnail file corrupted")
+                self.thumbnail_info.setText("⚠️ Thumbnail file corrupted")
         else:
             self.show_placeholder_thumbnail()
-            self.thumbnail_info.setText(" Thumbnail file missing")
+            self.thumbnail_info.setText("⚠️ Thumbnail file missing")
 
     def show_placeholder_thumbnail(self):
         """Show a placeholder when no thumbnail exists"""
@@ -275,7 +275,7 @@ class AssetEditDialog(QDialog):
                 scaled = pixmap.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.thumbnail_label.setPixmap(scaled)
                 self.thumbnail_path = str(dest_path)
-                self.thumbnail_info.setText(" Manual thumbnail")
+                self.thumbnail_info.setText("📸 Manual thumbnail")
 
                 unreal.log(f"Thumbnail saved to: {dest_path}")
 
@@ -323,7 +323,7 @@ class AssetEditDialog(QDialog):
                 scaled = pixmap.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.thumbnail_label.setPixmap(scaled)
                 self.thumbnail_path = str(screenshot_path)
-                self.thumbnail_info.setText(" Viewport capture")
+                self.thumbnail_info.setText("📷 Viewport capture")
 
                 QMessageBox.information(self, "Success", "Viewport captured!\n\nMake sure the asset was visible in the viewport.")
             else:
@@ -380,7 +380,7 @@ class AssetEditDialog(QDialog):
                     scaled = pixmap.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.thumbnail_label.setPixmap(scaled)
                 self.thumbnail_path = str(thumb_path)
-                self.thumbnail_info.setText(" Auto-generated")
+                self.thumbnail_info.setText("🎨 Auto-generated")
                 QMessageBox.information(self, "Success", "Thumbnail generated!")
             else:
                 QMessageBox.warning(

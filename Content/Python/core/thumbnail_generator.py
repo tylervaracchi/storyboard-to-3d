@@ -89,6 +89,65 @@ def safe_thumbnail_filename(name):
     return cleaned or 'asset'
 
 
+PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+
+
+def is_valid_png(path):
+    """True when the file exists and starts with the PNG magic bytes.
+
+    ExportRenderTarget silently writes EXR data (magic 76 2f 31 01) when
+    the render target has a float format, so a .png filename alone proves
+    nothing. Qt cannot decode EXR, which shows up as missing thumbnails.
+    """
+    try:
+        p = Path(path)
+        if not p.exists():
+            return False
+        with open(str(p), 'rb') as f:
+            return f.read(len(PNG_MAGIC)) == PNG_MAGIC
+    except OSError:
+        return False
+
+
+def _make_ldr_render_target(size):
+    """Create a square RTF_RGBA8 render target.
+
+    The rig helper make_render_target looks up unreal.RenderTargetFormat,
+    but the enum is actually exposed as unreal.TextureRenderTargetFormat,
+    so the format silently fell back to the engine default (RTF_RGBA16f).
+    ExportRenderTarget writes EXR for float formats, producing EXR bytes
+    inside .png files that no UI image loader can decode. Requesting
+    RTF_RGBA8 explicitly makes the export a real PNG.
+    """
+    fmt = None
+    for enum_name in ('TextureRenderTargetFormat', 'RenderTargetFormat'):
+        enum_cls = getattr(unreal, enum_name, None)
+        if enum_cls is not None:
+            fmt = getattr(enum_cls, 'RTF_RGBA8', None)
+            if fmt is not None:
+                break
+    if fmt is None:
+        _warn('RTF_RGBA8 enum not found; export may produce EXR instead of PNG')
+        return make_render_target('thumb', size, size)
+    world = get_editor_world()
+    lib = getattr(unreal, 'RenderingLibrary', None) or getattr(unreal, 'KismetRenderingLibrary', None)
+    if lib is not None and hasattr(lib, 'create_render_target_2d'):
+        try:
+            rt = lib.create_render_target_2d(world, size, size, fmt)
+            if rt is not None:
+                return rt
+        except Exception as e:
+            _warn('create_render_target_2d(RTF_RGBA8) failed: {0}'.format(e))
+    # Fall back to the shared helper, then try to force the LDR format
+    rt = make_render_target('thumb', size, size)
+    if rt is not None:
+        try:
+            rt.set_editor_property('render_target_format', fmt)
+        except Exception as e:
+            _warn('Could not force render_target_format to RGBA8: {0}'.format(e))
+    return rt
+
+
 def _load_asset(asset_path):
     """Load an asset by path. EditorAssetSubsystem first, library fallback."""
     try:
@@ -290,6 +349,12 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
             _warn('Empty asset path; nothing to capture')
             return False
 
+        # Spawning into a null world crashes the editor natively, so verify
+        # a level is actually loaded before touching any actor APIs
+        if get_editor_world() is None:
+            _error('No editor world is loaded; open a level before generating thumbnails')
+            return False
+
         asset = _load_asset(asset_path)
         if asset is None:
             _warn('Could not load asset: {0}'.format(asset_path))
@@ -323,7 +388,7 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
             _warn('No SceneCaptureComponent2D on the capture actor')
             return False
         size = max(int(size), 16)
-        rt = make_render_target('thumb_' + safe_thumbnail_filename(asset_path), size, size)
+        rt = _make_ldr_render_target(size)
         if rt is None:
             _warn('Could not create a {0}x{0} render target'.format(size))
             return False
@@ -353,9 +418,18 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
                 _warn('Could not remove stale thumbnail {0}: {1}'.format(out, e))
         export_fn(get_editor_world(), rt, str(out.parent), out.name)
         if out.exists():
+            if not is_valid_png(out):
+                _error('Export wrote non-PNG data (float render target exports EXR); '
+                       'removing broken file {0}'.format(out))
+                try:
+                    out.unlink()
+                except OSError:
+                    pass
+                return False
             _log('Wrote thumbnail for {0} via {1}: {2}'.format(asset_path, export_info, out))
             return True
-        _warn('Export reported no file at {0}'.format(out))
+        _warn('Export reported no file at {0} (running without a usable RHI, '
+              'e.g. -nullrhi, leaves render targets with no resource)'.format(out))
         return False
     except Exception as e:
         _error('generate_asset_thumbnail failed for {0}: {1}'.format(asset_path, e))
@@ -442,18 +516,24 @@ def generate_library_thumbnails(show_name, overwrite=False, progress_cb=None,
             if not isinstance(thumb_info, dict):
                 thumb_info = {}
             existing_path = thumb_info.get('path')
-            existing_ok = bool(existing_path) and Path(str(existing_path)).exists()
-            if thumb_info.get('type') == 'manual' and existing_ok:
+            # Manual thumbnails are user-authored: never regenerate them as
+            # long as the file exists, whatever its format
+            if thumb_info.get('type') == 'manual' and existing_path and \
+                    Path(str(existing_path)).exists():
                 _log('Skipping {0}: manual thumbnail is user-authored'.format(name))
                 result['skipped'].append(name)
                 continue
+            # Generated thumbnails must be real PNGs; files with EXR bytes
+            # from the old float-render-target bug count as broken and are
+            # regenerated even without overwrite
+            existing_ok = bool(existing_path) and is_valid_png(str(existing_path))
 
             out_png = thumb_dir / (safe_thumbnail_filename(name) + '.png')
             if not overwrite:
                 if existing_ok:
                     result['skipped'].append(name)
                     continue
-                if out_png.exists():
+                if is_valid_png(out_png):
                     # PNG already on disk but JSON pointer missing/stale: repair it
                     data['thumbnail'] = {'type': 'content_browser', 'path': str(out_png)}
                     dirty = True

@@ -7,6 +7,7 @@ Full implementation for the StoryboardTo3D UI - SHOW SPECIFIC VERSION
 
 import unreal
 import json
+import re
 from pathlib import Path
 from core.utils import sanitize_asset_data, ensure_library_structure, get_shows_manager
 
@@ -27,6 +28,98 @@ def capture_thumbnail(asset_name):
     unreal.log("Manual thumbnail capture: Take a screenshot using Unreal's viewport tools")
     # Future: Implement automated thumbnail capture
     pass
+
+
+# Content Browser asset name prefixes stripped when prettifying names
+ASSET_NAME_PREFIXES = ('SM_', 'SK_', 'BP_')
+
+
+def prettify_asset_name(raw_name):
+    """Turn an asset name like SM_HayBale_01 into a display name (Hay Bale 01).
+
+    Strips a leading SM_/SK_/BP_ prefix, then splits on underscores, dashes
+    and camelCase boundaries. Acronyms and digit runs are kept as-is.
+    """
+    name = str(raw_name)
+    for prefix in ASSET_NAME_PREFIXES:
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    words = []
+    for chunk in name.replace('-', '_').split('_'):
+        if not chunk:
+            continue
+        parts = re.findall(r'[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+', chunk)
+        if not parts:
+            parts = [chunk]
+        for word in parts:
+            if word.isupper() or word.isdigit():
+                words.append(word)
+            else:
+                words.append(word[0].upper() + word[1:])
+    return ' '.join(words) if words else str(raw_name)
+
+
+def _asset_is_instance_of(asset, class_name):
+    """isinstance check against an unreal class that may not exist in
+    every engine version. Never raises."""
+    cls = getattr(unreal, class_name, None)
+    if cls is None:
+        return False
+    try:
+        return isinstance(asset, cls)
+    except Exception:
+        return False
+
+
+def build_entry_from_asset(asset):
+    """Build an asset library entry from a loaded Unreal asset object.
+
+    Pure helper (no UI, no disk writes) so it can be tested headlessly.
+    Supports StaticMesh, SkeletalMesh and Blueprint assets.
+
+    Returns a dict:
+        {
+            'name': prettified display name,
+            'category': suggested category ('characters' for SkeletalMesh
+                        and Blueprint assets, 'props' otherwise),
+            'entry': {'asset_path', 'description', 'aliases', 'thumbnail'}
+        }
+    or None when the asset is unsupported or unreadable.
+    """
+    if asset is None:
+        return None
+    is_skeletal = _asset_is_instance_of(asset, 'SkeletalMesh')
+    is_blueprint = _asset_is_instance_of(asset, 'Blueprint')
+    is_static = _asset_is_instance_of(asset, 'StaticMesh')
+    if not (is_static or is_skeletal or is_blueprint):
+        return None
+    try:
+        raw_name = str(asset.get_name())
+    except Exception:
+        raw_name = 'Asset'
+    try:
+        asset_path = str(asset.get_path_name())
+    except Exception as e:
+        unreal.log_warning(f"build_entry_from_asset: get_path_name failed: {e}")
+        return None
+    # Object paths look like /Pkg/Name.Name; the library stores the
+    # package form (/Pkg/Name), which every loader in this codebase accepts
+    if '.' in asset_path:
+        package, obj_name = asset_path.rsplit('.', 1)
+        if package.rsplit('/', 1)[-1] == obj_name:
+            asset_path = package
+    category = 'characters' if (is_skeletal or is_blueprint) else 'props'
+    return {
+        'name': prettify_asset_name(raw_name),
+        'category': category,
+        'entry': {
+            'asset_path': asset_path,
+            'description': '',
+            'aliases': [],
+            'thumbnail': {'type': 'none', 'path': None},
+        },
+    }
 
 class ShowSpecificAssetLibrary:
     """Asset library manager for a specific show"""
@@ -182,7 +275,7 @@ class AssetLibraryWidget(QWidget):
 
         # Search bar
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText(" Search assets...")
+        self.search_input.setPlaceholderText("🔍 Search assets...")
         self.search_input.textChanged.connect(self.filter_assets)
         self.search_input.setStyleSheet("""
             QLineEdit {
@@ -236,13 +329,20 @@ class AssetLibraryWidget(QWidget):
         # Row 1: Add and Delete
         row1_layout = QHBoxLayout()
 
-        add_btn = QPushButton(" Add Asset")
+        add_btn = QPushButton("➕ Add Asset")
         add_btn.setObjectName("primaryButton")
         add_btn.clicked.connect(self.add_new_asset)
         add_btn.setToolTip("Add a new asset to this show")
         row1_layout.addWidget(add_btn)
 
-        delete_btn = QPushButton(" Delete")
+        add_selected_btn = QPushButton("📥 Add Selected from Content Browser")
+        add_selected_btn.setObjectName("primaryButton")
+        add_selected_btn.clicked.connect(self.add_selected_from_content_browser)
+        add_selected_btn.setToolTip(
+            "Add the assets currently selected in the Content Browser to this show")
+        row1_layout.addWidget(add_selected_btn)
+
+        delete_btn = QPushButton("🗑️ Delete")
         delete_btn.setObjectName("dangerButton")
         delete_btn.clicked.connect(self.delete_selected_asset)
         delete_btn.setToolTip("Delete the selected asset")
@@ -253,13 +353,13 @@ class AssetLibraryWidget(QWidget):
         # Row 2: Edit and Capture
         row2_layout = QHBoxLayout()
 
-        edit_btn = QPushButton(" Edit")
+        edit_btn = QPushButton("✏️ Edit")
         edit_btn.setObjectName("secondaryButton")
         edit_btn.clicked.connect(self.edit_selected_asset)
         edit_btn.setToolTip("Edit the selected asset")
         row2_layout.addWidget(edit_btn)
 
-        capture_btn = QPushButton(" Capture")
+        capture_btn = QPushButton("📸 Capture")
         capture_btn.setObjectName("secondaryButton")
         capture_btn.clicked.connect(self.capture_thumbnail_for_selected)
         capture_btn.setToolTip("Capture thumbnail from viewport")
@@ -268,7 +368,7 @@ class AssetLibraryWidget(QWidget):
         button_layout.addLayout(row2_layout)
 
         # Row 3: Refresh
-        refresh_btn = QPushButton(" Refresh Library")
+        refresh_btn = QPushButton("🔄 Refresh Library")
         refresh_btn.clicked.connect(self.force_refresh)
         refresh_btn.setToolTip("Reload assets from disk")
         button_layout.addWidget(refresh_btn)
@@ -297,7 +397,7 @@ class AssetLibraryWidget(QWidget):
             category, name = self.selected_asset
 
             # Clean name (remove emojis)
-            for emoji in ['', '', '', '']:
+            for emoji in ['📸', '🎨', '📦', '⚪']:
                 name = name.replace(emoji, '').strip()
 
             unreal.log(f"Opening ENHANCED dialog for {name} ({category})")
@@ -564,11 +664,11 @@ class AssetLibraryWidget(QWidget):
         # Add tooltip with description
         tooltip = f"{name}\n{data.get('description', 'No description')[:100]}"
         if thumb_type == "placeholder":
-            tooltip += "\n Placeholder thumbnail"
+            tooltip += "\n📦 Placeholder thumbnail"
         elif thumb_type == "manual":
-            tooltip += "\n Manual thumbnail"
+            tooltip += "\n📸 Manual thumbnail"
         elif thumb_type == "content_browser":
-            tooltip += "\n Auto thumbnail"
+            tooltip += "\n🎨 Auto thumbnail"
 
         item.setToolTip(tooltip)
 
@@ -694,7 +794,7 @@ class AssetLibraryWidget(QWidget):
     def show_placeholder_preview(self):
         """Show placeholder in preview"""
         self.preview_label.clear()
-        self.preview_label.setText("")
+        self.preview_label.setText("📦")
         self.preview_label.setStyleSheet("""
             QLabel {
                 border: 1px dashed #666;
@@ -783,6 +883,97 @@ class AssetLibraryWidget(QWidget):
 
             # Schedule refresh
             QTimer.singleShot(45000, self.refresh_library)  # Refresh after 45 seconds
+
+    def get_active_category(self):
+        """Category of the currently selected tab, or None if unknown"""
+        try:
+            index = self.tabs.currentIndex()
+        except Exception:
+            return None
+        return {0: 'characters', 1: 'props', 2: 'locations'}.get(index)
+
+    def add_selected_from_content_browser(self):
+        """Add the assets selected in the Content Browser to the library"""
+        if not self.current_show:
+            QMessageBox.warning(self, "No Show", "Please select a show first")
+            return
+
+        eul = getattr(unreal, 'EditorUtilityLibrary', None)
+        if eul is None or not hasattr(eul, 'get_selected_assets'):
+            QMessageBox.warning(
+                self, "Not Available",
+                "EditorUtilityLibrary.get_selected_assets is not available "
+                "in this engine version.")
+            return
+
+        try:
+            selected = list(eul.get_selected_assets())
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Error",
+                f"Could not read the Content Browser selection: {e}")
+            return
+
+        if not selected:
+            QMessageBox.information(
+                self, "Nothing Selected",
+                "Select one or more assets in the Content Browser first, "
+                "then click this button.\n\n"
+                "Supported: Static Meshes, Skeletal Meshes and Blueprints.")
+            return
+
+        active_category = self.get_active_category()
+        added = []
+        skipped = []
+
+        for asset in selected:
+            built = build_entry_from_asset(asset)
+            if built is None:
+                try:
+                    label = str(asset.get_name())
+                except Exception:
+                    label = str(asset)
+                skipped.append(f"{label} (unsupported type)")
+                continue
+
+            name = built['name']
+            category = active_category or built['category']
+            if name in self.library.library.get(category, {}):
+                skipped.append(f"{name} (already in {category})")
+                continue
+
+            asset_path = built['entry']['asset_path']
+            self.library.add_asset(category, name, asset_path, "", [])
+            added.append(f"{name} ({category})")
+            unreal.log(f"Added asset from Content Browser: {name} -> {asset_path} [{category}]")
+
+            # Auto-generate a thumbnail; a failure here only logs
+            try:
+                from core.thumbnail_generator import (
+                    generate_asset_thumbnail, safe_thumbnail_filename
+                )
+                thumb_dir = Path(self.current_show_path) / "Thumbnails"
+                out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
+                if generate_asset_thumbnail(asset_path, str(out_png)):
+                    self.library.library[category][name]['thumbnail'] = {
+                        'type': 'content_browser',
+                        'path': str(out_png),
+                    }
+                    self.library.save_library()
+                else:
+                    unreal.log_warning(f"Thumbnail generation failed for {name}")
+            except Exception as e:
+                unreal.log_warning(f"Thumbnail generation errored for {name}: {e}")
+
+        self.refresh_library()
+        self.library_updated.emit()
+
+        summary = f"Added {len(added)} asset(s) to this show."
+        if added:
+            summary += "\n\n" + "\n".join(added[:10])
+        if skipped:
+            summary += "\n\nSkipped:\n" + "\n".join(skipped[:10])
+        QMessageBox.information(self, "Add from Content Browser", summary)
 
     def add_new_asset(self):
         """Add a new asset to the library"""

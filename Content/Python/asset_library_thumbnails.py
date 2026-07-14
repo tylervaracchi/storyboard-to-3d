@@ -205,10 +205,10 @@ def setup_with_thumbnails():
     for cat, items in lib.library.items():
         print(f"\n{cat.upper()}:")
         for name, data in items.items():
-            thumb = "" if data.get("thumbnail") else ""
+            thumb = "✅" if data.get("thumbnail") else "❌"
             print(f"{name}: {thumb} thumbnail")
 
-    print("\n TIP: To manually capture better thumbnails:")
+    print("\n💡 TIP: To manually capture better thumbnails:")
     print("1. Position asset in viewport nicely")
     print("2. Run: lib.take_screenshot_for_asset('Oat', 'characters')")
     print("3. Wait 30-40 seconds for screenshot to save")
@@ -232,7 +232,7 @@ def test_thumbnail_system():
     if thumb:
         print(f"Thumbnail saved to: {thumb}")
     else:
-        print("Could not get thumbnail")
+        print("❌ Could not get thumbnail")
 
     # Test manual screenshot
     print("\nTo take manual screenshot:")
@@ -247,10 +247,10 @@ if __name__ == "__main__":
     print("="*60)
 
     print("\nBenefits of thumbnails:")
-    print("Visual reference in UI")
-    print("Verify correct asset")
-    print("See placeholder appearance")
-    print("Auto-capture from Content Browser")
+    print("  👁️ Visual reference in UI")
+    print("  ✅ Verify correct asset")
+    print("  🎨 See placeholder appearance")
+    print("  📸 Auto-capture from Content Browser")
 
     print("\nTwo approaches:")
     print("1. AUTO: Get from Content Browser (instant)")
