@@ -1,0 +1,53 @@
+name: Bug report
+description: Something broke or behaved unexpectedly
+labels: [bug]
+body:
+  - type: dropdown
+    id: ue-version
+    attributes:
+      label: Unreal Engine version
+      options:
+        - "5.8"
+        - "5.7"
+        - "5.6"
+        - "5.5"
+        - "5.4"
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: AI provider
+      options:
+        - Claude (Anthropic)
+        - GPT (OpenAI)
+        - LLaVA (Ollama, local)
+        - Not AI-related
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Output Log excerpt
+      description: "Window → Output Log — paste the relevant lines (look for [StoryboardTo3D], LogPython, or LogStoryboardTo3D)"
+      render: text
+  - type: textarea
+    id: panel
+    attributes:
+      label: Storyboard panel (optional)
+      description: If the issue involves a specific panel, drag the image here.

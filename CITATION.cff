@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use this software or reference the research, please cite it as below."
+title: "StoryboardTo3D: AI-Powered Storyboard-to-3D Scene Generation for Unreal Engine 5"
+authors:
+  - family-names: Varacchi
+    given-names: Tyler
+    orcid: "https://orcid.org/0009-0004-1680-0464"
+type: software
+repository-code: "https://github.com/tylervaracchi/storyboard-to-3d"
+url: "https://tylervaracchi.com/paper"
+license: MIT
+keywords:
+  - unreal-engine
+  - vision-language-models
+  - storyboard
+  - previsualization
+  - AI calibration
+preferred-citation:
+  type: thesis
+  title: "AI-Powered Storyboard to 3D Scene Generation: A Comparative Analysis of Vision-Language Models for Iterative Positioning in Unreal Engine"
+  authors:
+    - family-names: Varacchi
+      given-names: Tyler
+  institution:
+    name: "Drexel University"
+  year: 2025
+  doi: "10.17918/00011222"
+references:
+  - type: conference-paper
+    title: "AI Score Hallucination in Vision-Language Models: Measuring Self-Assessment Calibration for Iterative 3D Scene Positioning"
+    authors:
+      - family-names: Varacchi
+        given-names: Tyler
+    collection-title: "ACM SIGGRAPH 2026 Posters"
+    year: 2026
+    conference:
+      name: "SIGGRAPH 2026"
+      city: "Los Angeles"
+      region: "CA"
