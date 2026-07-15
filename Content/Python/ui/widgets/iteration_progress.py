@@ -1,19 +1,10 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
 # Licensed under the MIT License. See LICENSE in the repository root.
 #
-# INTEGRATION (not wired up by this file - left to a supervised pass):
-#   Instantiate IterationProgressWidget in ActivePanelWidget, next to
-#   self.match_progress (ui/widgets/active_panel_widget.py, around line 807).
-#   Feed it from the iteration loop's score-recording site - search that file
-#   for `_record_iteration_metrics` - by calling:
-#       iteration_progress_widget.add_score(self.current_iteration, self.last_match_score)
-#       iteration_progress_widget.set_cost_text(<short string, e.g. from
-#           utils/cost_estimator.format_estimate() or a running total of
-#           self.iteration_costs>)
-#   Connect iteration_progress_widget.cancelled to whatever currently stops
-#   the refinement loop. This widget intentionally does not import anything
-#   from active_panel_widget.py or panel_widgets.py, and does not import
-#   `unreal`, so it can be built/tested outside the running plugin.
+# INTEGRATION: already wired up - ActivePanelWidget instantiates and feeds
+# this widget (see ui/widgets/active_panel_widget.py, ~line 996 and the
+# _iteration_progress_* helpers). Kept import-free of unreal so it can be
+# built/tested headless outside the running plugin.
 """
 Iteration Progress Widget for StoryboardTo3D
 Self-contained live progress view for the AI refinement loop: a score

@@ -437,11 +437,10 @@ class AISettingsTab(QWidget):
         QApplication.processEvents()
 
         try:
-            import sys
-            from pathlib import Path
-            plugin_path = Path(unreal.Paths.project_content_dir()).parent / "Plugins" / "StoryboardTo3D" / "Content" / "Python"
-            if str(plugin_path) not in sys.path:
-                sys.path.insert(0, str(plugin_path))
+            # core.ai_providers resolves via the plugin root already on
+            # sys.path while the UI is running - no hardcoded
+            # Plugins/StoryboardTo3D path insertion needed (the old block
+            # was copy-pasted four times and assumed the plugin folder name)
 
             from core.ai_providers import GPT4VisionProvider
 
@@ -472,11 +471,10 @@ class AISettingsTab(QWidget):
         QApplication.processEvents()
 
         try:
-            import sys
-            from pathlib import Path
-            plugin_path = Path(unreal.Paths.project_content_dir()).parent / "Plugins" / "StoryboardTo3D" / "Content" / "Python"
-            if str(plugin_path) not in sys.path:
-                sys.path.insert(0, str(plugin_path))
+            # core.ai_providers resolves via the plugin root already on
+            # sys.path while the UI is running - no hardcoded
+            # Plugins/StoryboardTo3D path insertion needed (the old block
+            # was copy-pasted four times and assumed the plugin folder name)
 
             from core.ai_providers import ClaudeProvider
 
@@ -508,11 +506,10 @@ class AISettingsTab(QWidget):
 
         models = []
         try:
-            import sys
-            from pathlib import Path
-            plugin_path = Path(unreal.Paths.project_content_dir()).parent / "Plugins" / "StoryboardTo3D" / "Content" / "Python"
-            if str(plugin_path) not in sys.path:
-                sys.path.insert(0, str(plugin_path))
+            # core.ai_providers resolves via the plugin root already on
+            # sys.path while the UI is running - no hardcoded
+            # Plugins/StoryboardTo3D path insertion needed (the old block
+            # was copy-pasted four times and assumed the plugin folder name)
 
             from core.ai_providers import ClaudeProvider
 
@@ -644,11 +641,10 @@ class AISettingsTab(QWidget):
 
         models = []
         try:
-            import sys
-            from pathlib import Path
-            plugin_path = Path(unreal.Paths.project_content_dir()).parent / "Plugins" / "StoryboardTo3D" / "Content" / "Python"
-            if str(plugin_path) not in sys.path:
-                sys.path.insert(0, str(plugin_path))
+            # core.ai_providers resolves via the plugin root already on
+            # sys.path while the UI is running - no hardcoded
+            # Plugins/StoryboardTo3D path insertion needed (the old block
+            # was copy-pasted four times and assumed the plugin folder name)
 
             # Prefer the provider's own model listing; fall back to a direct
             # REST call if the Gemini provider module is not available yet
@@ -826,17 +822,12 @@ class AISettingsTab(QWidget):
         """Called when settings are saved"""
         unreal.log("[AI Settings] Settings saved with ALL models!")
 
-        # Verify keys are separate
+        # Sanity check WITHOUT echoing key material into the persistent UE
+        # Output Log (the old code logged the first 10 chars of each key)
         settings = self.get_settings()['ai_settings']
         openai_key = settings.get('openai_api_key', '')
         claude_key = settings.get('claude_api_key', '')
 
-        if openai_key:
-            unreal.log(f"OpenAI: {openai_key[:10]}...")
-        if claude_key:
-            unreal.log(f"Claude: {claude_key[:10]}...")
-
-        if openai_key and claude_key and openai_key != claude_key:
-            unreal.log("Keys are separate!")
-        elif openai_key and claude_key and openai_key == claude_key:
-            unreal.log_warning("Keys are the same - might be wrong!")
+        unreal.log(f"OpenAI key set: {bool(openai_key)}, Claude key set: {bool(claude_key)}")
+        if openai_key and claude_key and openai_key == claude_key:
+            unreal.log_warning("OpenAI and Claude keys are identical - might be wrong!")

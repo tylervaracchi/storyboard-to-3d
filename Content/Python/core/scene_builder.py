@@ -313,8 +313,11 @@ class SceneBuilder:
                             
                             if success:
                                 unreal.log(f"Level loaded: {location_name}")
-                                import time
-                                time.sleep(0.5)
+                                # No settle sleep: LevelEditorSubsystem.
+                                # load_level is synchronous in editor Python,
+                                # so the level is already loaded when the
+                                # call returns (the old time.sleep(0.5) just
+                                # froze the UI half a second per panel).
                             else:
                                 unreal.log_error(f"Failed to load level: {location_path}")
 
@@ -695,6 +698,19 @@ class SceneBuilder:
         if not self.show_name:
             return None
 
+        # The asset matcher already parsed asset_library.json at
+        # construction - reuse it instead of re-reading the file from disk
+        # on every call (this used to run twice per build via
+        # _spawn_characters/_spawn_props, plus a third read in
+        # _setup_location).
+        try:
+            matcher_library = getattr(self.asset_matcher, 'show_library', None)
+            if isinstance(matcher_library, dict) and matcher_library:
+                return matcher_library
+        except Exception:
+            pass
+
+        # Fallback: disk read (only if the matcher has no library)
         try:
             from core.utils import get_shows_manager
             import json

@@ -173,8 +173,12 @@ class ShowSpecificAssetLibrary:
         except Exception as e:
             unreal.log_error(f"Failed to save asset library: {e}")
 
-    def add_asset(self, category, name, asset_path, description, aliases):
-        """Add or update an asset in the library"""
+    def add_asset(self, category, name, asset_path, description, aliases, save=True):
+        """Add or update an asset in the library.
+
+        Pass save=False when adding many assets in a loop and call
+        save_library() once at the end (avoids one full-file write per
+        asset)."""
         if category not in self.library:
             self.library[category] = {}
 
@@ -189,7 +193,8 @@ class ShowSpecificAssetLibrary:
             "thumbnail": thumbnail_info
         }
 
-        self.save_library()
+        if save:
+            self.save_library()
 
 
 class AssetLibraryWidget(QWidget):
@@ -210,10 +215,10 @@ class AssetLibraryWidget(QWidget):
         """Set the current show and load its asset library"""
         if show_data:
             self.current_show = show_data.get('safe_name')
-            # Get the show path from ShowsManager
-            from core.shows_manager import ShowsManager
-            manager = ShowsManager()
-            self.current_show_path = manager.shows_root / self.current_show
+            # Get the show path from the shared ShowsManager singleton
+            # (constructing a fresh ShowsManager here re-ran mkdir + logging
+            # on every show selection)
+            self.current_show_path = get_shows_manager().shows_root / self.current_show
 
             unreal.log(f"Asset Library: Loading assets for show '{show_data.get('name')}'")
 
@@ -393,9 +398,11 @@ class AssetLibraryWidget(QWidget):
         unreal.log(f"Edit button clicked. Widget ID: {id(self)}, Selected: {self.selected_asset}")
 
         try:
-            # Try to import the enhanced dialog
-            import sys
-            sys.path.insert(0, r'D:\PythonStoryboardToUE\Plugins\StoryboardTo3D\Content\Python')
+            # Try to import the enhanced dialog. asset_edit_dialog.py lives
+            # in the plugin's Content/Python root, which is already on
+            # sys.path when the UI is running (the old hardcoded
+            # D:\PythonStoryboardToUE sys.path.insert risked importing a
+            # stale dev-machine copy ahead of the live one).
             from asset_edit_dialog import AssetEditDialog
 
             if not self.selected_asset:
@@ -1008,7 +1015,10 @@ class AssetLibraryWidget(QWidget):
                 continue
 
             asset_path = built['entry']['asset_path']
-            self.library.add_asset(category, name, asset_path, "", [])
+            # save=False: one save_library() write after the loop instead of
+            # rewriting asset_library.json once per asset (plus once per
+            # thumbnail) for an N-asset selection
+            self.library.add_asset(category, name, asset_path, "", [], save=False)
             added.append(f"{name} ({category})")
             unreal.log(f"Added asset from Content Browser: {name} -> {asset_path} [{category}]")
 
@@ -1033,11 +1043,14 @@ class AssetLibraryWidget(QWidget):
                         'type': 'content_browser',
                         'path': str(out_png),
                     }
-                    self.library.save_library()
                 else:
                     unreal.log_warning(f"Thumbnail generation failed for {name}")
             except Exception as e:
                 unreal.log_warning(f"Thumbnail generation errored for {name}: {e}")
+
+        # Single write for the whole selection (adds + thumbnails)
+        if added:
+            self.library.save_library()
 
         self.refresh_library()
         self.library_updated.emit()

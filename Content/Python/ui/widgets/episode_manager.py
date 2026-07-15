@@ -6,7 +6,7 @@ Episode management widgets for StoryboardTo3D
 
 import unreal
 from pathlib import Path
-from core.episodes_manager import EpisodesManager
+from core.utils import get_episodes_manager
 from .custom_widgets import EpisodeButton
 
 try:
@@ -30,7 +30,10 @@ class EpisodeManagerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.episodes = []
-        self.episodes_manager = EpisodesManager()
+        # Use the shared singleton (same instance the main window uses) so
+        # constructing this widget doesn't re-run mkdir/logging and two
+        # manager instances can't drift.
+        self.episodes_manager = get_episodes_manager()
         self.current_show = None
         self.current_episode = None
         self.setup_ui()

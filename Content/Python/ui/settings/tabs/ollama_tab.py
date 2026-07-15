@@ -64,7 +64,9 @@ class OllamaSettingsTab(QWidget):
         status_layout.addStretch()
 
         self.check_status_btn = QPushButton("Check Status")
-        self.check_status_btn.clicked.connect(self.check_server_status)
+        # lambda: QPushButton.clicked emits checked=False, which would land
+        # in check_server_status's allow_autostart parameter
+        self.check_status_btn.clicked.connect(lambda: self.check_server_status())
         status_layout.addWidget(self.check_status_btn)
 
         server_layout.addLayout(status_layout)
@@ -202,8 +204,14 @@ class OllamaSettingsTab(QWidget):
         """Handle any change"""
         self.settings_changed.emit()
 
-    def check_server_status(self):
-        """Check Ollama server status"""
+    def check_server_status(self, allow_autostart=True):
+        """Check Ollama server status.
+
+        allow_autostart=False is used for the passive check when the dialog
+        loads, so merely OPENING Settings never silently spawns an
+        'ollama serve' subprocess; auto-start still works for explicit user
+        actions (status/refresh buttons, model pulls) when the checkbox is on.
+        """
         url = self.server_url_edit.text()
 
         try:
@@ -223,7 +231,7 @@ class OllamaSettingsTab(QWidget):
             self.status_label.setText(" Not running")
             self.status_label.setStyleSheet("color: #FF6B6B;")
 
-            if self.auto_start_check.isChecked():
+            if allow_autostart and self.auto_start_check.isChecked():
                 self.start_ollama_server()
         except Exception as e:
             self.status_label.setText(f"Error: {str(e)}")
@@ -331,7 +339,12 @@ class OllamaSettingsTab(QWidget):
             response = requests.post(
                 f"{url}/api/pull",
                 json={"name": model_name},
-                stream=True
+                stream=True,
+                # (connect, read) timeouts: a hung server otherwise froze the
+                # editor behind a modal dialog whose Cancel is only polled
+                # when a stream line arrives. A read timeout raises and is
+                # surfaced by the existing except handler.
+                timeout=(5, 30)
             )
 
             for line in response.iter_lines():
@@ -420,7 +433,8 @@ class OllamaSettingsTab(QWidget):
                 url = self.server_url_edit.text()
                 response = requests.delete(
                     f"{url}/api/delete",
-                    json={"name": model_name}
+                    json={"name": model_name},
+                    timeout=(5, 30)  # don't freeze the editor on a hung server
                 )
 
                 if response.status_code == 200:
@@ -436,7 +450,9 @@ class OllamaSettingsTab(QWidget):
         ollama = self.settings.get('ollama', {})
 
         self.server_url_edit.setText(ollama.get('server_url', 'http://localhost:11434'))
-        self.auto_start_check.setChecked(ollama.get('auto_start', True))
+        # Default False: auto-starting a local server should be an explicit
+        # opt-in, not something Settings does silently on first open.
+        self.auto_start_check.setChecked(ollama.get('auto_start', False))
 
         # setCurrentText on an empty non-editable QComboBox is a no-op, so
         # seed each combo with the saved model name. update_models_list()
@@ -462,8 +478,11 @@ class OllamaSettingsTab(QWidget):
         self.request_timeout_spin.setValue(ollama.get('request_timeout', 60))
         self.use_streaming_check.setChecked(ollama.get('use_streaming', True))
 
-        # Check status on load
-        self.check_server_status()
+        # Check status on load: deferred so the dialog paints before the
+        # (synchronous, up-to-5s) request runs, and with auto-start disabled
+        # so merely opening Settings never spawns an 'ollama serve'
+        # subprocess.
+        QTimer.singleShot(0, lambda: self.check_server_status(allow_autostart=False))
 
     def get_settings(self):
         """Get settings from UI"""

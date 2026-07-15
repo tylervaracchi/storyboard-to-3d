@@ -1,6 +1,21 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
 # Licensed under the MIT License. See LICENSE in the repository root.
 """
+DEPRECATED - DO NOT WIRE UP. Dead module: nothing in Content/Python imports
+camera_system or get_camera_system, and the internals are stale enough to
+mislead anyone who does:
+  - create_camera sets field_of_view on a CineCameraComponent (a no-op; cine
+    FOV derives from focal length + filmback - it would need
+    current_focal_length instead)
+  - generate_shot_sequence adds a NEW MovieSceneCameraCutTrack per shot
+    inside the loop (a sequence supports ONE cut track)
+  - analyze_180_rule is tautological (math.acos never exceeds 180deg, so it
+    always returns True; a real check would compare camera side-of-line via
+    cross product sign)
+  - spawns via deprecated unreal.EditorLevelLibrary
+The live camera path is scene_builder's spawnable camera + camera cut setup.
+Kept only as reference; candidate for deletion post-demo.
+
 Camera System for StoryboardTo3D
 Professional camera control and movement generation
 """

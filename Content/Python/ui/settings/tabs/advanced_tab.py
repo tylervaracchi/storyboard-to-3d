@@ -18,6 +18,12 @@ except ImportError:
     from PySide2.QtGui import *
     USING_PYSIDE6 = False
 
+# Single cache root shared by calculate_cache_size and all three clear
+# buttons so the paths cannot drift again (clear_all_cache used to point one
+# level short, at ui/.cache, and therefore cleared nothing).
+# parents[3] of ui/settings/tabs/advanced_tab.py = Content/Python
+CACHE_ROOT = Path(__file__).resolve().parents[3] / ".cache"
+
 
 class AdvancedTab(QWidget):
     """Advanced settings tab"""
@@ -189,10 +195,9 @@ class AdvancedTab(QWidget):
         reset_tab_btn.clicked.connect(self.reset_tab_settings)
         reset_layout.addWidget(reset_tab_btn)
 
-        reset_all_btn = QPushButton("Reset All Settings")
-        reset_all_btn.clicked.connect(self.reset_all_settings)
-        reset_all_btn.setStyleSheet("QPushButton { color: #FF6B6B; }")
-        reset_layout.addWidget(reset_all_btn)
+        # NOTE: the 'Reset All Settings' button was removed until actually
+        # implemented - it emitted reset_all_requested, which nothing
+        # connects to, so after the confirmation it silently did nothing.
 
         layout.addLayout(reset_layout)
 
@@ -205,8 +210,7 @@ class AdvancedTab(QWidget):
     def calculate_cache_size(self):
         """Calculate cache size"""
         try:
-            from pathlib import Path
-            cache_path = Path(__file__).parent.parent.parent.parent / ".cache"
+            cache_path = CACHE_ROOT
 
             if cache_path.exists():
                 size = sum(f.stat().st_size for f in cache_path.rglob('*') if f.is_file())
@@ -229,7 +233,7 @@ class AdvancedTab(QWidget):
 
         if reply == QMessageBox.Yes:
             try:
-                cache_path = Path(__file__).parent.parent.parent.parent / ".cache" / "ai_analysis"
+                cache_path = CACHE_ROOT / "ai_analysis"
                 if cache_path.exists():
                     import shutil
                     shutil.rmtree(cache_path)
@@ -250,7 +254,7 @@ class AdvancedTab(QWidget):
 
         if reply == QMessageBox.Yes:
             try:
-                cache_path = Path(__file__).parent.parent.parent.parent / ".cache" / "thumbnails"
+                cache_path = CACHE_ROOT / "thumbnails"
                 if cache_path.exists():
                     import shutil
                     shutil.rmtree(cache_path)
@@ -271,7 +275,10 @@ class AdvancedTab(QWidget):
 
         if reply == QMessageBox.Yes:
             try:
-                cache_path = Path(__file__).parent.parent.parent / ".cache"
+                # FIXED: used to be one .parent short (ui/.cache, which never
+                # exists), so 'Clear All Cache' cleared nothing yet reported
+                # Success. Now shares CACHE_ROOT with the other methods.
+                cache_path = CACHE_ROOT
                 if cache_path.exists():
                     import shutil
                     shutil.rmtree(cache_path)
@@ -313,19 +320,9 @@ class AdvancedTab(QWidget):
 
             self.on_change()
 
-    def reset_all_settings(self):
-        """Reset ALL settings to defaults"""
-        reply = QMessageBox.question(
-            self,
-            "Reset All Settings",
-            "This will reset ALL settings to defaults.\nAre you sure?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        if reply == QMessageBox.Yes:
-            # Let the parent dialog handle the full reset; do not walk the
-            # Qt parent chain, it does not lead to the dialog.
-            self.reset_all_requested.emit()
+    # NOTE: reset_all_settings was removed with its button (see setup_ui) -
+    # its reset_all_requested signal is still declared for a future
+    # implementation but nothing connects to or emits it today.
 
     def load_settings(self):
         """Load settings into UI"""

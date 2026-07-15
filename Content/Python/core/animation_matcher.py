@@ -187,8 +187,13 @@ class AnimationMatcher:
         if not action_text or not isinstance(action_text, str):
             return None
         text = action_text.strip().lower()
-        if not text or not self.animations:
+        if not text:
             return None
+        if not self.animations:
+            # Empty library: skip the lookup tiers (1-4) but still reach the
+            # tier-5 generative fallback - it exists precisely for shows with
+            # no animation library ('genanim.enabled' gates it internally).
+            return self._generative_animation(action_text)
 
         # 1. Exact key match (also with punctuation normalized to '_')
         compact = re.sub(r'[^a-z0-9]+', '_', text).strip('_')

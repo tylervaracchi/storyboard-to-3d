@@ -46,22 +46,15 @@ class PanelGrid(QWidget):
 
     def set_panels(self, panels):
         """Set panels and create cards"""
-        import unreal
-
         # Clear existing cards
         self.clear()
 
         self.panels = panels
         self.panel_cards = []
 
-        unreal.log(f"[PanelGrid.set_panels] Creating {len(panels)} cards")
-
-        # Create cards
+        # Create cards (no per-card logging: rebuilding the grid used to spam
+        # O(N*8) lines into the UE Output Log)
         for i, panel in enumerate(panels):
-            # DEBUG: Check analysis before creating card
-            has_analysis = panel.get('analysis') is not None
-            unreal.log(f"[{i}] {panel['name']}: has_analysis={has_analysis}")
-
             card = PanelCard(panel, self)
             card.clicked.connect(self._on_panel_clicked)
             card.customContextMenuRequested.connect(lambda pos, p=panel: self.show_context_menu(pos, p))
@@ -75,12 +68,8 @@ class PanelGrid(QWidget):
         # Add stretch at the end
         self.grid_layout.setRowStretch(len(panels) // self.columns + 1, 1)
 
-        unreal.log(f"[PanelGrid.set_panels] Created {len(self.panel_cards)} cards")
-
     def _on_panel_clicked(self, panel_data):
         """Handle panel click - ensure only one is selected"""
-        import unreal
-
         # Deselect all cards
         for card in self.panel_cards:
             card.set_selected(False)
@@ -89,9 +78,6 @@ class PanelGrid(QWidget):
         clicked_card = next((card for card in self.panel_cards if card.panel_data == panel_data), None)
         if clicked_card:
             clicked_card.set_selected(True)
-            # DEBUG: Log selected panel's analysis status
-            has_analysis = clicked_card.panel_data.get('analysis') is not None
-            unreal.log(f"[PanelGrid.click] Selected: {panel_data['name']}, has_analysis: {has_analysis}")
 
         # Emit the clicked signal
         self.panel_clicked.emit(panel_data)

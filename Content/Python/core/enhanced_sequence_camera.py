@@ -1,6 +1,17 @@
 # Copyright (c) 2025 Tyler Varacchi. All Rights Reserved.
 # Licensed under the MIT License. See LICENSE in the repository root.
 """
+DEPRECATED - DO NOT WIRE UP. Dead module superseded by
+scene_builder._setup_camera_cuts_spawnable:
+  - integrate_with_scene_builder is never called and is broken against the
+    current scene_data schema: scene_data['camera'] is a spawnable CONFIG
+    dict ({'type','class','position',...}), not an actor, so passing it to
+    add_possessable() would crash
+  - _add_camera_to_sequence hardcodes end_frame(90), ignoring its own
+    duration_frames parameter
+  - uses deprecated unreal.EditorAssetLibrary / EditorLevelLibrary throughout
+Kept only as reference; candidate for deletion post-demo.
+
 Enhanced Camera Cut Track and Viewport Locking for Unreal Engine 5.6
 Properly creates camera cut tracks and locks viewport when generating scenes
 """

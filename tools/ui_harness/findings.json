@@ -2,8 +2,8 @@
   "summary": {
     "sandbox": "C:\\Users\\tyler\\AppData\\Local\\Temp\\storyboard_harness_sandbox",
     "findings_count": 0,
-    "ue_log_errors": 11,
-    "ue_log_warnings": 21,
+    "ue_log_errors": 13,
+    "ue_log_warnings": 18,
     "modal_dialogs_intercepted": 24
   },
   "findings": [],
@@ -161,7 +161,7 @@
       "step": "button:ActivePanelWidget button 'CAPTURE'",
       "type": "QMessageBox.warning",
       "title": "Cannot Capture",
-      "text": "No generated scene for this panel.\n\nClick GENERATE first."
+      "text": "Failed to load the level for location 'Current'.\n\nCapture stopped - the sequence would not be visible.\nCheck that the location exists in the asset library."
     },
     {
       "step": "button:ActivePanelWidget button 'BATCH CAPTURE'",
@@ -191,6 +191,8 @@
     "Failed to create sequence - canceling",
     "Failed to create sequence!",
     "Failed to create sequence - canceling",
+    "Failed to load level for location 'Current'",
+    "Cannot continue with capture - sequence won't be visible",
     "Failed to create sequence!",
     "Failed to create sequence - canceling",
     "Capture run aborted: Scene generation failed (RUN ALL)"

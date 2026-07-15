@@ -145,9 +145,10 @@ def load_any_level_from_library(location_name, show_name):
         unreal.log(f"Failed to send load command")
         return False
 
-    # Step 8: Wait and verify
-    time.sleep(1.0)  # Give it time to load
-
+    # Step 8: Verify immediately - load_level is synchronous in editor
+    # Python, so the world handle is already valid when it returns (the old
+    # time.sleep(1.0) just blocked the game thread a full second per level
+    # switch in the capture flow)
     new_world = unreal_editor_subsystem.get_editor_world()
     new_level_name = new_world.get_name() if new_world else "Unknown"
 

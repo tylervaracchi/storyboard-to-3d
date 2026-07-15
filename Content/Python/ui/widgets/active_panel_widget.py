@@ -90,34 +90,32 @@ except ImportError:
     IterationProgressWidget = None
     unreal.log_warning("IterationProgressWidget not available - live iteration readout disabled")
 
-# Prompt optimization with feature flag (Optimization #4)
-# Conditional import based on settings - allows toggling between original and optimized prompts
+# Analyzer selection with feature flag (Optimization #4)
+# NOTE: Only the ANALYZE-step analyzer honors 'ai_settings.use_optimized_prompts'
+# in this module. The iterative positioning prompt is hand-built in
+# _build_positioning_prompt and does not use a PromptBuilder class, so no
+# PromptBuilder is imported here (it used to be imported but was never
+# referenced, misleading readers into thinking positioning honored the flag).
 try:
     from core.settings_manager import get_setting
     USE_OPTIMIZED_PROMPTS = get_setting('ai_settings.use_optimized_prompts', False)
 
     if USE_OPTIMIZED_PROMPTS:
-        # Use optimized prompts (50-66% token reduction)
-        from core.enhanced_prompt_builder_optimized import OptimizedPromptBuilder as PromptBuilder
         from core.smart_analyzer_optimized import OptimizedSmartAnalyzer as SmartStoryboardAnalyzer
-        unreal.log("Using OPTIMIZED prompts (50-66% token reduction)")
+        unreal.log("Using OPTIMIZED analyzer (50-66% token reduction on ANALYZE)")
     else:
-        # Use original prompts (full verbosity)
-        from core.enhanced_prompt_builder import EnhancedPromptBuilder as PromptBuilder
         from core.smart_analyzer import SmartStoryboardAnalyzer
-        unreal.log("Using ORIGINAL prompts (full verbosity)")
+        unreal.log("Using ORIGINAL analyzer (full verbosity)")
 
     PROMPT_OPTIMIZATION_AVAILABLE = True
 except ImportError as e:
     # Fallback to original if optimized versions not available
     try:
-        from core.enhanced_prompt_builder import EnhancedPromptBuilder as PromptBuilder
         from core.smart_analyzer import SmartStoryboardAnalyzer
         PROMPT_OPTIMIZATION_AVAILABLE = False
         unreal.log_warning(f"Prompt optimization not available: {e}")
     except ImportError:
         # Will be imported dynamically later if needed
-        PromptBuilder = None
         SmartStoryboardAnalyzer = None
         PROMPT_OPTIMIZATION_AVAILABLE = False
 
@@ -479,33 +477,52 @@ class ActivePanelWidget(QWidget):
 
     def update_location_dropdown(self):
         """Update location dropdown with locations from asset library"""
-        self.location_combo.clear()
-        self.location_combo.addItem("Auto-detect")
-        self.location_combo.addItem("Location Unknown")  # Add unknown option
+        # Block signals while repopulating: currentTextChanged is wired to
+        # _auto_save_panel_data, so clear()/addItem() would otherwise
+        # overwrite (and persist) the active panel's saved location with
+        # ''/'Auto-detect' whenever locations are refreshed mid-session.
+        saved_location = None
+        if self.active_panel and self.active_panel.get('location'):
+            saved_location = self.active_panel['location']
 
-        unreal.log("[ActivePanelWidget] Updating location dropdown...")
+        self.location_combo.blockSignals(True)
+        try:
+            self.location_combo.clear()
+            self.location_combo.addItem("Auto-detect")
+            self.location_combo.addItem("Location Unknown")  # Add unknown option
 
-        if self.asset_library and isinstance(self.asset_library, dict):
-            # Get locations from the show's asset library
-            locations = self.asset_library.get('locations', {})
+            unreal.log("[ActivePanelWidget] Updating location dropdown...")
 
-            unreal.log(f"[ActivePanelWidget] Found {len(locations)} locations in library: {list(locations.keys())}")
+            if self.asset_library and isinstance(self.asset_library, dict):
+                # Get locations from the show's asset library
+                locations = self.asset_library.get('locations', {})
 
-            if locations:
-                # Add separator (disabled)
-                self.location_combo.insertSeparator(2)
+                unreal.log(f"[ActivePanelWidget] Found {len(locations)} locations in library: {list(locations.keys())}")
 
-                # Add actual locations
-                for location_name in locations.keys():
-                    self.location_combo.addItem(location_name)
-                    unreal.log(f"[ActivePanelWidget] Added location: {location_name}")
+                if locations:
+                    # Add separator (disabled)
+                    self.location_combo.insertSeparator(2)
+
+                    # Add actual locations
+                    for location_name in locations.keys():
+                        self.location_combo.addItem(location_name)
+                        unreal.log(f"[ActivePanelWidget] Added location: {location_name}")
+                else:
+                    unreal.log("[ActivePanelWidget] No locations found in library")
             else:
-                unreal.log("[ActivePanelWidget] No locations found in library")
-        else:
-            unreal.log(f"[ActivePanelWidget] No valid asset library data. Type: {type(self.asset_library)}")
+                unreal.log(f"[ActivePanelWidget] No valid asset library data. Type: {type(self.asset_library)}")
 
-        # Set default to Auto-detect
-        self.location_combo.setCurrentIndex(0)
+            # Restore the active panel's saved location; default to Auto-detect
+            if saved_location:
+                index = self.location_combo.findText(saved_location)
+                if index >= 0:
+                    self.location_combo.setCurrentIndex(index)
+                else:
+                    self.location_combo.setEditText(saved_location)
+            else:
+                self.location_combo.setCurrentIndex(0)
+        finally:
+            self.location_combo.blockSignals(False)
         unreal.log(f"[ActivePanelWidget] Location dropdown now has {self.location_combo.count()} items")
 
     def update_character_suggestions(self):
@@ -805,7 +822,12 @@ class ActivePanelWidget(QWidget):
                 border: 1px solid #0EA5E9;
             }
         """)
-        self.iteration_input.textChanged.connect(self._on_iteration_count_changed)
+        # Commit on editingFinished (not textChanged): per-keystroke commits
+        # transiently set max_iterations=1 while typing '15' and persisted
+        # partial values to the settings file on every keystroke.
+        self.iteration_input.setValidator(QIntValidator(1, 999, self.iteration_input))
+        self.iteration_input.editingFinished.connect(
+            lambda: self._on_iteration_count_changed(self.iteration_input.text()))
         iteration_layout.addWidget(self.iteration_input)
 
         iteration_help = QLabel("(AI will refine positioning this many times)")
@@ -1145,7 +1167,11 @@ class ActivePanelWidget(QWidget):
 
     def _on_checkpointing_changed(self, state):
         """Handle checkpointing checkbox state change"""
-        self.enable_checkpointing = (state == Qt.Checked)
+        # Use isChecked() rather than comparing the raw signal int to
+        # Qt.Checked: under PySide6 6.4+ Qt.Checked is an enum, so
+        # `int == Qt.Checked` is always False and silently disabled
+        # checkpointing. isChecked() works on both PySide2 and PySide6.
+        self.enable_checkpointing = self.checkpointing_checkbox.isChecked()
         status = "ENABLED" if self.enable_checkpointing else "DISABLED"
         unreal.log(f"Checkpointing {status}")
         if self.enable_checkpointing:
@@ -1919,6 +1945,9 @@ class ActivePanelWidget(QWidget):
         unreal.log("\n Setting up auto-iteration...")
         self.auto_iterate = True
         self.current_iteration = 1
+        # Record run start so the final summary can report ACTUAL elapsed
+        # time (the old log line hardcoded a fictional 138s/iteration).
+        self._run_started_at = time.time()
         # [AdaptiveViews] Iteration 1 always captures the full view set so the
         # model gets complete spatial context before refining.
         self._adaptive_reduced_views_this_iteration = False
@@ -2461,92 +2490,11 @@ class ActivePanelWidget(QWidget):
         Returns:
             dict: {angle: base64_depth_image} or None if capture fails
         """
-        # DISABLED: AutomationLibrary.set_visualize_buffer doesn't exist in UE 5.6.1
-        # This feature is non-critical (only for validation/comparison)
-        # TODO: Find correct UE 5.6.1 API for buffer visualization
+        # Feature disabled pending a UE 5.8 API check: AutomationLibrary.
+        # set_visualize_buffer was missing in UE 5.6.1 and may exist again
+        # in 5.8 - retest post-demo before re-implementing. Non-critical
+        # (validation/comparison only).
         return None
-
-        try:
-            import base64
-
-            unreal.log("\n Capturing native G-Buffer depth for validation...")
-
-            # Get subsystems
-            editor_world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
-            level_editor = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
-
-            if not editor_world:
-                unreal.log_warning("Could not get editor world for G-Buffer capture")
-                return None
-
-            # Save current viewport state
-            saved_game_view = level_editor.editor_get_game_view()
-
-            # Enable game view (hide editor gizmos)
-            level_editor.editor_set_game_view(True)
-            time.sleep(0.2)  # Allow viewport to update
-
-            gbuffer_captures = {}
-            screenshot_dir = Path(unreal.Paths.project_saved_dir()) / "Screenshots" / "WindowsEditor"
-
-            # We only need hero view for now (main comparison target)
-            # Full 360° G-Buffer capture would require re-piloting cameras
-            angles_to_capture = ['hero']
-
-            for angle in angles_to_capture:
-                try:
-                    # Switch to SceneDepth buffer visualization
-                    unreal.AutomationLibrary.set_visualize_buffer(
-                        editor_world,
-                        unreal.Name("SceneDepth")
-                    )
-                    time.sleep(0.3)  # Allow render to update
-
-                    # Capture screenshot
-                    filename = f"gbuffer_depth_{angle}"
-                    command = f"HighResShot 1 filename={filename}"  # 1x resolution (match capture resolution)
-                    unreal.SystemLibrary.execute_console_command(None, command)
-                    time.sleep(0.5)  # Wait for screenshot to save
-
-                    # Load the captured image
-                    screenshot_path = screenshot_dir / f"{filename}.png"
-                    if screenshot_path.exists():
-                        with open(screenshot_path, 'rb') as f:
-                            image_data = f.read()
-                            gbuffer_captures[angle] = base64.b64encode(image_data).decode('utf-8')
-                        unreal.log(f"Captured G-Buffer depth for {angle}")
-
-                        # Delete temporary file
-                        screenshot_path.unlink()
-                    else:
-                        unreal.log_warning(f"G-Buffer screenshot not found: {screenshot_path}")
-
-                except Exception as e:
-                    unreal.log_error(f"Failed to capture G-Buffer depth for {angle}: {e}")
-
-            # Restore to normal lit view
-            unreal.SystemLibrary.execute_console_command(None, "viewmode lit")
-            time.sleep(0.3)
-
-            # Restore game view state
-            level_editor.editor_set_game_view(saved_game_view)
-
-            return gbuffer_captures if gbuffer_captures else None
-
-        except Exception as e:
-            unreal.log_error(f"G-Buffer capture failed: {e}")
-            import traceback
-            unreal.log_error(traceback.format_exc())
-
-            # Try to restore viewport
-            try:
-                unreal.SystemLibrary.execute_console_command(None, "viewmode lit")
-                level_editor = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
-                level_editor.editor_set_game_view(False)
-            except:
-                pass
-
-            return None
 
     def _save_debug_images(self, storyboard_b64: str, captures: dict, annotated_captures: dict = None, depth_maps: dict = None, metadata: dict = None):
         """
@@ -2558,6 +2506,9 @@ class ActivePanelWidget(QWidget):
             annotated_captures: Dict of marked-up capture images (optional)
             metadata: Additional metadata to save (iteration, scores, etc.)
         """
+        # Reset first so a failure below can't leave a previous run's folder
+        # behind; the AI-response metadata update targets this attribute.
+        self._last_debug_iteration_folder = None
         try:
             import base64
             from datetime import datetime
@@ -2571,6 +2522,10 @@ class ActivePanelWidget(QWidget):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             iteration_folder = panel_folder / f"iteration_{self.current_iteration:03d}_{timestamp}"
             iteration_folder.mkdir(parents=True, exist_ok=True)
+            # Remember THIS run's folder: re-globbing and lexically sorting
+            # iteration_* names later picks the wrong folder when a panel is
+            # re-run (iteration_001_<newer> sorts before iteration_007_<older>).
+            self._last_debug_iteration_folder = iteration_folder
 
             unreal.log(f"\n Saving debug images to: {iteration_folder}")
 
@@ -2998,6 +2953,13 @@ class ActivePanelWidget(QWidget):
             if gbuffer_depth_maps:
                 unreal.log(f"Captured {len(gbuffer_depth_maps)} native G-Buffer depth maps for validation")
 
+            # Extract current scene transforms ONCE per iteration; the walk
+            # over every binding/section/keyframe is heavy, and this result
+            # is reused for both the marker actor labels (below) and the AI
+            # scene_context (further down).
+            unreal.log("\n Extracting current scene transforms...")
+            current_transforms = self._get_current_scene_transforms()
+
             # STEP 2: Apply visual markers to captures (Feature #1: +35-40% accuracy)
             # Now depth maps are available for overlay!
             annotated_captures = {}
@@ -3005,8 +2967,7 @@ class ActivePanelWidget(QWidget):
                 unreal.log("\n Applying visual markers to captures...")
                 unreal.log(f"DEBUG: Processing {len(captures)} captures: {list(captures.keys())}")
 
-                # Extract actor positions for labels (get current transforms first)
-                current_transforms = self._get_current_scene_transforms()
+                # Extract actor positions for labels (reuses hoisted transforms)
                 actor_labels = {}
                 for actor_name, transform in current_transforms.items():
                     loc = transform['location']
@@ -3067,10 +3028,7 @@ class ActivePanelWidget(QWidget):
                 self._finish_capture_sequence()
                 return
 
-            # Get current scene context with transforms
-            unreal.log("\n Extracting current scene transforms...")
-            current_transforms = self._get_current_scene_transforms()
-
+            # Build scene context with the transforms extracted above
             scene_context = {
                 'characters': [self.characters_list.item(i).text() for i in range(self.characters_list.count())],
                 'props': [self.props_list.item(i).text() for i in range(self.props_list.count())],
@@ -3148,8 +3106,7 @@ class ActivePanelWidget(QWidget):
                 'captures_included': list(captures.keys()),
                 'visual_markers_applied': annotated_captures is not None,
                 'depth_maps_generated': len(depth_maps) if depth_maps else 0,
-                'gbuffer_depth_maps': gbuffer_depth_maps if gbuffer_depth_maps else {},
-                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+                'gbuffer_depth_maps': gbuffer_depth_maps if gbuffer_depth_maps else {}
             }
             self._save_debug_images(
                 storyboard_b64,
@@ -3213,6 +3170,13 @@ class ActivePanelWidget(QWidget):
                     analysis = self._parse_ai_positioning_response(result)
 
                     if analysis:
+                        # Mark that THIS iteration produced a freshly-parsed
+                        # analysis; _finish_capture_sequence only records a
+                        # score/metrics when this is set (otherwise a failed
+                        # iteration would re-append the previous iteration's
+                        # stale last_match_score as a phantom duplicate).
+                        self._fresh_score_this_iteration = True
+
                         unreal.log("\nDEBUG: PARSED ANALYSIS")
                         unreal.log("="*70)
                         unreal.log(f"Match Score: {analysis.get('match_score', 'MISSING')}")
@@ -3235,14 +3199,13 @@ class ActivePanelWidget(QWidget):
                         debug_metadata['camera_adjustments'] = analysis.get('camera_adjustments', {})
                         debug_metadata['ai_response_received'] = True
 
-                        # Save updated metadata with AI response
+                        # Save updated metadata with AI response into the
+                        # exact folder _save_debug_images just created (re-
+                        # globbing and lexically sorting iteration_* names
+                        # targets a stale folder when a panel is re-run).
                         import json
-                        panel_name = Path(self.active_panel['path']).stem if self.active_panel else "unknown_panel"
-                        panel_folder = self.thesis_debug_folder / panel_name
-                        # Find the most recent iteration folder (the one we just created)
-                        iteration_folders = sorted([d for d in panel_folder.glob('iteration_*') if d.is_dir()])
-                        if iteration_folders:
-                            latest_folder = iteration_folders[-1]
+                        latest_folder = getattr(self, '_last_debug_iteration_folder', None)
+                        if latest_folder:
                             metadata_path = latest_folder / "00_metadata.json"
                             try:
                                 with open(metadata_path, 'w') as f:
@@ -3815,6 +3778,14 @@ Only after completing Steps 1-4, provide your final JSON response.
 
 Remember: Be specific, use realistic values, and show your calculation reasoning!"""
 
+    def _iteration_temperature(self):
+        """FEATURE #3: shared temperature schedule for ALL temperature-capable
+        providers (Ollama, Claude, GPT-4): 0.7 explore for iterations 1-2,
+        0.4 refine from iteration 3 on. The old 0.9/0.7/0.3 schedule caused
+        oscillation/timeouts and was replaced; computing it in one place
+        stops the per-branch copies drifting again."""
+        return 0.7 if self.current_iteration <= 2 else 0.4
+
     def _call_ai_with_multiple_images(self, client, prompt, storyboard_b64, captures, depth_maps):
         """
         Call AI with multiple images (storyboard + all captures)
@@ -3940,20 +3911,15 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
                 unreal.log(f"\n    Total images in payload: {image_count}")
 
-                # FEATURE #3: Temperature scheduling
-                # FIXED: Adjusted for better precision (was 0.9/0.7/0.3 causing oscillation/timeouts)
-                if self.current_iteration <= 2:
-                    temperature = 0.7  # Initial exploration (was 0.9 - too random)
-                else:
-                    temperature = 0.4  # Precision refinement (was 0.3 - too rigid, caused timeouts)
+                # FEATURE #3: Temperature scheduling (shared helper)
+                temperature = self._iteration_temperature()
+                self._last_temperature = temperature  # recorded by _record_iteration_metrics
 
                 unreal.log(f"FEATURE #3 - Temperature: {temperature} (iteration {self.current_iteration})")
                 if self.current_iteration <= 2:
                     unreal.log(f"Strategy: EXPLORE solutions (high temperature)")
-                elif self.current_iteration <= 4:
-                    unreal.log(f"Strategy: REFINE approach (medium temperature)")
                 else:
-                    unreal.log(f"Strategy: CONVERGE on solution (low temperature)")
+                    unreal.log(f"Strategy: REFINE/CONVERGE (low temperature)")
 
                 # Ollama API format
                 payload = {
@@ -4068,6 +4034,8 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     }
                 }
 
+                self._last_temperature = None  # no temperature sent; metrics record None
+
                 unreal.log("\n DEBUG: GEMINI PAYLOAD STRUCTURE")
                 unreal.log(f"Model: {client.model}")
                 unreal.log(f"Parts: {len(parts)}")
@@ -4171,31 +4139,22 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
                 unreal.log(f"\n    Total images in payload: {image_count}")
 
-                # FEATURE #3: Temperature scheduling
-                # FIXED: Adjusted for better precision (was 0.9/0.7/0.3 causing oscillation/timeouts)
-                if self.current_iteration <= 2:
-                    temperature = 0.7  # Initial exploration (was 0.9 - too random)
-                else:
-                    temperature = 0.4  # Precision refinement (was 0.3 - too rigid, caused timeouts)
+                # FEATURE #3: Temperature scheduling (shared helper)
+                temperature = self._iteration_temperature()
+                self._last_temperature = temperature  # recorded by _record_iteration_metrics
 
                 unreal.log(f"FEATURE #3 - Temperature: {temperature} (iteration {self.current_iteration})")
                 if self.current_iteration <= 2:
                     unreal.log(f"Strategy: EXPLORE solutions (high temperature)")
-                elif self.current_iteration <= 4:
-                    unreal.log(f"Strategy: REFINE approach (medium temperature)")
                 else:
-                    unreal.log(f"Strategy: CONVERGE on solution (low temperature)")
+                    unreal.log(f"Strategy: REFINE/CONVERGE (low temperature)")
 
-                # CRITICAL: Adjust max_tokens for extended thinking models
-                # Claude Sonnet 4.5+ uses extended thinking with 10000 token budget
-                # max_tokens must be GREATER than thinking_budget_tokens
-                max_tokens = 2000
-                if 'sonnet-4' in client.model.lower() or 'claude-sonnet-4' in client.model.lower():
-                    thinking_budget = 10000
-                    min_required = thinking_budget + 4096  # Budget + reasonable output space
-                    if max_tokens < min_required:
-                        max_tokens = min_required
-                        unreal.log(f"Extended thinking detected - adjusted max_tokens to {max_tokens} (budget {thinking_budget} + 4096 output)")
+                # max_tokens sized for the JSON positioning response.
+                # NOTE: extended thinking is NOT enabled in this payload (no
+                # 'thinking' parameter is sent, and the API rejects the
+                # temperature field when thinking is on), so no thinking-
+                # budget headroom is needed. 4096 gives generous JSON room.
+                max_tokens = 4096
 
                 payload = {
                     "model": client.model,
@@ -4287,6 +4246,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 # ISSUE 4 FIX: GPT-5 Responses API does NOT support temperature parameter
                 # Temperature scheduling only works for GPT-4o, Claude, and Ollama
                 unreal.log(f"GPT-5 does not support temperature scheduling (reasoning effort used instead)")
+                self._last_temperature = None  # no temperature sent; metrics record None
 
                 payload = {
                     "model": client.model,
@@ -4393,21 +4353,18 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
                 unreal.log(f"\n    Total images in payload: {image_count}")
 
-                # FEATURE #3: Temperature scheduling by iteration (same as GPT-5)
-                if self.current_iteration <= 2:
-                    temperature = 0.9  # Explore different solutions
-                elif self.current_iteration <= 4:
-                    temperature = 0.7  # Refine approach
-                else:
-                    temperature = 0.3  # Converge on solution
+                # FEATURE #3: Temperature scheduling (shared helper).
+                # FIXED: this branch had drifted back to the old 0.9/0.7/0.3
+                # schedule that caused oscillation/timeouts on the other
+                # providers; all branches now share 0.7/0.4.
+                temperature = self._iteration_temperature()
+                self._last_temperature = temperature  # recorded by _record_iteration_metrics
 
                 unreal.log(f"FEATURE #3 - Temperature: {temperature} (iteration {self.current_iteration})")
                 if self.current_iteration <= 2:
                     unreal.log(f"Strategy: EXPLORE solutions (high temperature)")
-                elif self.current_iteration <= 4:
-                    unreal.log(f"Strategy: REFINE approach (medium temperature)")
                 else:
-                    unreal.log(f"Strategy: CONVERGE on solution (low temperature)")
+                    unreal.log(f"Strategy: REFINE/CONVERGE (low temperature)")
 
                 payload = {
                     "model": client.model,
@@ -4429,7 +4386,10 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 # FIXED: Using Union[Type, None] + additionalProperties: False for OpenAI strict mode
                 unreal.log(f"DEBUG: PYDANTIC_AVAILABLE={PYDANTIC_AVAILABLE}, model={client.model}")
 
-                if PYDANTIC_AVAILABLE and ("gpt-4o" in client.model.lower() and "-2024-08-06" in client.model or client.model == "gpt-4o"):
+                # All gpt-4o family snapshots since 2024-08-06 (incl.
+                # gpt-4o-2024-11-20 and gpt-4o-mini) support strict
+                # json_schema; compare on the lowered string consistently.
+                if PYDANTIC_AVAILABLE and client.model.lower().startswith("gpt-4o"):
                     # Generate and sanitize Pydantic schema for OpenAI strict mode
                     raw_schema = PositioningAnalysis.model_json_schema()
                     clean_schema = sanitize_schema_for_openai(raw_schema)
@@ -4479,13 +4439,20 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
             # ============================================================
             # ============================================================
-            import json as json_module
             try:
-                # Estimate payload size
-                payload_json = json_module.dumps(payload)
-                payload_size_mb = len(payload_json) / (1024 * 1024)
+                # Approximate payload size from the base64 image strings +
+                # prompt (these dominate the payload). Avoids json.dumps(),
+                # which duplicated the entire multi-megabyte payload in
+                # memory just to measure it; the warning thresholds below
+                # don't need exact JSON length.
+                approx_bytes = len(prompt) + len(storyboard_b64)
+                for _img_b64 in (captures or {}).values():
+                    approx_bytes += len(_img_b64)
+                for _depth_b64 in (depth_maps or {}).values():
+                    approx_bytes += len(_depth_b64)
+                payload_size_mb = approx_bytes / (1024 * 1024)
                 unreal.log(f"\n Payload size check:")
-                unreal.log(f"Total size: {payload_size_mb:.2f} MB")
+                unreal.log(f"Approx size: {payload_size_mb:.2f} MB")
 
                 # Warn if payload is very large
                 if payload_size_mb > 50:
@@ -4496,9 +4463,6 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     unreal.log(f"Large payload ({payload_size_mb:.2f} MB) - may take longer")
                 else:
                     unreal.log(f"Payload size OK")
-
-                # Free the temporary JSON string immediately
-                del payload_json
             except Exception as e:
                 unreal.log_warning(f"Could not estimate payload size: {e}")
 
@@ -4630,9 +4594,13 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 unreal.log(f"Response length: {len(result_text) if result_text else 0} chars")
 
                 # FEATURE #6: Log usage stats and track costs
+                # NOTE: every branch below appends EXACTLY ONE entry to
+                # self.iteration_costs so the list stays aligned 1:1 with AI
+                # calls (_record_iteration_metrics reads iteration_costs[-1]).
                 iteration_cost = 0.0
                 if is_ollama:
-                    # Local model - free!
+                    # Local model - free! (still append to keep alignment)
+                    self.iteration_costs.append(0.0)
                     unreal.log(f"Iteration cost: $0.00 (local model - free!)")
                 elif is_gemini and 'usageMetadata' in data:
                     usage = data['usageMetadata']
@@ -4665,23 +4633,28 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
                     # Estimate cost (GPT-4o pricing: $2.50 per 1M input, $10 per 1M output)
                     # Use the extracted tokens (works for both OpenAI and Claude)
+                    # NOTE: no separate per-image add-on - OpenAI chat and
+                    # Claude usage token counts ALREADY include image tokens,
+                    # so adding a flat image_cost double-counted images and
+                    # inflated the thesis cost metrics (the old '2 high
+                    # detail' assumption also contradicted the payload, which
+                    # sends every image with detail:'low').
                     input_cost = input_tokens * 0.0025 / 1000
                     output_cost = output_tokens * 0.01 / 1000
                     iteration_cost = input_cost + output_cost
-
-                    # Count images for cost calculation (2 high detail + 6 low detail RGB + 8 depth low)
-                    num_high_detail = 2  # Storyboard + hero
-                    num_low_detail_rgb = 6  # Scout cameras
-                    num_low_detail_depth = len(depth_maps) if depth_maps else 0
-                    image_cost = (num_high_detail * 0.0018) + ((num_low_detail_rgb + num_low_detail_depth) * 0.0002)
-                    iteration_cost += image_cost
 
                     # Track costs
                     self.iteration_costs.append(iteration_cost)
                     self.total_cost += iteration_cost
 
-                    unreal.log(f"Iteration cost: ${iteration_cost:.4f} (tokens: ${input_cost + output_cost:.4f}, images: ${image_cost:.4f})")
+                    unreal.log(f"Iteration cost: ${iteration_cost:.4f} (token usage includes image tokens)")
                     unreal.log(f"Total cost so far: ${self.total_cost:.4f}")
+                else:
+                    # No usage info in the response (e.g. Gemini without
+                    # usageMetadata) - append 0.0 to keep iteration_costs
+                    # aligned 1:1 with AI calls.
+                    self.iteration_costs.append(0.0)
+                    unreal.log("No usage data in response - iteration cost recorded as $0.00")
 
                 unreal.log(f"Returning result_text: type={type(result_text)}, is_none={result_text is None}")
                 return result_text
@@ -4788,12 +4761,15 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 unreal.log(f"\n   {i}. {actor} ({adj_type}):")
                 unreal.log(f"Reason: {reason}")
 
-                if 'target_position' in adj:
-                    pos = adj['target_position']
+                # AI returns 'position'/'rotation' (the parser also
+                # normalizes legacy 'target_*' keys to these); read the
+                # normalized names first so values actually get shown.
+                pos = adj.get('position') or adj.get('target_position')
+                if pos:
                     unreal.log(f"Position: X={pos.get('x', 0)}, Y={pos.get('y', 0)}, Z={pos.get('z', 0)}")
 
-                if 'target_rotation' in adj:
-                    rot = adj['target_rotation']
+                rot = adj.get('rotation') or adj.get('target_rotation')
+                if rot:
                     unreal.log(f"Rotation: Pitch={rot.get('pitch', 0)}, Yaw={rot.get('yaw', 0)}, Roll={rot.get('roll', 0)}")
         else:
             unreal.log("\n No actor adjustments needed")
@@ -4804,12 +4780,12 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             unreal.log(f"\n Camera Adjustments:")
             unreal.log(f"Reason: {cam_adj.get('reason', 'No reason provided')}")
 
-            if 'target_position' in cam_adj:
-                pos = cam_adj['target_position']
+            pos = cam_adj.get('position') or cam_adj.get('target_position')
+            if pos:
                 unreal.log(f"Position: X={pos.get('x', 0)}, Y={pos.get('y', 0)}, Z={pos.get('z', 0)}")
 
-            if 'target_rotation' in cam_adj:
-                rot = cam_adj['target_rotation']
+            rot = cam_adj.get('rotation') or cam_adj.get('target_rotation')
+            if rot:
                 unreal.log(f"Rotation: Pitch={rot.get('pitch', 0)}, Yaw={rot.get('yaw', 0)}, Roll={rot.get('roll', 0)}")
         else:
             unreal.log("\n Camera framing looks good")
@@ -5599,8 +5575,14 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         # unavailable, or failed.
         external_score = self._run_external_validation()
 
-        # Store the current match score and details
-        if self.last_match_score is not None:
+        # Store the current match score and details - but only when THIS
+        # iteration actually produced a new parsed analysis. Otherwise (AI
+        # returned None, response unparseable, hero capture missing) the
+        # stale previous score would be appended again as a phantom
+        # duplicate in the thesis data.
+        fresh_score = getattr(self, '_fresh_score_this_iteration', False)
+        self._fresh_score_this_iteration = False  # consumed; next iteration must set it again
+        if self.last_match_score is not None and fresh_score:
             self.iteration_scores.append(self.last_match_score)
 
             # Track detailed metrics for this iteration
@@ -5888,7 +5870,11 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 else:
                     needed = target_score - self.iteration_scores[-1]
                     unreal.log(f"{needed:.0f} points from target ({target_score})")
-        unreal.log("⏱ Total sequence time: ~{0} seconds".format(138 * self.max_iterations))
+        # Report ACTUAL elapsed time (the old hardcoded ~138s/iteration
+        # estimate came from a long-gone fixed 15s-delay schedule).
+        if getattr(self, '_run_started_at', None):
+            unreal.log("⏱ Total sequence time: {0:.0f} seconds".format(
+                time.time() - self._run_started_at))
         unreal.log("="*70)
 
         # Finalize and save thesis metrics
@@ -6466,6 +6452,52 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         unreal.log(f"DEBUG: No previous position found for {actor_name}")
         return None
 
+    def _build_analysis_from_ui(self, panel_info, stored_analysis):
+        """Build the analysis dict for scene generation from current UI state.
+
+        Shared by generate_scene_from_panel (interactive) and
+        _generate_scene_internal (batch) so the two entry points cannot
+        drift (they used to hold parallel ~35-line copies of this logic).
+
+        Args:
+            panel_info: dict from get_panel_info() (current UI state)
+            stored_analysis: the panel's stored AI analysis dict (or None)
+
+        Returns:
+            analysis dict ready for SceneBuilder.build_scene
+        """
+        analysis = {
+            'characters': panel_info['characters'],  # From UI, not AI
+            'props': panel_info['props'],            # From UI, not AI
+            'location_type': panel_info['location'], # From UI dropdown
+            'shot_type': panel_info['shot_type'],    # From UI dropdown
+            'num_characters': len(panel_info['characters'])
+        }
+        # [Gen3D image mode] Thread the panel's image path through the
+        # analysis so the optional gen3d rescue can crop entities from
+        # it ('gen3d.mode' == 'image'). Optional key: when absent the
+        # matcher stays in text mode, zero behavior change.
+        try:
+            if panel_info.get('path'):
+                analysis['panel_image_path'] = str(panel_info['path'])
+        except Exception as e:
+            unreal.log_warning(f"[Gen3D] Could not attach panel image path: {e}")
+        # Merge mood/action context from the stored AI analysis so the
+        # opt-in mood-lighting / auto-animation features see it (the
+        # UI fields alone never carry these keys).
+        stored = stored_analysis or {}
+        if isinstance(stored, dict):
+            for key in ('mood', 'time_of_day', 'action', 'actions'):
+                value = stored.get(key)
+                if value:
+                    analysis[key] = value
+            # AI description doubles as action text when no explicit action
+            if 'action' not in analysis:
+                desc = stored.get('description') or stored.get('ai_raw_description')
+                if isinstance(desc, str) and desc.strip():
+                    analysis['action'] = desc.strip()
+        return analysis
+
     def generate_scene_from_panel(self):
         """Generate 3D scene from storyboard panel"""
         # Re-entrancy guard: don't rebuild while a capture/batch runs
@@ -6496,36 +6528,8 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             unreal.log(f"Panel info collected: {len(panel_info)} fields")
             # Build fresh analysis from what user has in the UI RIGHT NOW
             unreal.log("\n Building analysis from current UI state...")
-            panel_info['analysis'] = {
-                'characters': panel_info['characters'],  # From UI, not AI
-                'props': panel_info['props'],            # From UI, not AI
-                'location_type': panel_info['location'], # From UI dropdown
-                'shot_type': panel_info['shot_type'],    # From UI dropdown
-                'num_characters': len(panel_info['characters'])
-            }
-            # [Gen3D image mode] Thread the panel's image path through the
-            # analysis so the optional gen3d rescue can crop entities from
-            # it ('gen3d.mode' == 'image'). Optional key: when absent the
-            # matcher stays in text mode, zero behavior change.
-            try:
-                if panel_info.get('path'):
-                    panel_info['analysis']['panel_image_path'] = str(panel_info['path'])
-            except Exception as e:
-                unreal.log_warning(f"[Gen3D] Could not attach panel image path: {e}")
-            # Merge mood/action context from the stored AI analysis so the
-            # opt-in mood-lighting / auto-animation features see it (the
-            # UI fields alone never carry these keys).
-            stored = (self.active_panel or {}).get('analysis') or {}
-            if isinstance(stored, dict):
-                for key in ('mood', 'time_of_day', 'action', 'actions'):
-                    value = stored.get(key)
-                    if value:
-                        panel_info['analysis'][key] = value
-                # AI description doubles as action text when no explicit action
-                if 'action' not in panel_info['analysis']:
-                    desc = stored.get('description') or stored.get('ai_raw_description')
-                    if isinstance(desc, str) and desc.strip():
-                        panel_info['analysis']['action'] = desc.strip()
+            panel_info['analysis'] = self._build_analysis_from_ui(
+                panel_info, (self.active_panel or {}).get('analysis'))
             unreal.log("Analysis dict created from UI")
             unreal.log("="*60)
             unreal.log("USING CURRENT UI STATE (User's Edits):")
@@ -6622,8 +6626,10 @@ Shot Type: {panel_info['shot_type']}"""
                     # finds the generated scene after an editor restart
                     self._persist_panel_metadata(self.active_panel)
 
-                # Schedule getting the camera after build completes
-                QTimer.singleShot(3000, self._get_camera_from_builder)
+                # NOTE: the old deferred _get_camera_from_builder callback was
+                # removed - that method is a disabled stub returning None (the
+                # camera is a spawnable owned by the sequence, not a level
+                # actor to fetch), so scheduling it only misled readers.
 
             else:
                 QMessageBox.warning(self, "Generation Failed", "Failed to start generation")
@@ -6967,7 +6973,9 @@ You can edit them before generating the scene.{available_info}"""
             unreal.log_error(f"Analysis error: {e}")
 
     def _get_camera_from_builder(self):
-        """Get camera from builder - DISABLED (camera is spawnable)"""
+        """DISABLED stub - always returns None (camera is a spawnable owned
+        by the sequence, not a level actor). No longer scheduled anywhere;
+        kept only in case external scripts still call it."""
         return None
 
     def take_viewport_screenshot(self):
@@ -7016,9 +7024,15 @@ You can edit them before generating the scene.{available_info}"""
         ]
 
         latest_sequence = None
-        latest_time = 0
 
         asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+
+        # [Perf] Parse Panel_(\d+)_Sequence numbers from the asset PATH
+        # strings first and only load the single winning asset, instead of
+        # synchronously loading every sequence in the directory just to
+        # isinstance-check it.
+        import re
+        candidates = []  # (panel_num, asset_path)
 
         for seq_dir in sequence_dirs:
             if asset_subsystem.does_directory_exist(seq_dir):
@@ -7027,37 +7041,21 @@ You can edit them before generating the scene.{available_info}"""
                 unreal.log(f"[FIND] Checking directory: {seq_dir}")
                 unreal.log(f"[FIND] Found {len(assets)} assets")
 
-                # ============================================================
-                # DEBUG: Log all assets in directory
-                # ============================================================
-                if assets and len(assets) < 20:  # Only log if reasonable number
-                    unreal.log(f"[FIND DEBUG] Assets in directory:")
-                    for asset in assets:
-                        asset_name = asset.split('/')[-1]
-                        unreal.log(f"[FIND DEBUG]   - {asset_name}")
-                elif len(assets) >= 20:
-                    unreal.log(f"[FIND DEBUG] Too many assets ({len(assets)}) to list individually")
-                else:
-                    unreal.log(f"[FIND DEBUG] Directory is empty")
-                # ============================================================
-
-                # Filter for LevelSequence assets with Panel_ prefix
+                # Filter for Panel_XXX_Sequence pattern (not Seq_Panel_)
                 for asset_path in assets:
-                    # Look for Panel_XXX_Sequence pattern (not Seq_Panel_)
-                    if 'Panel_' in asset_path and '_Sequence' in asset_path:
-                        # Check if it's a LevelSequence
-                        asset = unreal.load_asset(asset_path)
-                        if isinstance(asset, unreal.LevelSequence):
-                            unreal.log(f"[FIND] Found sequence: {asset_path}")
-                            # Get panel number from path (e.g., Panel_008_Sequence -> 8)
-                            import re
-                            match = re.search(r'Panel_(\d+)_Sequence', asset_path)
-                            if match:
-                                panel_num = int(match.group(1))
-                                if panel_num > latest_time:
-                                    latest_time = panel_num
-                                    latest_sequence = asset_path
-                                    unreal.log(f"[FIND] New latest: Panel {panel_num}")
+                    match = re.search(r'Panel_(\d+)_Sequence', asset_path)
+                    if match:
+                        candidates.append((int(match.group(1)), asset_path))
+
+        # Highest panel number first; load candidates until one actually is
+        # a LevelSequence (normally the very first load).
+        for panel_num, asset_path in sorted(candidates, key=lambda c: c[0], reverse=True):
+            asset = unreal.load_asset(asset_path)
+            if isinstance(asset, unreal.LevelSequence):
+                latest_sequence = asset_path
+                unreal.log(f"[FIND] Latest sequence: Panel {panel_num}")
+                break
+            unreal.log_warning(f"[FIND] Skipping non-LevelSequence asset: {asset_path}")
 
         if latest_sequence:
             unreal.log(f"[FIND]  Found latest sequence: {latest_sequence}")
@@ -7177,12 +7175,12 @@ You can edit them before generating the scene.{available_info}"""
             # Get positioning mode
             positioning_mode = 'absolute' if self.use_absolute_positioning else 'relative'
 
-            # Get temperature (reconstruct from iteration number)
-            # FIXED: Match updated schedule (0.7 for iters 1-2, 0.4 for iters 3+)
-            if self.current_iteration <= 2:
-                temperature = 0.7
-            else:
-                temperature = 0.4
+            # Temperature actually sent this iteration, recorded at payload-
+            # build time in _call_ai_with_multiple_images (None for providers
+            # that don't accept temperature, e.g. GPT-5/Gemini). Re-deriving
+            # it from the iteration number recorded wrong values in the
+            # thesis CSVs whenever the schedule and the payload disagreed.
+            temperature = getattr(self, '_last_temperature', None)
 
             # Get analysis text if available
             analysis_text = ''
@@ -7489,37 +7487,10 @@ You can edit them before generating the scene.{available_info}"""
                 unreal.log_error("Failed to get panel info")
                 return False
 
-            # Build analysis from UI state
-            panel_info['analysis'] = {
-                'characters': panel_info['characters'],
-                'props': panel_info['props'],
-                'location_type': panel_info['location'],
-                'shot_type': panel_info['shot_type'],
-                'num_characters': len(panel_info['characters'])
-            }
-            # [Gen3D image mode] Thread the panel's image path through the
-            # analysis so the optional gen3d rescue can crop entities from
-            # it ('gen3d.mode' == 'image'). Optional key: when absent the
-            # matcher stays in text mode, zero behavior change.
-            try:
-                if panel_info.get('path'):
-                    panel_info['analysis']['panel_image_path'] = str(panel_info['path'])
-            except Exception as e:
-                unreal.log_warning(f"[Gen3D] Could not attach panel image path: {e}")
-            # Merge mood/action context from the stored AI analysis so the
-            # opt-in mood-lighting / auto-animation features see it (the
-            # UI fields alone never carry these keys).
-            stored = (panel_data or {}).get('analysis') or {}
-            if isinstance(stored, dict):
-                for key in ('mood', 'time_of_day', 'action', 'actions'):
-                    value = stored.get(key)
-                    if value:
-                        panel_info['analysis'][key] = value
-                # AI description doubles as action text when no explicit action
-                if 'action' not in panel_info['analysis']:
-                    desc = stored.get('description') or stored.get('ai_raw_description')
-                    if isinstance(desc, str) and desc.strip():
-                        panel_info['analysis']['action'] = desc.strip()
+            # Build analysis from UI state (shared helper with the
+            # interactive GENERATE path)
+            panel_info['analysis'] = self._build_analysis_from_ui(
+                panel_info, (panel_data or {}).get('analysis'))
 
             # Import scene builder
             from core.scene_builder import SceneBuilder
@@ -7905,36 +7876,43 @@ You can edit them before generating the scene.{available_info}"""
             unreal.log_warning(f"Could not cleanup scout cameras: {e}")
 
         # ============================================================
-        # DEPTH ANALYZER: Restart between panels to prevent memory leak
-        # PyTorch subprocess accumulates memory after ~30-40 depth maps
-        # Safe to restart here because Qt event loop is not active
+        # DEPTH ANALYZER: Restart only when needed.
+        # The PyTorch subprocess accumulates memory after ~30-40 depth maps,
+        # so it IS restarted between panels during batch runs. But a healthy
+        # subprocess is KEPT on a manual CAPTURE click: DepthAnalyzer
+        # __init__ can block the editor up to 60s, and the every-10-
+        # iterations restart in _send_to_ai_analysis already covers long
+        # single-panel runs.
         # ============================================================
         if hasattr(self, 'depth_analyzer') and self.depth_analyzer:
             try:
-                unreal.log("Restarting depth analyzer subprocess (prevents memory leak)...")
-
-                # Check if still alive before cleanup
+                # Check if still alive before deciding
                 is_alive = True
                 if hasattr(self.depth_analyzer, 'process') and self.depth_analyzer.process:
                     is_alive = self.depth_analyzer.process.poll() is None
 
-                if is_alive:
-                    unreal.log("Process is alive - shutting down gracefully...")
-                    self.depth_analyzer._cleanup()
+                in_batch = getattr(self, 'batch_capture_mode', False)
+                if is_alive and not in_batch:
+                    unreal.log("Depth analyzer subprocess healthy - keeping it (no restart needed)")
                 else:
-                    unreal.log("Process already dead - skipping cleanup...")
+                    unreal.log("Restarting depth analyzer subprocess (prevents memory leak)...")
+                    if is_alive:
+                        unreal.log("Process is alive - shutting down gracefully...")
+                        self.depth_analyzer._cleanup()
+                    else:
+                        unreal.log("Process already dead - skipping cleanup...")
 
-                # Wait a moment for cleanup
-                time.sleep(0.5)
+                    # Wait a moment for cleanup
+                    time.sleep(0.5)
 
-                # Restart with fresh subprocess
-                from analysis.depth_analyzer import DepthAnalyzer
-                self.depth_analyzer = DepthAnalyzer()
+                    # Restart with fresh subprocess
+                    from analysis.depth_analyzer import DepthAnalyzer
+                    self.depth_analyzer = DepthAnalyzer()
 
-                if self.depth_analyzer.available:
-                    unreal.log("Depth analyzer restarted successfully")
-                else:
-                    unreal.log_warning("Depth analyzer failed to restart - depth maps will be inactive")
+                    if self.depth_analyzer.available:
+                        unreal.log("Depth analyzer restarted successfully")
+                    else:
+                        unreal.log_warning("Depth analyzer failed to restart - depth maps will be inactive")
 
             except Exception as e:
                 unreal.log_warning(f"Could not restart depth analyzer: {e}")
@@ -8112,8 +8090,10 @@ You can edit them before generating the scene.{available_info}"""
         if the user clicked the two buttons in order, reusing the existing
         handlers (generate_scene_from_panel, then test_positioning_phase3).
         Generation is synchronous on the game thread; the capture start is
-        deferred with QTimer.singleShot so it runs after the post-generate
-        camera fetch (generate schedules _get_camera_from_builder at 3000ms).
+        deferred with a short QTimer.singleShot settle gap so queued Qt/editor
+        events flush first. (The gap used to be 3.5s solely to outwait a
+        post-generate camera-fetch callback that was a disabled no-op stub;
+        both the callback and the extra wait have been removed.)
         _run_panel_pending keeps _workflow_busy blocking during that gap.
         """
         if self._workflow_busy("RUN PANEL"):
@@ -8146,9 +8126,9 @@ You can edit them before generating the scene.{available_info}"""
         self._run_panel_pending = True
         self._notify_status(
             "Run Panel",
-            "Scene generated - capture workflow starts automatically in a few seconds...",
+            "Scene generated - capture workflow starts automatically in a moment...",
             "info")
-        QTimer.singleShot(3500, self._run_panel_start_capture)
+        QTimer.singleShot(500, self._run_panel_start_capture)
 
     def _run_panel_start_capture(self):
         """[RunButtons] Deferred second half of RUN PANEL: start CAPTURE."""

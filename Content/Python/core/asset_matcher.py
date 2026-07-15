@@ -312,24 +312,40 @@ class AssetMatcher:
         if category not in self.show_library:
             return None
 
-        for asset_name, asset_data in self.show_library[category].items():
-            # Exact match
+        # Three sequential passes over ALL entries: (1) exact name,
+        # (2) exact alias, (3) loose substring (alias/description
+        # containment). Matching per-entry in dict order let an earlier
+        # entry's loose substring hit shadow a later entry's EXACT name
+        # match (scene_builder._find_asset_path was already fixed the same
+        # way; this sibling never was).
+        entries = self.show_library[category].items()
+
+        # Pass 1: exact name match
+        for asset_name, asset_data in entries:
             if asset_name.lower() == object_name:
                 asset_path = asset_data.get('asset_path')
                 if asset_path:
                     _log(f"Matched '{object_name}' to show asset: {asset_name}")
                     return self.load_asset(asset_path)
 
-            # Alias match
-            aliases = asset_data.get('aliases', [])
-            for alias in aliases:
-                if alias.lower() == object_name or object_name in alias.lower():
+        # Pass 2: exact alias equality
+        for asset_name, asset_data in entries:
+            for alias in self._normalize_aliases(asset_data.get('aliases', [])):
+                if alias.lower() == object_name:
                     asset_path = asset_data.get('asset_path')
                     if asset_path:
                         _log(f"Matched '{object_name}' via alias to show asset: {asset_name}")
                         return self.load_asset(asset_path)
 
-            # Description match
+        # Pass 3: loose containment (alias substring, then description)
+        for asset_name, asset_data in entries:
+            for alias in self._normalize_aliases(asset_data.get('aliases', [])):
+                if object_name in alias.lower():
+                    asset_path = asset_data.get('asset_path')
+                    if asset_path:
+                        _log(f"Matched '{object_name}' via alias substring to show asset: {asset_name}")
+                        return self.load_asset(asset_path)
+
             description = asset_data.get('description', '').lower()
             if object_name in description:
                 asset_path = asset_data.get('asset_path')
@@ -338,6 +354,21 @@ class AssetMatcher:
                     return self.load_asset(asset_path)
 
         return None
+
+    @staticmethod
+    def _normalize_aliases(aliases) -> List[str]:
+        """Normalize library alias data to a list of strings.
+
+        Aliases stored as a comma-separated STRING are valid library data
+        (scene_builder supports that form); iterating such a string directly
+        walked it character-by-character, so string-form aliases silently
+        never matched here.
+        """
+        if isinstance(aliases, str):
+            return [a.strip() for a in aliases.split(',') if a.strip()]
+        if isinstance(aliases, (list, tuple)):
+            return [str(a) for a in aliases if a]
+        return []
 
     # ========================================
     # SEMANTIC (EMBEDDING) MATCHING
@@ -538,8 +569,10 @@ class AssetMatcher:
                 if not asset_path:
                     continue
                 description = asset_data.get('description', '') or ''
-                aliases = asset_data.get('aliases', []) or []
-                alias_text = ', '.join(str(a) for a in aliases)
+                # _normalize_aliases: a comma-separated STRING alias field
+                # would otherwise be embedded per-character via join
+                aliases = self._normalize_aliases(asset_data.get('aliases', []) or [])
+                alias_text = ', '.join(aliases)
                 parts = [asset_name, description, alias_text]
                 embed_text = '. '.join(p.strip() for p in parts if p and p.strip())
                 entries.append((asset_name, asset_path, embed_text))

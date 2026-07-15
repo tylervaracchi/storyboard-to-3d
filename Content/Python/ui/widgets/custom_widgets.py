@@ -178,17 +178,6 @@ class PanelCard(QFrame):
         if has_analysis and isinstance(analysis_data, dict):
             has_analysis = len(analysis_data) > 0
 
-        # DEBUG: Log checkmark visibility
-        import unreal
-        panel_name = Path(self.panel_data['path']).name
-        unreal.log(f"[PanelCard] {panel_name}:")
-        unreal.log(f"analysis is not None: {analysis_data is not None}")
-        unreal.log(f"analysis type: {type(analysis_data)}")
-        if isinstance(analysis_data, dict):
-            unreal.log(f"analysis keys: {list(analysis_data.keys()) if analysis_data else 'empty dict'}")
-        unreal.log(f"=> has_analysis: {has_analysis}")
-        unreal.log(f"=> checkmark visible: {has_analysis}")
-
         self.checkmark_label.setVisible(has_analysis)
 
         thumb_layout_main.addWidget(thumb_stack, 0, Qt.AlignCenter)
@@ -212,21 +201,16 @@ class PanelCard(QFrame):
 
     def update_status(self, analyzed=False):
         """Update the panel card status"""
-        import unreal
-        unreal.log(f"[PanelCard.update_status] analyzed={analyzed}")
-
         if analyzed:
             self.status_label.setText(" Analyzed")
             self.status_label.setStyleSheet("color: #00AA00; font-size: 9px;")
             if hasattr(self, 'checkmark_label'):
                 self.checkmark_label.setVisible(True)
-                unreal.log(f"[PanelCard.update_status] Checkmark set to VISIBLE")
         else:
             self.status_label.setText("Not analyzed")
             self.status_label.setStyleSheet("color: #808080; font-size: 9px;")
             if hasattr(self, 'checkmark_label'):
                 self.checkmark_label.setVisible(False)
-                unreal.log(f"[PanelCard.update_status] Checkmark set to HIDDEN")
 
     def update_style(self):
         """Update card style based on selection"""
@@ -257,22 +241,43 @@ class PanelCard(QFrame):
         self.update_style()
 
     def mousePressEvent(self, event):
-        """Handle mouse press for selection and drag start"""
+        """Handle mouse press for selection; drag starts in mouseMoveEvent"""
         if event.button() == Qt.LeftButton:
             # Emit click signal first (parent will handle deselection logic)
             self.clicked.emit(self.panel_data)
 
-            # Start drag
+            # Only record the press position here. The drag itself starts in
+            # mouseMoveEvent once the cursor moves past the start-drag
+            # distance, so plain clicks never spin up a blocking QDrag.
+            self._drag_start_pos = event.pos()
+
+    def mouseMoveEvent(self, event):
+        """Start a drag once the press moves past the drag threshold"""
+        if (event.buttons() & Qt.LeftButton and
+                getattr(self, '_drag_start_pos', None) is not None and
+                (event.pos() - self._drag_start_pos).manhattanLength()
+                >= QApplication.startDragDistance()):
+            start_pos = self._drag_start_pos
+            self._drag_start_pos = None
+
             drag = QDrag(self)
             mime_data = QMimeData()
-            mime_data.setText(json.dumps(self.panel_data))
+            # Only the path goes in the mime text - handle_panel_drop matches
+            # solely on 'path' (serializing the whole panel_data dict,
+            # including the full AI analysis, was dead weight).
+            mime_data.setText(json.dumps({'path': self.panel_data['path']}))
             drag.setMimeData(mime_data)
 
             if self.thumb_label.pixmap():
                 drag.setPixmap(self.thumb_label.pixmap())
-            drag.setHotSpot(event.pos())
+            drag.setHotSpot(start_pos)
 
             drag.exec_(Qt.MoveAction)
+
+    def mouseReleaseEvent(self, event):
+        """Clear any pending drag start on release"""
+        self._drag_start_pos = None
+        super().mouseReleaseEvent(event)
 
     def dragEnterEvent(self, event):
         """Handle drag enter"""

@@ -93,12 +93,11 @@ class ModernStoryboardWindow(QMainWindow):
         # silently ran filename heuristics and cached the junk results.
         self.analyzer = PanelAnalyzer(ai_client=self.ai_client)
 
-        # Undo/Redo system
-        self.undo_stack = deque(maxlen=50)
-        self.redo_stack = deque(maxlen=50)
+        # NOTE: Undo/Redo system removed - nothing ever pushed actions onto
+        # the stacks, so the whole feature was a permanent no-op.
 
-        # Load settings
-        self.settings = self.load_settings()
+        # NOTE: no window-level settings cache - consumers read settings via
+        # core.settings_manager (get_settings/get_setting) directly.
 
         # Setup UI
         self.init_ui()
@@ -197,9 +196,13 @@ class ModernStoryboardWindow(QMainWindow):
         self.episode_manager.set_show(show_data)
         self.asset_library.set_show(show_data)
 
-        # IMPORTANT: Wait for asset library to load, then update active panel widget
-        # The asset library loads asynchronously, so we need to ensure it's loaded
-        QTimer.singleShot(100, lambda: self.update_active_panel_context())
+        # AssetLibraryWidget.set_show/load_library are fully synchronous, so
+        # the library is loaded by the time set_show returns - update the
+        # active panel context immediately. (The old 100ms/500ms QTimer
+        # polling rested on a stale 'loads asynchronously' assumption and
+        # only opened a window where clicking a panel right after selecting
+        # a show used the previous show's context.)
+        self.update_active_panel_context()
 
         # Clear panels until episode is selected
         self.panels = []
@@ -228,10 +231,10 @@ class ModernStoryboardWindow(QMainWindow):
                     unreal.log(f"- {len(locations)} locations: {list(locations.keys())}")
                     unreal.log(f"- {len(characters)} characters: {list(characters.keys())}")
             else:
-                unreal.log("[MainWindow] Asset library widget has no 'library' attribute yet")
-                # Try again after another delay
-                QTimer.singleShot(500, lambda: self.update_active_panel_context())
-                return
+                # set_show/load_library are synchronous, so this only happens
+                # if the widget failed to construct its library at all - no
+                # point polling for it.
+                unreal.log_warning("[MainWindow] Asset library widget has no 'library' attribute")
 
             self.active_panel_widget.set_show_context(
                 self.current_show,
@@ -257,7 +260,12 @@ class ModernStoryboardWindow(QMainWindow):
         panels_path = self.current_episode_path / "Panels"
         if panels_path.exists():
             self.panels = []
-            panel_files = sorted(panels_path.glob("*.png")) + sorted(panels_path.glob("*.jpg")) + sorted(panels_path.glob("*.jpeg"))
+            # Sort ALL image files together by filename (concatenating
+            # per-extension sorts displayed all PNGs before all JPGs when an
+            # episode mixed extensions)
+            panel_files = sorted(
+                [p for ext in ('*.png', '*.jpg', '*.jpeg') for p in panels_path.glob(ext)],
+                key=lambda p: p.name.lower())
 
             # Load panel metadata
             metadata_file = self.current_episode_path / "panels_metadata.json"
@@ -331,20 +339,9 @@ class ModernStoryboardWindow(QMainWindow):
         settings_action.triggered.connect(self.open_settings)
         file_menu.addAction(settings_action)
 
-        # Edit menu
-        edit_menu = menubar.addMenu("Edit")
-
-        self.undo_menu_action = QAction("Undo", self)
-        self.undo_menu_action.setShortcut("Ctrl+Z")
-        self.undo_menu_action.triggered.connect(self.undo)
-        self.undo_menu_action.setEnabled(False)
-        edit_menu.addAction(self.undo_menu_action)
-
-        self.redo_menu_action = QAction("Redo", self)
-        self.redo_menu_action.setShortcut("Ctrl+Y")
-        self.redo_menu_action.triggered.connect(self.redo)
-        self.redo_menu_action.setEnabled(False)
-        edit_menu.addAction(self.redo_menu_action)
+        # NOTE: the Edit menu (Undo/Redo) was removed - nothing ever pushed
+        # onto the undo stack, so the actions were a permanent disabled no-op.
+        # Real undo is a post-demo project.
 
         # Import menu
         import_menu = menubar.addMenu(" Import")
@@ -407,21 +404,8 @@ class ModernStoryboardWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
 
-        # Undo action
-        self.undo_action = QAction("↶ Undo", self)
-        self.undo_action.setToolTip("Undo last action (Ctrl+Z)")
-        self.undo_action.triggered.connect(self.undo)
-        self.undo_action.setEnabled(False)
-        toolbar.addAction(self.undo_action)
-
-        # Redo action
-        self.redo_action = QAction("↷ Redo", self)
-        self.redo_action.setToolTip("Redo last action (Ctrl+Y)")
-        self.redo_action.triggered.connect(self.redo)
-        self.redo_action.setEnabled(False)
-        toolbar.addAction(self.redo_action)
-
-        toolbar.addSeparator()
+        # NOTE: toolbar Undo/Redo buttons removed (permanent no-ops - no code
+        # ever pushed an undoable action; see create_menu_bar note).
 
         # Settings action
         settings_action = QAction(" Settings", self)
@@ -513,9 +497,11 @@ class ModernStoryboardWindow(QMainWindow):
         from ui.widgets.active_panel_widget import ActivePanelWidget
         self.active_panel_widget = ActivePanelWidget(parent=self)
 
-        # Connect signals
-        self.active_panel_widget.analyze_panel.connect(self.analyze_active_panel)
-        self.active_panel_widget.generate_scene.connect(self.generate_active_panel)
+        # NOTE: no signal connections here - ActivePanelWidget's ANALYZE and
+        # GENERATE buttons call its own analyze_panel_with_ai /
+        # generate_scene_from_panel directly (the analyze_panel /
+        # generate_scene signals are declared but never emitted, so wiring
+        # them created a dead parallel pipeline that misled maintainers).
 
         # Pass asset library reference to active panel widget
         self.active_panel_widget.asset_library = self.asset_library
@@ -737,20 +723,11 @@ class ModernStoryboardWindow(QMainWindow):
                 "API key is configured in Settings.".format(e),
                 "warning")
 
-    def load_settings(self):
-        """Load application settings"""
-        try:
-            from core.settings_manager import get_settings
-            return get_settings()
-        except:
-            return {}
-
     def open_settings(self):
         """Open settings dialog"""
         try:
             dialog = SettingsDialog(self)
             if dialog.exec_():
-                self.settings = self.load_settings()
                 # Rebuild the AI client and analyzer so provider/key/model
                 # changes take effect immediately instead of requiring an
                 # editor restart
@@ -846,54 +823,18 @@ class ModernStoryboardWindow(QMainWindow):
                 json.dump(panel_metadata, f, indent=2)
 
             unreal.log(f"Saved panel metadata: {panel_name}")
-            unreal.log(f"- Characters: {panel_data.get('characters', [])}")
-            unreal.log(f"- Props: {panel_data.get('props', [])}")
-            unreal.log(f"- Location: {panel_data.get('location', '')}")
-            unreal.log(f"- Shot type: {panel_data.get('shot_type', '')}")
-            unreal.log(f"- Has analysis: {panel_data.get('analysis') is not None}")
-            # This ensures we don't lose analysis data from other panels
-            unreal.log(f"[SaveMeta] Reloading all panels from metadata file...")
 
-            # Reload metadata
-            with open(metadata_file, 'r') as f:
-                reloaded_metadata = json.load(f)
-
-            # Update ALL panels in the list with their saved data
-            for i, p in enumerate(self.panels):
-                saved_data = reloaded_metadata.get(p['name'], {})
-                if saved_data.get('analysis'):
-                    self.panels[i]['analysis'] = saved_data['analysis']
-                    self.panels[i]['characters'] = saved_data.get('characters', [])
-                    self.panels[i]['props'] = saved_data.get('props', [])
-                    self.panels[i]['location'] = saved_data.get('location', '')
-                    self.panels[i]['shot_type'] = saved_data.get('shot_type', '')
-                    unreal.log(f"[{i}] {p['name']}: Loaded analysis from file")
-                # Restore sequence_path only when saved (never clobber a
-                # fresher in-memory value with None)
-                if saved_data.get('sequence_path'):
-                    self.panels[i]['sequence_path'] = saved_data['sequence_path']
-                else:
-                    # No saved data - keep whatever is in memory
-                    pass
-
-            # Refresh the panel grid to update visual indicators (checkmarks)
-            unreal.log(f"[SaveMeta] About to refresh grid with {len(self.panels)} panels")
-
-            # Force a complete refresh
-            self.panel_grid.set_panels(self.panels)
-
-            # Re-select the active panel to maintain selection
-            if self.active_panel:
-                for card in self.panel_grid.panel_cards:
-                    if card.panel_data['name'] == self.active_panel['name']:
-                        card.set_selected(True)
-                        break
-
-            # Log what the cards received
-            unreal.log(f"[SaveMeta] Grid refreshed, checking cards:")
-            for i, card in enumerate(self.panel_grid.panel_cards):
-                has_it = card.panel_data.get('analysis') is not None
-                unreal.log(f"Card {i}: {card.panel_data['name']} - has_analysis: {has_it}")
+            # panel_data is the same dict object held by self.panels and the
+            # grid's cards, so the in-memory state is already current. Just
+            # refresh the saved panel's own card indicator instead of
+            # re-reading the JSON we wrote two lines ago and rebuilding the
+            # ENTIRE grid (which re-decoded every thumbnail from disk on
+            # every panel click). load_episode_panels still does the full
+            # rebuild when an episode is (re)loaded.
+            for card in self.panel_grid.panel_cards:
+                if card.panel_data.get('name') == panel_name:
+                    card.update_status(panel_data.get('analysis') is not None)
+                    break
 
         except Exception as e:
             import traceback
@@ -995,32 +936,8 @@ class ModernStoryboardWindow(QMainWindow):
                 "Could not save the new panel order:\n{0}".format(e),
                 "warning")
 
-    def undo(self):
-        """Undo last action"""
-        if self.undo_stack:
-            action = self.undo_stack.pop()
-            self.redo_stack.append(action)
-            unreal.log("Undo")
-            self.update_undo_redo_state()
-
-    def redo(self):
-        """Redo last undone action"""
-        if self.redo_stack:
-            action = self.redo_stack.pop()
-            self.undo_stack.append(action)
-            unreal.log("Redo")
-            self.update_undo_redo_state()
-
-    def update_undo_redo_state(self):
-        """Update undo/redo button states"""
-        if hasattr(self, 'undo_action'):
-            self.undo_action.setEnabled(bool(self.undo_stack))
-        if hasattr(self, 'redo_action'):
-            self.redo_action.setEnabled(bool(self.redo_stack))
-        if hasattr(self, 'undo_menu_action'):
-            self.undo_menu_action.setEnabled(bool(self.undo_stack))
-        if hasattr(self, 'redo_menu_action'):
-            self.redo_menu_action.setEnabled(bool(self.redo_stack))
+    # NOTE: undo/redo/update_undo_redo_state removed with the no-op
+    # Undo/Redo system (see __init__ note).
 
     def notify_user(self, title, message, level="error"):
         """Surface a failure in the UI as well as the Output Log.
@@ -1565,79 +1482,9 @@ class ModernStoryboardWindow(QMainWindow):
             # matching the DemoFlow style of the single-panel ANALYZE path
             self.notify_user("Analysis Complete", summary, "info")
 
-    def analyze_active_panel(self):
-        """Analyze active panel with show context"""
-        if not self.active_panel:
-            QMessageBox.warning(self, "No Panel", "Please select a panel first")
-            return
-
-        unreal.log(f"Analyzing panel: {self.active_panel['name']}")
-
-        # Analyze with show context for better recognition
-        try:
-            analysis = self.analyzer.analyze_panel(
-                self.active_panel['path'],
-                show_name=self.current_show if self.current_show else None
-            )
-
-            self.active_panel['analysis'] = analysis
-
-            # Update active panel widget if it exists
-            if hasattr(self, 'active_panel_widget'):
-                self.active_panel_widget.update_analysis(analysis)
-
-            unreal.log(f"Panel analyzed: {len(analysis.get('characters', []))} characters, "
-                      f"{len(analysis.get('props', []))} props detected")
-
-        except Exception as e:
-            unreal.log_error(f"Analysis failed: {e}")
-            QMessageBox.warning(self, "Error", f"Failed to analyze panel:\n{str(e)}")
-
-    def generate_active_panel(self):
-        """Generate scene for active panel using show-specific assets"""
-        if not self.active_panel:
-            QMessageBox.warning(self, "No Panel", "Please select a panel first")
-            return
-
-        if not self.current_show:
-            QMessageBox.warning(self, "No Show", "Please select a show first")
-            return
-
-        if not self.scene_builder:
-            # Initialize with current show if needed
-            from core.scene_builder import SceneBuilder
-            self.scene_builder = SceneBuilder(show_name=self.current_show)
-
-        unreal.log(f"Generating scene for panel: {self.active_panel['name']}")
-        unreal.log(f"Using assets from show: {self.current_show}")
-
-        # Analyze panel if not already done
-        if not self.active_panel.get('analysis'):
-            unreal.log("Analyzing panel first...")
-            # Run analysis with show context
-            analysis = self.analyzer.analyze_panel(
-                self.active_panel['path'],
-                show_name=self.current_show  # Pass show context
-            )
-            self.active_panel['analysis'] = analysis
-
-        # Build the scene with show-specific assets
-        try:
-            scene_data = self.scene_builder.build_scene(
-                self.active_panel['analysis'],
-                panel_index=self.panels.index(self.active_panel) if self.active_panel in self.panels else 0
-            )
-
-            if scene_data:
-                unreal.log(f"Scene generated with {len(scene_data['actors'])} actors")
-                QMessageBox.information(self, "Success",
-                    f"Scene generated!\n\n"
-                    f"Actors: {len(scene_data['actors'])}\n"
-                    f"Camera: {'Yes' if scene_data['camera'] else 'No'}\n"
-                    f"Lights: {len(scene_data['lights'])}")
-            else:
-                QMessageBox.warning(self, "Error", "Failed to generate scene")
-
-        except Exception as e:
-            unreal.log_error(f"Scene generation failed: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to generate scene:\n{str(e)}")
+    # NOTE: analyze_active_panel / generate_active_panel were removed. They
+    # were connected to ActivePanelWidget signals that are never emitted, so
+    # they formed a dead parallel pipeline (PanelAnalyzer + SceneBuilder)
+    # that misled anyone editing the real ANALYZE/GENERATE flow. The live
+    # paths are ActivePanelWidget.analyze_panel_with_ai and
+    # ActivePanelWidget.generate_scene_from_panel.

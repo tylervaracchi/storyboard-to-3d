@@ -6,7 +6,7 @@ Show management widgets for StoryboardTo3D
 
 import unreal
 from pathlib import Path
-from core.shows_manager import ShowsManager
+from core.utils import get_shows_manager
 from .custom_widgets import ShowButton
 
 try:
@@ -30,7 +30,10 @@ class ShowManagerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.shows = []
-        self.shows_manager = ShowsManager()
+        # Use the shared singleton (same instance the main window uses) so
+        # constructing this widget doesn't re-run mkdir/logging and two
+        # manager instances can't drift.
+        self.shows_manager = get_shows_manager()
         self.current_show = None
         self.setup_ui()
 
@@ -155,6 +158,12 @@ class ShowManagerWidget(QWidget):
             self.shows_layout.addWidget(placeholder)
 
         self.shows_layout.addStretch()
+
+        # Re-apply any active search filter - the rebuild recreates all
+        # buttons visible, which used to silently drop the filter
+        if self.show_search.text():
+            self.filter_shows(self.show_search.text())
+
         self.shows_updated.emit()
 
     def on_show_selected(self, show_data):
@@ -183,8 +192,8 @@ class ShowManagerWidget(QWidget):
                     widget.setVisible(visible)
 
     def sort_shows(self, sort_type):
-        """Sort shows list"""
-        self.apply_show_sort()
+        """Sort shows list (refresh_shows_list applies the current sort
+        itself, so no redundant pre-sort here)"""
         self.refresh_shows_list()
 
     def apply_show_sort(self):
