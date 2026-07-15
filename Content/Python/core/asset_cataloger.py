@@ -11,7 +11,10 @@ strict JSON payload:
     - description: one concise physical description of what the object
       IS (never the render, background or lighting),
     - aliases: 5 lowercase synonyms an artist might type when searching,
-    - category_guess: one of characters/props/locations.
+    - category_guess: one of characters/props/locations,
+    - attached_props (optional, characters only): props visibly held/worn
+      as part of the mesh; written to an entry only when the entry has no
+      attached_props yet (manual lists are never clobbered).
 
 Responses are parsed with core.json_extractor so markdown-wrapped or
 slightly malformed JSON still lands. describe_asset never raises; it
@@ -81,6 +84,12 @@ CATALOG_JSON_SCHEMA = {
             'type': 'string',
             'enum': list(LIBRARY_CATEGORIES),
         },
+        # Optional: held/worn items that are part of a character mesh
+        # (e.g. a scythe modeled into the Farmer's hand). Models may omit.
+        'attached_props': {
+            'type': 'array',
+            'items': {'type': 'string'},
+        },
     },
     'required': ['description', 'aliases', 'category_guess'],
     'additionalProperties': False,
@@ -97,7 +106,11 @@ _PROMPT_TEMPLATE = (
     'render, background, lighting or image quality",\n'
     '  "aliases": ["exactly {max_aliases} lowercase synonyms or alternate words '
     'an artist might type to find this asset"],\n'
-    '  "category_guess": "one of: characters, props, locations"\n'
+    '  "category_guess": "one of: characters, props, locations",\n'
+    '  "attached_props": ["OPTIONAL - only for a character (skeletal mesh): '
+    'lowercase names of props visibly held or worn as part of the mesh '
+    '(e.g. a scythe in the hand). Omit this field entirely for non-characters '
+    'or when nothing is held or worn"]\n'
     '}}'
 )
 
@@ -216,6 +229,22 @@ def _normalize_aliases(raw_aliases):
         if len(aliases) >= MAX_ALIASES:
             break
     return aliases
+
+
+def _normalize_attached_props(raw):
+    """Lowercase, strip and dedupe the model's attached_props list.
+    Returns [] when the field is missing or malformed (models may omit)."""
+    attached = []
+    seen = set()
+    if not isinstance(raw, (list, tuple)):
+        return attached
+    for item in raw:
+        text = str(item).strip().lower()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        attached.append(text)
+    return attached
 
 
 def merge_aliases(existing, new):
@@ -356,6 +385,7 @@ def describe_asset(entry_name, entry, provider=None, thumb_dir=None):
             'description': description,
             'aliases': _normalize_aliases(parsed.get('aliases')),
             'category_guess': _normalize_category_guess(parsed.get('category_guess')),
+            'attached_props': _normalize_attached_props(parsed.get('attached_props')),
             'cost': float(result.get('cost') or 0.0),
         }
     except Exception as e:
@@ -474,6 +504,12 @@ def catalog_library(show_name, overwrite=False, progress_cb=None):
 
             data['description'] = described['description']
             data['aliases'] = merge_aliases(data.get('aliases'), described['aliases'])
+            # Attached props: characters only, and only when the entry has
+            # no attached_props yet (a manual list is never clobbered)
+            if category == 'characters' and 'attached_props' not in data:
+                ai_attached = described.get('attached_props') or []
+                if ai_attached:
+                    data['attached_props'] = ai_attached
             result['cost'] += described.get('cost', 0.0)
             guess = described.get('category_guess')
             if guess and guess != category:

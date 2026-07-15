@@ -38,6 +38,8 @@ class AssetEditDialog(QDialog):
 
         self.thumbnail_path = None
         self.original_data = {}
+        # Character-only field; stays None for other categories
+        self.attached_props_edit = None
 
         self.setWindowTitle(f"Edit {asset_name}")
         self.setMinimumWidth(600)
@@ -153,6 +155,19 @@ class AssetEditDialog(QDialog):
         self.aliases_edit.setPlaceholderText("dog, puppy, canine")
         details_layout.addWidget(self.aliases_edit)
 
+        # Attached props (characters only): props already part of this
+        # character's mesh (e.g. a scythe in the Farmer's hand) that must
+        # not spawn as standalone props
+        if self.category == 'characters':
+            details_layout.addWidget(QLabel("Attached props (comma-separated):"))
+            self.attached_props_edit = QLineEdit()
+            self.attached_props_edit.setPlaceholderText("scythe, sickle, farm tool")
+            self.attached_props_edit.setToolTip(
+                "Props that are already part of this character's mesh.\n"
+                "Detected props matching these names will not spawn as "
+                "separate prop meshes.")
+            details_layout.addWidget(self.attached_props_edit)
+
         # Category (read-only)
         details_layout.addWidget(QLabel("Category:"))
         self.category_label = QLabel(f"<b>{self.category}</b>")
@@ -210,6 +225,14 @@ class AssetEditDialog(QDialog):
             aliases = asset_data.get('aliases', [])
             if aliases:
                 self.aliases_edit.setText(', '.join(aliases))
+
+            # Load attached props (characters only)
+            if self.attached_props_edit is not None:
+                attached = asset_data.get('attached_props', [])
+                if isinstance(attached, str):
+                    attached = [a.strip() for a in attached.split(',') if a.strip()]
+                if attached:
+                    self.attached_props_edit.setText(', '.join(attached))
 
             # Load thumbnail
             self.load_thumbnail(asset_data)
@@ -527,6 +550,14 @@ class AssetEditDialog(QDialog):
                     merged.append(alias)
             self.aliases_edit.setText(', '.join(merged))
 
+            # Attached props: fill only when the field is empty so a
+            # manual list is never clobbered (models may omit the field)
+            if self.attached_props_edit is not None and \
+                    not self.attached_props_edit.text().strip():
+                ai_attached = result.get('attached_props') or []
+                if ai_attached:
+                    self.attached_props_edit.setText(', '.join(ai_attached))
+
             # describe_asset may have rendered a thumbnail; show it
             new_thumb = entry.get('thumbnail', {})
             new_path = new_thumb.get('path') if isinstance(new_thumb, dict) else None
@@ -588,6 +619,15 @@ class AssetEditDialog(QDialog):
             asset_dict[self.asset_name]['asset_path'] = asset_path
             asset_dict[self.asset_name]['description'] = description
             asset_dict[self.asset_name]['aliases'] = aliases
+
+            # Attached props (characters only; empty field removes the key)
+            if self.attached_props_edit is not None:
+                attached = [a.strip() for a in
+                            self.attached_props_edit.text().split(',') if a.strip()]
+                if attached:
+                    asset_dict[self.asset_name]['attached_props'] = attached
+                else:
+                    asset_dict[self.asset_name].pop('attached_props', None)
 
             # Update thumbnail info
             if self.thumbnail_path:

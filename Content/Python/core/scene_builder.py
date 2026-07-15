@@ -19,9 +19,110 @@ The build order follows production logic:
     8. Sequence binding
 """
 
+import re
+
 import unreal
 from typing import Optional, Dict, Any, List
 from core.error_handler import OperationErrorCollector
+
+
+def _attached_prop_matches(prop_name: str, attached_name: str) -> bool:
+    """Case-insensitive exact or word-boundary substring match, mirroring
+    the library matcher's exact-then-partial semantics."""
+    prop_lower = prop_name.strip().lower()
+    attached_lower = attached_name.strip().lower()
+    if not prop_lower or not attached_lower:
+        return False
+    if prop_lower == attached_lower:
+        return True
+    return bool(
+        re.search(r'\b' + re.escape(attached_lower) + r'\b', prop_lower) or
+        re.search(r'\b' + re.escape(prop_lower) + r'\b', attached_lower)
+    )
+
+
+def filter_attached_props(props: List[Any], resolved_characters: List[Any],
+                          library: Optional[Dict[str, Any]]) -> List[Any]:
+    """Drop detected props that are already part of a spawned character.
+
+    Character entries in asset_library.json may carry an optional
+    'attached_props' list (e.g. the Farmer skeletal mesh already holds a
+    scythe). Any detected prop matching such an entry - for a character
+    actually being spawned - must not spawn as a standalone prop, be
+    placeholder-cubed, or trigger a gen3d rescue.
+
+    Pure function (no editor state) so it is directly testable outside
+    Unreal. Entries without 'attached_props' change nothing.
+
+    Args:
+        props: Detected prop names for the scene.
+        resolved_characters: Character names being spawned (canonical
+            library keys or aliases).
+        library: Loaded asset library dict (expects a 'characters' map).
+
+    Returns:
+        New list with attached props removed; order preserved.
+    """
+    props = list(props or [])
+    if not props or not resolved_characters or not isinstance(library, dict):
+        return props
+
+    char_lib = library.get('characters', {})
+    if not isinstance(char_lib, dict):
+        return props
+
+    # Resolve each spawned character to its library entry (exact key,
+    # case-insensitive key, or alias - same lookup order as the matcher)
+    # and collect (character_name, attached_prop_name) pairs.
+    attached_pairs = []
+    for char_name in resolved_characters:
+        if not isinstance(char_name, str):
+            continue
+        entry = char_lib.get(char_name)
+        lib_key = char_name
+        if not isinstance(entry, dict):
+            char_lower = char_name.strip().lower()
+            entry = None
+            for key, info in char_lib.items():
+                if not isinstance(info, dict):
+                    continue
+                aliases = info.get('aliases', [])
+                if isinstance(aliases, str):
+                    aliases = [a.strip() for a in aliases.split(',') if a.strip()]
+                alias_lowers = [a.strip().lower() for a in aliases
+                                if isinstance(a, str)]
+                if key.strip().lower() == char_lower or char_lower in alias_lowers:
+                    entry = info
+                    lib_key = key
+                    break
+        if not isinstance(entry, dict):
+            continue
+        attached = entry.get('attached_props', [])
+        if isinstance(attached, str):
+            attached = [a.strip() for a in attached.split(',') if a.strip()]
+        if not isinstance(attached, (list, tuple)):
+            continue
+        for attached_name in attached:
+            if isinstance(attached_name, str) and attached_name.strip():
+                attached_pairs.append((lib_key, attached_name))
+
+    if not attached_pairs:
+        return props
+
+    kept = []
+    for prop in props:
+        owner = None
+        if isinstance(prop, str):
+            for char_key, attached_name in attached_pairs:
+                if _attached_prop_matches(prop, attached_name):
+                    owner = char_key
+                    break
+        if owner is not None:
+            unreal.log(f"Prop '{prop}' is attached to character '{owner}' "
+                       f"- skipping standalone spawn")
+        else:
+            kept.append(prop)
+    return kept
 
 
 class SceneBuilder:
@@ -155,6 +256,23 @@ class SceneBuilder:
                 unreal.log_error(f"BLOCKED HALLUCINATIONS: {rejected}")
             else:
                 unreal.log(f"All {len(validated_characters)} characters validated")
+
+        # Drop props that are already attached to a spawned character
+        # (e.g. the Farmer mesh holds its own scythe). MUST run before the
+        # gen3d prop rescue below and before _spawn_props: an attached
+        # prop must never be generated, matched, or placeholder-cubed.
+        try:
+            filter_library = self._get_asset_paths_from_library()
+            resolved_chars = analysis.get('characters', [])
+            if analysis.get('props'):
+                analysis['props'] = filter_attached_props(
+                    analysis['props'], resolved_chars, filter_library)
+            # _spawn_props falls back to 'objects' when 'props' is empty
+            if analysis.get('objects'):
+                analysis['objects'] = filter_attached_props(
+                    analysis['objects'], resolved_chars, filter_library)
+        except Exception as e:
+            unreal.log_warning(f"Attached-prop filter failed: {e}")
 
         # Props get the same gen3d rescue: a prop with no library match
         # would otherwise silently spawn as a placeholder cube. Runs

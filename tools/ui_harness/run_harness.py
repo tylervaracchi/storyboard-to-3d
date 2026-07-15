@@ -437,6 +437,37 @@ def main():
         record("plugin-exception", "build_entry_from_asset(T_Dirt)",
                f"{type(e).__name__}: {e}", traceback.format_exc())
 
+    # ---- Attached-prop filter (pure data test, no editor state) -------------
+    step("filter-attached-props")
+    try:
+        from core.scene_builder import filter_attached_props
+        fake_library = {
+            "characters": {
+                "Farmer": {
+                    "asset_path": "/Game/Farm/SK_Farmer",
+                    "aliases": ["farm hand"],
+                    "attached_props": ["scythe"],
+                },
+            },
+            "props": {},
+        }
+        kept = filter_attached_props(
+            ["scythe", "pumpkin"], ["Farmer"], fake_library)
+        if kept != ["pumpkin"]:
+            record("assertion", "filter_attached_props",
+                   f"Farmer in scene: expected ['pumpkin'] (scythe dropped "
+                   f"as attached), got {kept!r}")
+        # Reverse case: Farmer NOT in the scene -> scythe spawns normally
+        kept_no_farmer = filter_attached_props(
+            ["scythe", "pumpkin"], ["Witch"], fake_library)
+        if kept_no_farmer != ["scythe", "pumpkin"]:
+            record("assertion", "filter_attached_props(no-farmer)",
+                   f"Farmer absent: expected both props kept, "
+                   f"got {kept_no_farmer!r}")
+    except Exception as e:
+        record("plugin-exception", "filter_attached_props",
+               f"{type(e).__name__}: {e}", traceback.format_exc())
+
     # ---- Trigger every menu + toolbar QAction -------------------------------
     step("trigger-all-actions")
     INPUT_QUEUE.clear()   # unknown prompts during the walk get cancelled
