@@ -130,6 +130,27 @@ class FeaturesTab(QWidget):
         gen3d_mode_row.addStretch()
         matching_layout.addLayout(gen3d_mode_row)
 
+        gen3d_keys_row = QHBoxLayout()
+        gen3d_keys_row.addSpacing(24)
+        gen3d_keys_row.addWidget(QLabel("Tripo API key:"))
+        self.gen3d_tripo_key_edit = QLineEdit()
+        self.gen3d_tripo_key_edit.setEchoMode(QLineEdit.Password)
+        self.gen3d_tripo_key_edit.setPlaceholderText("tsk_... (or set TRIPO_API_KEY)")
+        self.gen3d_tripo_key_edit.setToolTip(
+            "Used by both Gen3D and generative animation. Environment variable "
+            "TRIPO_API_KEY still works and takes precedence.")
+        self.gen3d_tripo_key_edit.textChanged.connect(self.on_change)
+        gen3d_keys_row.addWidget(self.gen3d_tripo_key_edit)
+        gen3d_keys_row.addWidget(QLabel("Meshy API key:"))
+        self.gen3d_meshy_key_edit = QLineEdit()
+        self.gen3d_meshy_key_edit.setEchoMode(QLineEdit.Password)
+        self.gen3d_meshy_key_edit.setPlaceholderText("msy_... (or set MESHY_API_KEY)")
+        self.gen3d_meshy_key_edit.setToolTip(
+            "Environment variable MESHY_API_KEY still works and takes precedence.")
+        self.gen3d_meshy_key_edit.textChanged.connect(self.on_change)
+        gen3d_keys_row.addWidget(self.gen3d_meshy_key_edit)
+        matching_layout.addLayout(gen3d_keys_row)
+
         self.genanim_check = QCheckBox("Generative animation fallback (create missing clips; needs Tripo or DeepMotion key)")
         self.genanim_check.setToolTip(
             "When no animation_library.json clip matches a character's action text, "
@@ -264,6 +285,8 @@ class FeaturesTab(QWidget):
         mode = str(gen3d.get('mode', 'text')).strip().lower()
         mode_index = self.gen3d_mode_combo.findData(mode)
         self.gen3d_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        self.gen3d_tripo_key_edit.setText(str(gen3d.get('tripo_api_key', '') or ''))
+        self.gen3d_meshy_key_edit.setText(str(gen3d.get('meshy_api_key', '') or ''))
 
         self.genanim_check.setChecked(bool(genanim.get('enabled', False)))
         self.genanim_provider_combo.setCurrentText(str(genanim.get('provider', 'tripo')))
@@ -302,6 +325,9 @@ class FeaturesTab(QWidget):
         gen3d['provider'] = self.gen3d_provider_combo.currentText()
         gen3d['max_per_run'] = self.gen3d_max_spin.value()
         gen3d['mode'] = self.gen3d_mode_combo.currentData() or 'text'
+        tripo_key = self.gen3d_tripo_key_edit.text().strip()
+        gen3d['tripo_api_key'] = tripo_key
+        gen3d['meshy_api_key'] = self.gen3d_meshy_key_edit.text().strip()
 
         # Copy-then-overwrite so sibling keys (e.g. genanim.timeout_seconds,
         # genanim.tripo_rig_task_id) survive the dialog save
@@ -309,6 +335,8 @@ class FeaturesTab(QWidget):
         genanim['enabled'] = self.genanim_check.isChecked()
         genanim['provider'] = self.genanim_provider_combo.currentText()
         genanim['max_per_run'] = self.genanim_max_spin.value()
+        # One Tripo field serves both consumers (gen3d + genanim)
+        genanim['tripo_api_key'] = tripo_key
 
         performance = dict(self.settings.get('performance', {}))
         performance['optimize_images'] = self.optimize_images_check.isChecked()

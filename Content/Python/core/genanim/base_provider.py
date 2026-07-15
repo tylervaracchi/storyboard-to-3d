@@ -393,6 +393,20 @@ class GenAnimProvider(object):
         if api_key:
             return api_key
 
+        # Settings UI key (Features tab), e.g. 'genanim.tripo_api_key'.
+        # settings_manager imports unreal; guarded so headless use falls
+        # through to the config path unchanged.
+        try:
+            from core.settings_manager import get_setting
+            candidate = get_setting(
+                "genanim.{}_api_key".format(config_key_name), None)
+            if candidate:
+                candidate = str(candidate).strip()
+                if candidate:
+                    return candidate
+        except Exception:
+            pass
+
         get_config = None
         try:
             from config.config_manager import get_config

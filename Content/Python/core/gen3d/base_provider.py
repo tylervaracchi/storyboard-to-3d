@@ -392,6 +392,19 @@ class Gen3DProvider(object):
         api_key = os.environ.get(env_var)
 
         if not api_key:
+            # Settings UI key (Features tab), e.g. 'gen3d.tripo_api_key'.
+            # settings_manager imports unreal, so this is editor-only; guarded
+            # so headless use falls through to the config path unchanged.
+            try:
+                from core.settings_manager import get_setting
+                candidate = get_setting(
+                    "gen3d.{}_api_key".format(config_key_name), None)
+                if candidate:
+                    api_key = str(candidate).strip() or None
+            except Exception:
+                api_key = None
+
+        if not api_key:
             get_config = None
             try:
                 from config.config_manager import get_config
