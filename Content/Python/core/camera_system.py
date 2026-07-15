@@ -140,15 +140,15 @@ class CameraSystem:
             focal_length = self.FOCAL_LENGTH_MAP.get(shot_type, 35)
             camera_component.set_field_of_view(self.focal_to_fov(focal_length))
 
-            # Set cinematic defaults
-            camera_component.focus_settings.focus_method = unreal.CameraFocusMethod.TRACKING
+            # Focus and depth of field are DISABLED on every plugin
+            # camera: autofocus blur fights the AI's storyboard
+            # comparisons and the sequencer captures (matches the hero
+            # and scout cameras). Struct fetched and written back -
+            # mutating the returned copy in place does not stick.
+            focus_settings = camera_component.focus_settings
+            focus_settings.focus_method = unreal.CameraFocusMethod.DISABLE
+            camera_component.set_editor_property('focus_settings', focus_settings)
             camera_component.current_aperture = 2.8
-
-            # Enable depth of field
-            post_process = camera_component.post_process_settings
-            post_process.override_depth_of_field_focal_distance = True
-            post_process.override_depth_of_field_fstop = True
-            post_process.depth_of_field_fstop = 2.8
 
             self.cameras.append(camera)
             self.active_camera = camera

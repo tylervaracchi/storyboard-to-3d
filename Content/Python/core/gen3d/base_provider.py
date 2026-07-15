@@ -137,7 +137,10 @@ class Gen3DProvider(object):
             return {
                 'status': 'succeeded',
                 'file_path': file_path,
-                'provider': self.name
+                'provider': self.name,
+                # Vendor task id of the finished generation - post-steps
+                # (e.g. Tripo animate_rig for characters) run against it.
+                'task_id': task_id
             }
         except Gen3DError as e:
             _log_warning("[Gen3D] {} generation failed: {}".format(self.name, e))

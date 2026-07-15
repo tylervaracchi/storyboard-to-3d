@@ -135,6 +135,9 @@ class AssetMatcher:
         # Generative text-to-3D: per-matcher-instance attempt counter,
         # enforced against the 'gen3d.max_per_run' setting.
         self._gen3d_generation_count: int = 0
+        # Entities whose cached STATIC generation was already retried with
+        # rigging this run (a rig-refusing model must not loop costs).
+        self._rig_retry_attempted: set = set()
 
         if show_name:
             self.load_show_library(show_name)
@@ -252,11 +255,13 @@ class AssetMatcher:
         """
         object_name_lower = object_name.lower().strip()
 
+        # Category drives the character-rigging path in the generative
+        # tier too, so infer it up front (not only for the show library).
+        if not category:
+            category = self._infer_category(object_name_lower)
+
         # PRIORITY 1: Show-specific library
         if self.show_library:
-            if not category:
-                category = self._infer_category(object_name_lower)
-
             asset = self._search_show_library(object_name_lower, category)
             if asset:
                 return asset
@@ -283,7 +288,8 @@ class AssetMatcher:
         # Any failure inside returns None so we fall through to shapes;
         # with 'gen3d.enabled' false this is a no-op.
         asset = self._generative_match(object_name_lower, description,
-                                       panel_image_path=panel_image_path)
+                                       panel_image_path=panel_image_path,
+                                       category=category)
         if asset:
             return asset
 
@@ -331,37 +337,86 @@ class AssetMatcher:
         # Pass 1: exact name match
         for asset_name, asset_data in entries:
             if asset_name.lower() == object_name:
-                asset_path = asset_data.get('asset_path')
-                if asset_path:
-                    _log(f"Matched '{object_name}' to show asset: {asset_name}")
-                    return self.load_asset(asset_path)
+                asset = self._load_show_entry(object_name, asset_name,
+                                              asset_data, category, '')
+                if asset:
+                    return asset
 
         # Pass 2: exact alias equality
         for asset_name, asset_data in entries:
             for alias in self._normalize_aliases(asset_data.get('aliases', [])):
                 if alias.lower() == object_name:
-                    asset_path = asset_data.get('asset_path')
-                    if asset_path:
-                        _log(f"Matched '{object_name}' via alias to show asset: {asset_name}")
-                        return self.load_asset(asset_path)
+                    asset = self._load_show_entry(object_name, asset_name,
+                                                  asset_data, category,
+                                                  ' via alias')
+                    if asset:
+                        return asset
 
         # Pass 3: loose containment (alias substring, then description)
         for asset_name, asset_data in entries:
             for alias in self._normalize_aliases(asset_data.get('aliases', [])):
                 if object_name in alias.lower():
-                    asset_path = asset_data.get('asset_path')
-                    if asset_path:
-                        _log(f"Matched '{object_name}' via alias substring to show asset: {asset_name}")
-                        return self.load_asset(asset_path)
+                    asset = self._load_show_entry(object_name, asset_name,
+                                                  asset_data, category,
+                                                  ' via alias substring')
+                    if asset:
+                        return asset
 
             description = asset_data.get('description', '').lower()
             if object_name in description:
-                asset_path = asset_data.get('asset_path')
-                if asset_path:
-                    _log(f"Matched '{object_name}' via description to show asset: {asset_name}")
-                    return self.load_asset(asset_path)
+                asset = self._load_show_entry(object_name, asset_name,
+                                              asset_data, category,
+                                              ' via description')
+                if asset:
+                    return asset
 
         return None
+
+    def _load_show_entry(self, object_name: str, asset_name: str,
+                         asset_data: Dict[str, Any], category: str,
+                         via: str) -> Optional[Any]:
+        """
+        Load a show-library entry's asset for a match, with one guard:
+        a CHARACTER entry whose asset is an auto-GENERATED StaticMesh is
+        skipped when character rigging is enabled, so the generative tier
+        can replace it with a rigged (skeletal) generation. Static meshes
+        can never animate; user-added static characters (non-generated
+        paths) are left alone.
+        """
+        asset_path = asset_data.get('asset_path')
+        if not asset_path:
+            return None
+        asset = self.load_asset(asset_path)
+        if asset is None:
+            return None
+        if (category == 'characters'
+                and str(asset_path).startswith('/Game/StoryboardTo3D/Generated')
+                and self._rig_characters_enabled()
+                and self._is_static_mesh(asset)):
+            _log(f"[Gen3D] Show entry '{asset_name}' for character "
+                 f"'{object_name}' is an auto-generated StaticMesh (cannot "
+                 f"animate); skipping so it regenerates rigged")
+            return None
+        _log(f"Matched '{object_name}'{via} to show asset: {asset_name}")
+        return asset
+
+    @staticmethod
+    def _is_static_mesh(asset: Any) -> bool:
+        """True when the loaded asset is a StaticMesh (guarded)."""
+        try:
+            return unreal is not None and isinstance(asset, unreal.StaticMesh)
+        except Exception:
+            return False
+
+    def _rig_characters_enabled(self) -> bool:
+        """Read 'gen3d.rig_characters' (default ON): auto-rig generated
+        CHARACTER models via the provider so they import as skeletal
+        meshes and can be animated. Never raises."""
+        try:
+            from core.settings_manager import get_setting
+            return bool(get_setting('gen3d.rig_characters', True))
+        except Exception:
+            return True
 
     @staticmethod
     def _normalize_aliases(aliases) -> List[str]:
@@ -787,7 +842,8 @@ class AssetMatcher:
 
     def _generative_match(self, object_name: str,
                           description: Optional[str] = None,
-                          panel_image_path: Optional[str] = None) -> Optional[Any]:
+                          panel_image_path: Optional[str] = None,
+                          category: Optional[str] = None) -> Optional[Any]:
         """
         Generate a 3D asset for an unmatched entity via core/gen3d.
 
@@ -840,15 +896,29 @@ class AssetMatcher:
         except Exception as e:
             _log_warning(f"[Gen3D] Manifest lookup failed: {e}")
 
+        rig_wanted = (category == 'characters'
+                      and self._rig_characters_enabled())
+
         if cached_path:
             asset = self.load_asset(cached_path)
             if asset:
-                _log(f"[Gen3D] reusing previously generated asset for "
-                     f"'{object_name}': {cached_path}")
-                self._register_generated_asset(object_name, cached_path)
-                return asset
-            _log_warning(f"[Gen3D] Previously generated asset failed to "
-                         f"load: {cached_path}; regenerating")
+                # A cached STATIC generation for a character predates (or
+                # failed) rigging - regenerate rigged, but only once per
+                # run per entity so a rig-refusing model cannot loop costs.
+                if (rig_wanted and self._is_static_mesh(asset)
+                        and object_name not in self._rig_retry_attempted):
+                    self._rig_retry_attempted.add(object_name)
+                    _log(f"[Gen3D] Cached generation for character "
+                         f"'{object_name}' is a StaticMesh (cannot animate); "
+                         f"regenerating with rigging")
+                else:
+                    _log(f"[Gen3D] reusing previously generated asset for "
+                         f"'{object_name}': {cached_path}")
+                    self._register_generated_asset(object_name, cached_path)
+                    return asset
+            else:
+                _log_warning(f"[Gen3D] Previously generated asset failed to "
+                             f"load: {cached_path}; regenerating")
 
         # (b) Per-run generation budget (counts attempts, so repeated
         # failures cannot spiral costs or stall a batch).
@@ -895,9 +965,42 @@ class AssetMatcher:
                          f"{error}; using fallback shape")
             return None
 
+        # Characters: auto-rig the generated model so it imports as a
+        # SkeletalMesh and can be animated (a static character can never
+        # leave T-pose... it cannot even reach T-pose). Any rig failure
+        # logs and falls back to the static import below.
+        model_file = result['file_path']
+        prefer_skeletal = False
+        if rig_wanted and result.get('task_id') \
+                and hasattr(provider, 'rig_model'):
+            _log(f"[Gen3D] Rigging generated character '{object_name}' "
+                 f"via {provider_name} (gen3d.rig_characters)")
+            try:
+                rig_result = provider.rig_model(result['task_id'],
+                                                name=object_name)
+            except Exception as e:
+                rig_result = {'status': 'failed', 'error': str(e)}
+            if (isinstance(rig_result, dict)
+                    and rig_result.get('status') == 'succeeded'
+                    and rig_result.get('file_path')):
+                model_file = rig_result['file_path']
+                prefer_skeletal = True
+                _log(f"[Gen3D] Rigged model ready for '{object_name}' "
+                     f"(rig task: {rig_result.get('rig_task_id')})")
+            else:
+                error = rig_result.get('error', 'unknown error') \
+                    if isinstance(rig_result, dict) else 'unknown error'
+                _log_warning(f"[Gen3D] Rigging failed for '{object_name}' "
+                             f"({error}); importing unrigged static model")
+        elif rig_wanted:
+            _log_warning(f"[Gen3D] Character '{object_name}' generated but "
+                         f"provider '{provider_name}' cannot rig "
+                         f"(no task id or rig support); importing static")
+
         try:
             from core.gen3d.importer import import_generated_model
-            asset_path = import_generated_model(result['file_path'], object_name)
+            asset_path = import_generated_model(model_file, object_name,
+                                                prefer_skeletal=prefer_skeletal)
         except Exception as e:
             _log_warning(f"[Gen3D] Import failed for '{object_name}': {e}")
             return None

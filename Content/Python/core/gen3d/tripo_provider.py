@@ -158,7 +158,10 @@ class TripoProvider(Gen3DProvider):
             return {
                 'status': 'succeeded',
                 'file_path': file_path,
-                'provider': self.name
+                'provider': self.name,
+                # Vendor task id of the finished generation - post-steps
+                # (e.g. animate_rig for characters) run against it.
+                'task_id': task_id
             }
         except Gen3DError as e:
             _log_warning("[Gen3D] {} image-to-3D generation failed: {}".format(
@@ -169,6 +172,117 @@ class TripoProvider(Gen3DProvider):
             _log_warning("[Gen3D] {} image-to-3D generation failed "
                          "unexpectedly: {}".format(self.name, e))
             return {'status': 'failed', 'error': str(e), 'provider': self.name}
+
+    # ------------------------------------------------------------------
+    # Auto-rigging (characters)
+    # ------------------------------------------------------------------
+
+    def rig_model(self, model_task_id, name=None):
+        # type: (str, Optional[str]) -> Dict[str, Any]
+        """
+        Auto-rig a previously generated model so it imports as a
+        SkeletalMesh: run the free animate_prerigcheck, then an
+        animate_rig task (Mixamo-style spec, ~25 credits), and download
+        the rigged GLB.
+
+        Mirrors the generate() contract: returns
+        {'status': 'succeeded', 'file_path': str, 'rig_task_id': str,
+         'provider': str} or {'status': 'failed', 'error': str,
+        'provider': str}. Never raises. The rig_task_id can later drive
+        animate_retarget clips onto this exact character (see
+        core/genanim/tripo_provider.py).
+
+        Body shapes cross-checked against the official tripo-js-sdk
+        (VERIFY-BEFORE-USE, same caveat as the module docstring); any
+        rejection surfaces as a failed dict and callers fall back to the
+        static import.
+        """
+        try:
+            if not model_task_id:
+                raise Gen3DError("No model task id to rig")
+            if not self.get_api_key():
+                raise Gen3DError(
+                    "No API key available for provider '{}'".format(self.name))
+
+            label = name or model_task_id
+
+            # (1) Free riggability check. An explicit "not riggable" is an
+            # honest failure; an errored check logs and proceeds to the
+            # rig attempt (the rig task itself fails cleanly if unriggable).
+            try:
+                check_id = self._create_animate_task(
+                    'animate_prerigcheck', model_task_id)
+                check_data = self._poll_until_done(check_id)
+                output = check_data.get('output')
+                riggable = output.get('riggable') \
+                    if isinstance(output, dict) else None
+                if riggable is False:
+                    raise Gen3DError(
+                        "Tripo prerigcheck: model for '{}' is not "
+                        "riggable".format(label))
+                _log("[Gen3D] Tripo prerigcheck passed for '{}'".format(label))
+            except Gen3DError as e:
+                if 'not riggable' in str(e):
+                    raise
+                _log_warning("[Gen3D] Tripo prerigcheck errored for '{}' "
+                             "({}); attempting rig anyway".format(label, e))
+
+            # (2) Rig (paid). GLB keeps the download/import path identical
+            # to the base generation; Interchange imports skinned GLBs as
+            # SkeletalMesh assets.
+            _log("[Gen3D] Creating Tripo animate_rig task for '{}'".format(
+                label))
+            rig_task_id = self._create_animate_task(
+                'animate_rig', model_task_id,
+                extra={'out_format': 'glb', 'spec': 'mixamo'})
+            task_data = self._poll_until_done(rig_task_id)
+
+            url_info = self._model_url(task_data)
+            if not url_info or not url_info[0]:
+                raise Gen3DError("No downloadable rigged model URL in "
+                                 "rig task result")
+
+            url, extension = url_info
+            file_path = self._download_to_temp(url, extension)
+            _log("[Gen3D] Tripo rig succeeded for '{}', rigged model saved "
+                 "to {}".format(label, file_path))
+            return {
+                'status': 'succeeded',
+                'file_path': file_path,
+                'rig_task_id': str(rig_task_id),
+                'provider': self.name
+            }
+        except Gen3DError as e:
+            _log_warning("[Gen3D] Tripo rigging failed: {}".format(e))
+            return {'status': 'failed', 'error': str(e), 'provider': self.name}
+        except Exception as e:
+            # rig_model() must never raise; callers fall back to static.
+            _log_warning("[Gen3D] Tripo rigging failed unexpectedly: "
+                         "{}".format(e))
+            return {'status': 'failed', 'error': str(e), 'provider': self.name}
+
+    def _create_animate_task(self, task_type, model_task_id, extra=None):
+        # type: (str, str, Optional[Dict[str, Any]]) -> str
+        """Create an animate_* task against a finished model task; returns
+        the new task id. Body shape per the tripo-js-sdk
+        (VERIFY-BEFORE-USE)."""
+        body = {
+            'type': task_type,
+            'original_model_task_id': str(model_task_id)
+        }
+        if extra:
+            body.update(extra)
+
+        data = self._request_json(
+            'POST', TRIPO_API_BASE, headers=self._headers(), json_body=body)
+        payload = self._unwrap(data)
+
+        task_id = payload.get('task_id')
+        if not task_id:
+            raise Gen3DError(
+                "Tripo {} response had no task_id: {}".format(
+                    task_type, str(data)[:200]))
+        return str(task_id)
 
     # ------------------------------------------------------------------
     # Gen3DProvider hooks

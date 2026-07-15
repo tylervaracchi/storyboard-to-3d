@@ -1448,6 +1448,15 @@ class AssetLibraryWidget(QWidget):
                 added.append(f"{name} ({category})")
                 unreal.log(f"Added asset from Content Browser: {name} -> {asset_path} [{category}]")
 
+            # Persist the skeletal flag so downstream consumers (asset
+            # matcher, animation picker) can tell animatable characters
+            # from static ones without loading the asset.
+            try:
+                self.library.library[category][name]['is_skeletal'] = bool(
+                    item.get('is_skeletal'))
+            except Exception:
+                pass
+
             if category == 'locations':
                 # Levels: open the map, capture the viewport as the
                 # thumbnail, record the camera pose + stage anchor for

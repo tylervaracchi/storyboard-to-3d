@@ -1641,7 +1641,7 @@ class SceneBuilder:
             unreal.log_error(traceback.format_exc())
 
     # ========================================
-    # OPTIONAL ENHANCEMENTS (default OFF)
+    # OPTIONAL ENHANCEMENTS (default ON, settings-gated)
     # ========================================
 
     def _read_optional_setting(self, path: str, default: Any = False) -> Any:
@@ -1677,12 +1677,13 @@ class SceneBuilder:
         (b) Auto animation when 'scene.auto_animation' is truthy, for
             spawned characters whose source entity has action text.
 
-        Both default OFF; every failure is logged and swallowed so scene
-        building is never broken by these steps.
+        Both default ON (matching settings_manager defaults; the Features
+        tab can turn them off); every failure is logged and swallowed so
+        scene building is never broken by these steps.
         """
         # (a) Mood lighting
         try:
-            if self._read_optional_setting('scene.apply_mood_lighting', False):
+            if self._read_optional_setting('scene.apply_mood_lighting', True):
                 mood = analysis.get('mood') or analysis.get('time_of_day')
                 if mood:
                     from core import mood_lighting
@@ -1702,8 +1703,11 @@ class SceneBuilder:
 
         # (b) Auto animation
         try:
-            if self._read_optional_setting('scene.auto_animation', False):
+            if self._read_optional_setting('scene.auto_animation', True):
                 self._apply_auto_animations(analysis)
+            else:
+                unreal.log("[AnimationPicker] scene.auto_animation is OFF "
+                           "(Features tab); characters stay in T-pose")
         except Exception as e:
             unreal.log_warning(f"[AnimationPicker] Failed (scene build unaffected): {e}")
 
@@ -1784,6 +1788,13 @@ class SceneBuilder:
                        "spawned characters to animate")
             return
 
+        # Self-heal the show's animation library BEFORE matching:
+        # characters added before Content-Browser skeleton discovery
+        # existed (or whose discovery failed) leave the show without an
+        # animation_library.json, so the matcher only ever sees the
+        # sample fallback and every character stays in T-pose.
+        self._ensure_animation_library(pairs)
+
         from core.animation_matcher import AnimationMatcher
         matcher = AnimationMatcher(show_name=self.show_name)
         applied = 0
@@ -1817,6 +1828,75 @@ class SceneBuilder:
                 unreal.log_warning(f"[AnimationPicker] Error animating one actor: {e}")
 
         unreal.log(f"[AnimationPicker] Animations applied: {applied}/{len(pairs)}")
+
+    def _ensure_animation_library(self, pairs) -> None:
+        """
+        Build/refresh the show's animation_library.json from the spawned
+        skeletal characters' skeletons (idempotent: existing entries are
+        never overwritten; skeletons without compatible AnimSequences just
+        log). Runs once per distinct skeletal mesh per build. Never raises.
+        """
+        try:
+            from core.animation_cataloger import (
+                build_show_animation_library_for_skeleton)
+        except Exception as e:
+            unreal.log_warning(f"[AnimationPicker] Animation cataloger "
+                               f"unavailable ({e}); library self-heal skipped")
+            return
+
+        seen = set()
+        for config, spawnable in pairs:
+            try:
+                template = None
+                if hasattr(spawnable, 'get_object_template'):
+                    template = spawnable.get_object_template()
+                if template is None:
+                    continue
+
+                component = getattr(template, 'skeletal_mesh_component', None)
+                if component is None and hasattr(template, 'get_component_by_class') \
+                        and hasattr(unreal, 'SkeletalMeshComponent'):
+                    component = template.get_component_by_class(
+                        unreal.SkeletalMeshComponent)
+                if component is None:
+                    continue  # static mesh character; nothing to discover
+
+                mesh = None
+                for getter in ('get_skeletal_mesh_asset',):
+                    if hasattr(component, getter):
+                        try:
+                            mesh = getattr(component, getter)()
+                            break
+                        except Exception:
+                            mesh = None
+                if mesh is None:
+                    for prop in ('skeletal_mesh_asset', 'skeletal_mesh'):
+                        try:
+                            mesh = component.get_editor_property(prop)
+                            if mesh is not None:
+                                break
+                        except Exception:
+                            mesh = None
+                if mesh is None:
+                    continue
+
+                mesh_path = str(mesh.get_path_name())
+                if not mesh_path or mesh_path in seen:
+                    continue
+                seen.add(mesh_path)
+
+                result = build_show_animation_library_for_skeleton(
+                    self.show_name, mesh_path)
+                if result.get('added'):
+                    unreal.log(f"[AnimationPicker] Discovered "
+                               f"{result['added']} animation(s) for skeleton "
+                               f"of {mesh_path}")
+                elif result.get('skipped_reason'):
+                    unreal.log(f"[AnimationPicker] Library self-heal for "
+                               f"{mesh_path}: {result['skipped_reason']}")
+            except Exception as e:
+                unreal.log_warning(f"[AnimationPicker] Library self-heal "
+                                   f"failed for one character: {e}")
 
     def _gen3d_rescue(self, rejected_names, analysis: Dict[str, Any],
                       category: str = 'characters') -> list:

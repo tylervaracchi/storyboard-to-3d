@@ -67,17 +67,21 @@ def sanitize_asset_name(name):
     return cleaned
 
 
-def import_generated_model(file_path, asset_name):
-    # type: (str, str) -> Optional[str]
+def import_generated_model(file_path, asset_name, prefer_skeletal=False):
+    # type: (str, str, bool) -> Optional[str]
     """
     Import a generated model file into the project.
 
     Args:
         file_path: Local path to the downloaded model (.fbx, .glb, .gltf).
         asset_name: Desired asset name (sanitized automatically).
+        prefer_skeletal: True for RIGGED models (auto-rigged characters):
+            FBX imports get skeletal options and a SkeletalMesh is
+            preferred among the imported objects. GLB/GLTF rigs import
+            skeletal automatically via Interchange when a skin is present.
 
     Returns:
-        The imported StaticMesh asset object path (e.g.
+        The imported mesh asset object path (e.g.
         '/Game/StoryboardTo3D/Generated/chair.chair'), or None on any
         failure. Never raises.
     """
@@ -114,7 +118,8 @@ def import_generated_model(file_path, asset_name):
             pass  # older engines may lack the property; re-import prompts
 
         if extension == '.fbx':
-            options = _build_fbx_static_mesh_options()
+            options = (_build_fbx_skeletal_mesh_options() if prefer_skeletal
+                       else _build_fbx_static_mesh_options())
             if options is not None:
                 try:
                     task.options = options
@@ -137,6 +142,17 @@ def import_generated_model(file_path, asset_name):
         asset_tools.import_asset_tasks([task])
 
         imported_paths = _get_imported_paths(task)
+
+        # Rigged imports: a SkeletalMesh is the asset we want (Interchange
+        # also creates the Skeleton, materials, and textures around it).
+        if prefer_skeletal:
+            skeletal_mesh_path = _pick_skeletal_mesh_path(imported_paths)
+            if skeletal_mesh_path:
+                _log("[Gen3D] Imported SkeletalMesh: {}".format(
+                    skeletal_mesh_path))
+                return skeletal_mesh_path
+            _log_warning("[Gen3D] Rigged import produced no SkeletalMesh; "
+                         "falling back to StaticMesh selection")
 
         # Prefer a StaticMesh among the imported objects (glTF Interchange
         # imports can also create materials and textures).
@@ -218,6 +234,56 @@ def _build_fbx_static_mesh_options():
         _log_warning("[Gen3D] Could not configure FbxImportUI ({}); "
                      "importing FBX with engine defaults".format(e))
         return None
+
+
+def _build_fbx_skeletal_mesh_options():
+    """
+    Build hasattr-guarded FbxImportUI options for a SKELETAL mesh import
+    (rigged characters). Returns None when unavailable; the import then
+    proceeds with engine defaults (which auto-detect the skeleton).
+    """
+    if not hasattr(unreal, 'FbxImportUI'):
+        _log_warning("[Gen3D] unreal.FbxImportUI unavailable; importing "
+                     "FBX with engine defaults")
+        return None
+
+    try:
+        options = unreal.FbxImportUI()
+
+        for prop, value in (
+                ('import_mesh', True),
+                ('import_as_skeletal', True),
+                ('import_animations', True),
+                ('import_materials', True),
+                ('import_textures', True),
+                ('create_physics_asset', False)):
+            try:
+                options.set_editor_property(prop, value)
+            except Exception:
+                pass  # property missing in this engine version
+
+        return options
+    except Exception as e:
+        _log_warning("[Gen3D] Could not configure skeletal FbxImportUI "
+                     "({}); importing FBX with engine defaults".format(e))
+        return None
+
+
+def _pick_skeletal_mesh_path(imported_paths):
+    # type: (List[str]) -> Optional[str]
+    """Return the first imported path whose asset loads as a SkeletalMesh."""
+    if not imported_paths or not hasattr(unreal, 'SkeletalMesh'):
+        return None
+
+    for path in imported_paths:
+        object_path = _normalize_object_path(path)
+        try:
+            asset = _load_asset(object_path)
+            if asset is not None and isinstance(asset, unreal.SkeletalMesh):
+                return object_path
+        except Exception:
+            continue
+    return None
 
 
 def _get_imported_paths(task):
