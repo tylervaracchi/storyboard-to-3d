@@ -26,6 +26,39 @@ from typing import Optional, Dict, Any, List
 from core.error_handler import OperationErrorCollector
 
 
+def _trace_ground_z_editor(x, y, z_hint):
+    """Ground Z at (x, y) via a downward line trace in the open editor
+    world, or None. Failures are LOGGED (a silent trace failure is how
+    stage anchors ended up with estimated, floating Z values). All
+    world/hit references are locals that die on return."""
+    try:
+        ues = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+        world = ues.get_editor_world() if ues else None
+        if world is None:
+            unreal.log("[GroundTrace] No editor world available")
+            return None
+        hit = unreal.SystemLibrary.line_trace_single(
+            world,
+            unreal.Vector(float(x), float(y), float(z_hint) + 2000.0),
+            unreal.Vector(float(x), float(y), float(z_hint) - 5000.0),
+            unreal.TraceTypeQuery.TRACE_TYPE_QUERY1,
+            False, [], unreal.DrawDebugTrace.NONE, True)
+        if not hit:
+            unreal.log(f"[GroundTrace] No hit below ({x:.0f}, {y:.0f})")
+            return None
+        try:
+            return float(unreal.GameplayStatics.break_hit_result(hit)[4].z)
+        except Exception:
+            try:
+                return float(hit.to_tuple()[4].z)
+            except Exception as parse_err:
+                unreal.log_warning(f"[GroundTrace] Hit result parse failed: {parse_err}")
+                return None
+    except Exception as e:
+        unreal.log_warning(f"[GroundTrace] Trace failed: {e}")
+        return None
+
+
 def _attached_prop_matches(prop_name: str, attached_name: str) -> bool:
     """Case-insensitive exact or word-boundary substring match, mirroring
     the library matcher's exact-then-partial semantics."""
@@ -605,10 +638,20 @@ class SceneBuilder:
 
             center = entry.get('stage_center')
             if isinstance(center, dict):
-                self._stage_center = unreal.Vector(
-                    float(center.get('x', 0.0) or 0.0),
-                    float(center.get('y', 0.0) or 0.0),
-                    float(center.get('z', 0.0) or 0.0))
+                cx = float(center.get('x', 0.0) or 0.0)
+                cy = float(center.get('y', 0.0) or 0.0)
+                cz = float(center.get('z', 0.0) or 0.0)
+                # Refine Z against the ACTUAL terrain while the level is
+                # open: add-time anchors can carry an estimated Z (when
+                # the add-time trace failed), which leaves characters
+                # floating above / sunk into the ground
+                traced_z = _trace_ground_z_editor(cx, cy, cz)
+                if traced_z is not None and abs(traced_z - cz) > 10.0:
+                    unreal.log("[StageAnchor] Ground trace corrected stage Z "
+                               "{0:.0f} -> {1:.0f}".format(cz, traced_z))
+                    cz = traced_z
+                    self._persist_stage_z(loc_name, traced_z)
+                self._stage_center = unreal.Vector(cx, cy, cz)
 
             cam = entry.get('camera_start')
             if isinstance(cam, dict) and isinstance(cam.get('location'), dict):
@@ -633,6 +676,30 @@ class SceneBuilder:
                            "record one.".format(loc_name))
         except Exception as e:
             unreal.log_warning(f"[StageAnchor] Could not resolve anchor: {e}")
+
+    def _persist_stage_z(self, loc_name: str, new_z: float) -> None:
+        """Write a ground-trace-corrected stage Z back to the show's
+        asset_library.json so the correction sticks (and the survey/prompt
+        data stays consistent). Best-effort; never raises."""
+        try:
+            if not self.show_name or not loc_name:
+                return
+            import json
+            from core.utils import get_shows_manager
+            library_path = (get_shows_manager().shows_root / self.show_name
+                            / 'asset_library.json')
+            if not library_path.exists():
+                return
+            with open(str(library_path), 'r') as f:
+                data = json.load(f)
+            entry = (data.get('locations') or {}).get(loc_name)
+            if isinstance(entry, dict) and isinstance(entry.get('stage_center'), dict):
+                entry['stage_center']['z'] = float(new_z)
+                with open(str(library_path), 'w') as f:
+                    json.dump(data, f, indent=2)
+                unreal.log(f"[StageAnchor] Corrected stage Z persisted to {library_path.name}")
+        except Exception as e:
+            unreal.log_warning(f"[StageAnchor] Could not persist corrected Z: {e}")
 
     def _read_show_locations_from_disk(self) -> Dict[str, Any]:
         """Locations dict read directly from the show's asset_library.json.
@@ -969,24 +1036,27 @@ class SceneBuilder:
         if cleared_count > 0:
             unreal.log(f"Cleared {cleared_count} previous storyboard actors")
 
-    def _calculate_character_position(self, char_index: int, num_chars: int, 
+    def _calculate_character_position(self, char_index: int, num_chars: int,
                                        location_type: str, props_list: List[str]) -> unreal.Vector:
         """
-        Calculate initial character position.
-        
-        All characters start at origin; AI positioning workflow handles
-        final placement based on storyboard analysis.
-        
+        Calculate initial character position (stage-relative).
+
+        Characters are spread along the stage Y axis (perpendicular to the
+        camera after the stage-yaw rotation) so multiple actors never
+        spawn stacked inside each other - the AI refinement loop then
+        only adjusts spacing instead of untangling a fused blob.
+
         Args:
             char_index: Index of character (0-based).
             num_chars: Total number of characters.
             location_type: Type of location scene.
             props_list: List of props in scene.
-        
+
         Returns:
-            Vector at origin (0, 0, 0).
+            Stage-relative Vector; _offset_from_stage converts to world.
         """
-        return unreal.Vector(x=0.0, y=0.0, z=0.0)
+        spread = (char_index - (num_chars - 1) / 2.0) * 150.0
+        return unreal.Vector(x=0.0, y=spread, z=0.0)
 
     def _get_asset_paths_from_library(self) -> Optional[Dict[str, Any]]:
         """
