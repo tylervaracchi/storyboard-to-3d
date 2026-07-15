@@ -213,6 +213,41 @@ class EnhancedAIClient:
             api_key: API key
             enable_cache: Whether to enable result caching
         """
+        # Resolve provider+model from ai_settings FIRST (the Settings dialog
+        # writes ai_settings.provider/openai_model/claude_model; nothing ever
+        # writes config_manager's "api.provider", which always returns the
+        # default). Mirrors api/ai_client.py's resolution.
+        self.selected_model = None
+        if provider is None and SETTINGS_MANAGER_AVAILABLE:
+            try:
+                settings_provider = get_setting('ai_settings.provider', '')
+                active_provider = (get_setting('ai_settings.active_provider', settings_provider) or '')
+                lowered = active_provider.lower()
+                if 'gpt' in lowered or 'openai' in lowered:
+                    self.selected_model = get_setting('ai_settings.openai_model', 'gpt-4o') or 'gpt-4o'
+                    # Map model to provider name (prefix match, mirrors api/ai_client.py)
+                    if self.selected_model.startswith(('gpt-5', 'o3', 'o4')):
+                        provider = "OpenAI GPT-5"
+                    elif self.selected_model == 'gpt-4o':
+                        provider = "OpenAI GPT-4o"
+                    else:
+                        provider = "OpenAI GPT-4 Vision"
+                elif 'claude' in lowered or 'anthropic' in lowered:
+                    self.selected_model = (get_setting('ai_settings.claude_model', 'claude-sonnet-4-6')
+                                           or 'claude-sonnet-4-6')
+                    provider = "Claude 3.5 Sonnet"
+                elif ('gemini' in lowered or 'google' in lowered or 'llava' in lowered
+                      or 'local' in lowered or 'ollama' in lowered):
+                    # EnhancedAIClient only speaks OpenAI/Claude; the
+                    # create_ai_client factory delegates these to
+                    # api.ai_client.AIClient. Warn if constructed directly.
+                    print(f"Warning: EnhancedAIClient does not support '{active_provider}'; "
+                          f"use create_ai_client() so it can delegate to api.ai_client.AIClient")
+                if provider:
+                    print(f"Loaded provider from settings: {provider} (model: {self.selected_model})")
+            except Exception as e:
+                print(f"Could not load provider from settings: {e}")
+
         # Get provider from config or use default
         if provider is None and CONFIG_AVAILABLE:
             config = get_config()
@@ -273,7 +308,8 @@ class EnhancedAIClient:
         # Provider info
         self.provider_info = self.PROVIDERS[self.provider]
         self.endpoint = self.provider_info["endpoint"]
-        self.model = self.provider_info["model"]
+        # Prefer the exact model configured in Settings over the static table
+        self.model = self.selected_model or self.provider_info["model"]
 
         # Initialize cache
         self.cache = AnalysisCache() if enable_cache else None
@@ -1166,7 +1202,7 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
 # Maintain backward compatibility
 AIClient = EnhancedAIClient
 
-def create_ai_client(provider: Optional[str] = None, enable_cache: bool = True) -> EnhancedAIClient:
+def create_ai_client(provider: Optional[str] = None, enable_cache: bool = True):
     """
     Create an enhanced AI client
 
@@ -1175,10 +1211,44 @@ def create_ai_client(provider: Optional[str] = None, enable_cache: bool = True) 
         enable_cache: Whether to enable caching
 
     Returns:
-        Configured EnhancedAIClient instance
+        Configured EnhancedAIClient instance, or an api.ai_client.AIClient
+        for Gemini / LLaVA (Local) selections (EnhancedAIClient has no
+        request paths for those providers)
     """
-    if CONFIG_AVAILABLE:
-        config = get_config()
-        provider = provider or config.get("api.provider")
+    # NOTE: no config.get("api.provider") pre-fill here. config_manager
+    # deep-merges its defaults, so that lookup ALWAYS returned
+    # "OpenAI GPT-4 Vision" and EnhancedAIClient.__init__ never saw
+    # provider=None, defeating its ai_settings resolution. Pass provider
+    # through (possibly None) and let __init__ resolve settings-first.
+
+    # Gemini / LLaVA (Local): EnhancedAIClient only has OpenAI/Claude
+    # request+parse paths, so delegate those to api.ai_client.AIClient,
+    # which supports both (payload builders, endpoint templating,
+    # ai_settings.llava_url override, key-less local provider).
+    resolved = provider or ''
+    if not resolved and SETTINGS_MANAGER_AVAILABLE:
+        try:
+            resolved = (get_setting('ai_settings.active_provider',
+                                    get_setting('ai_settings.provider', '')) or '')
+        except Exception:
+            resolved = ''
+    lowered = resolved.lower()
+    if ('gemini' in lowered or 'google' in lowered or 'llava' in lowered
+            or 'local' in lowered or 'ollama' in lowered):
+        try:
+            from api.ai_client import AIClient as _BaseAIClient
+
+            class _DelegatingAIClient(_BaseAIClient):
+                """AIClient exposing the analyze_image API PanelAnalyzer expects."""
+
+                def analyze_image(self, image_base64, prompt):
+                    if isinstance(image_base64, (bytes, bytearray)):
+                        image_base64 = base64.b64encode(bytes(image_base64)).decode('utf-8')
+                    return self._make_request(prompt, image_base64=image_base64)
+
+            base_provider = provider if provider in _BaseAIClient.PROVIDERS else None
+            return _DelegatingAIClient(provider=base_provider)
+        except Exception as e:
+            print(f"Could not create base AIClient for '{resolved}': {e}")
 
     return EnhancedAIClient(provider=provider, enable_cache=enable_cache)

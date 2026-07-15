@@ -1643,6 +1643,36 @@ class ActivePanelWidget(QWidget):
             return True
         return False
 
+    def _abort_capture_run(self, reason):
+        """[AbortFix] Abort the current capture run cleanly.
+
+        Unblocks _workflow_busy (clears capture_workflow_active / auto_iterate)
+        and, in batch mode, records the failure and advances/finalizes the
+        batch queue so it never stalls. Do NOT route aborts through
+        _finish_capture_sequence - it records metrics for a completed
+        iteration, may issue an external-validation API call, and can
+        re-stall the batch.
+        """
+        unreal.log_error(f"Capture run aborted: {reason}")
+        self.capture_workflow_active = False
+        self.auto_iterate = False
+        try:
+            if getattr(self, 'iteration_progress_widget', None) is not None:
+                self.iteration_progress_widget.set_cost_text(f"Aborted: {reason}")
+        except Exception:
+            pass
+        if getattr(self, 'batch_capture_mode', False):
+            # Record the failure and move on so the batch queue keeps advancing
+            self.batch_capture_results.append({
+                'panel': self.active_panel.get('name', 'unknown') if self.active_panel else 'unknown',
+                'success': False,
+                'error': reason,
+            })
+            if self.batch_capture_queue:
+                self._process_next_batch_panel()
+            else:
+                self._finalize_batch_capture()
+
     def _persist_panel_metadata(self, panel_data):
         """[SeamFix] Save panel metadata via the main window, if reachable.
 
@@ -1664,6 +1694,15 @@ class ActivePanelWidget(QWidget):
         # batch flags already set, so it bypasses the guard)
         if not _from_batch and self._workflow_busy("CAPTURE"):
             return
+
+        # [StaleState] Manual CAPTURE: reset per-panel iteration/checkpoint/metrics
+        # state (best_score, best_actor_transforms, score_trajectory, scene ID,
+        # etc.) so a second run doesn't inherit the previous panel's state.
+        # Batch mode already runs this reset in _process_next_batch_panel, so
+        # only do it here on the manual path (running it twice would needlessly
+        # restart the depth-analyzer subprocess).
+        if not _from_batch:
+            self._reset_state_for_next_panel()
 
         unreal.log("\n" + "="*70)
         unreal.log("CAPTURE BUTTON CLICKED - STARTING POSITIONING WORKFLOW")
@@ -1699,7 +1738,10 @@ class ActivePanelWidget(QWidget):
                 unreal.log_warning("No generated sequence found")
 
         # Load the correct level for this location
-        if location and self.current_show:
+        # [PlaceholderLocation] Skip the level load for placeholder values that
+        # GENERATE (scene_builder) already treats as non-locations; the else
+        # branch proceeds in the current level, matching GENERATE's behavior.
+        if location and location not in ('Auto-detect', 'Location Unknown', 'Unknown', 'Default', 'Interior', 'Exterior') and self.current_show:
             unreal.log(f"\n Loading level for location: {location}")
 
             # CRITICAL: Close Sequencer and cleanup before level load to prevent crashes
@@ -1861,7 +1903,7 @@ class ActivePanelWidget(QWidget):
         front_queued_at = time.time()
         front_success = self.test_capture_front()
         if not front_success:
-            unreal.log_error("Front capture failed to queue!")
+            self._abort_capture_run("Front capture failed to queue")
             return
         unreal.log("Front queued (1/6)\n")
 
@@ -6000,7 +6042,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
             # Guard: Check if widget still exists (prevents Qt dangling reference crash)
             if not hasattr(self, 'active_panel') or self.active_panel is None:
-                unreal.log_error("Active panel no longer exists - cannot continue iteration")
+                self._abort_capture_run("Active panel no longer exists - cannot continue iteration")
                 return
 
             unreal.log("\n" + "="*70)
@@ -6020,10 +6062,10 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                             unreal.LevelSequenceEditorBlueprintLibrary.open_level_sequence(sequence_asset)
                             unreal.log(f"Reopened sequence: {sequence_asset.get_name()}")
                         else:
-                            unreal.log_error(f"Failed to load sequence: {sequence_path}")
+                            self._abort_capture_run(f"Failed to load sequence: {sequence_path}")
                             return
                     except Exception as e:
-                        unreal.log_error(f"Error reopening sequence: {e}")
+                        self._abort_capture_run(f"Error reopening sequence: {e}")
                         return
         except Exception as e:
             unreal.log_error(f"CRASH PREVENTED in _start_next_iteration: {e}")
@@ -6031,7 +6073,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             unreal.log_error("Stopping iterations to prevent Unreal crash")
             import traceback
             unreal.log_error(traceback.format_exc())
-            self.capture_workflow_active = False
+            self._abort_capture_run(f"Exception in _start_next_iteration: {e}")
             return
 
         # THESIS METRICS: Track iteration start time
@@ -6148,7 +6190,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             right_queued_at = time.time()
             right_success = self.test_capture_right()
             if not right_success:
-                unreal.log_error("Right capture failed to queue!")
+                self._abort_capture_run("Right capture failed to queue")
                 return
             unreal.log("Right queued (1/2 reduced)\n")
             # [CapturePoll] Advance as soon as test_right.png lands (max 15s, as before)
@@ -6161,7 +6203,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         front_queued_at = time.time()
         front_success = self.test_capture_front()
         if not front_success:
-            unreal.log_error("Front capture failed to queue!")
+            self._abort_capture_run("Front capture failed to queue")
             return
         unreal.log("Front queued (1/6)\n")
 
@@ -6403,6 +6445,20 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 'shot_type': panel_info['shot_type'],    # From UI dropdown
                 'num_characters': len(panel_info['characters'])
             }
+            # Merge mood/action context from the stored AI analysis so the
+            # opt-in mood-lighting / auto-animation features see it (the
+            # UI fields alone never carry these keys).
+            stored = (self.active_panel or {}).get('analysis') or {}
+            if isinstance(stored, dict):
+                for key in ('mood', 'time_of_day', 'action', 'actions'):
+                    value = stored.get(key)
+                    if value:
+                        panel_info['analysis'][key] = value
+                # AI description doubles as action text when no explicit action
+                if 'action' not in panel_info['analysis']:
+                    desc = stored.get('description') or stored.get('ai_raw_description')
+                    if isinstance(desc, str) and desc.strip():
+                        panel_info['analysis']['action'] = desc.strip()
             unreal.log("Analysis dict created from UI")
             unreal.log("="*60)
             unreal.log("USING CURRENT UI STATE (User's Edits):")
@@ -7343,6 +7399,20 @@ You can edit them before generating the scene.{available_info}"""
                 'shot_type': panel_info['shot_type'],
                 'num_characters': len(panel_info['characters'])
             }
+            # Merge mood/action context from the stored AI analysis so the
+            # opt-in mood-lighting / auto-animation features see it (the
+            # UI fields alone never carry these keys).
+            stored = (panel_data or {}).get('analysis') or {}
+            if isinstance(stored, dict):
+                for key in ('mood', 'time_of_day', 'action', 'actions'):
+                    value = stored.get(key)
+                    if value:
+                        panel_info['analysis'][key] = value
+                # AI description doubles as action text when no explicit action
+                if 'action' not in panel_info['analysis']:
+                    desc = stored.get('description') or stored.get('ai_raw_description')
+                    if isinstance(desc, str) and desc.strip():
+                        panel_info['analysis']['action'] = desc.strip()
 
             # Import scene builder
             from core.scene_builder import SceneBuilder

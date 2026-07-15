@@ -105,9 +105,25 @@ class ShowsManager:
                 if show_dir.is_dir():
                     metadata_file = show_dir / "show_metadata.json"
                     if metadata_file.exists():
-                        with open(metadata_file, 'r') as f:
-                            metadata = json.load(f)
-                            shows.append(metadata)
+                        # Guard per show: one corrupt/half-synced metadata
+                        # file must not abort window creation.
+                        # ValueError covers JSONDecodeError and
+                        # UnicodeDecodeError; OSError covers unreadable
+                        # files (e.g. cloud-sync placeholders).
+                        try:
+                            with open(metadata_file, 'r') as f:
+                                metadata = json.load(f)
+                        except (ValueError, OSError) as e:
+                            unreal.log_warning(
+                                f"Skipping show '{show_dir.name}': "
+                                f"unreadable metadata ({e})")
+                            continue
+                        if not isinstance(metadata, dict) or 'name' not in metadata:
+                            unreal.log_warning(
+                                f"Skipping show '{show_dir.name}': "
+                                f"malformed metadata")
+                            continue
+                        shows.append(metadata)
         return shows
 
     def load_show(self, show_name):

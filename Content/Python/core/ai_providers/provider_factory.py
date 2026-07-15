@@ -101,6 +101,21 @@ class AIProviderFactory:
                     else:
                         unreal.log_warning("[AI] Gemini configured but API key invalid")
 
+            elif ('LLaVA' in provider_name or 'Local' in provider_name
+                  or 'Ollama' in provider_name):
+                # Honor an explicit local-provider selection BEFORE the
+                # try-all chain below, which would otherwise pick any
+                # configured cloud key over the user's local choice.
+                llava_url = ai_settings.get('llava_url', 'http://localhost:11434')
+                llava_model = (ai_settings.get('llava_model', '') or 'llava:latest')
+                unreal.log(f"[AI] Trying LLaVA (user-selected) at {llava_url} with model: {llava_model}")
+                llava = LLaVAProvider(model=llava_model, url=llava_url)
+                if llava.is_available():
+                    unreal.log("[AI]  Selected: LLaVA (local)")
+                    return llava
+                else:
+                    unreal.log_warning("[AI] LLaVA selected but not available (Ollama not running?)")
+
             # If user chose "Auto" or their choice failed, try all providers
             unreal.log("[AI] Checking all available providers...")
 

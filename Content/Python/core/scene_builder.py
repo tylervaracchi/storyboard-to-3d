@@ -107,11 +107,23 @@ class SceneBuilder:
         from core.entity_validator import validate_actors
 
         # Validate AI-suggested characters against available assets
+        # (library keys PLUS each entry's aliases, mapped back to keys).
         available_actors = []
+        alias_to_key = {}
         if self.show_name and hasattr(self.asset_matcher, 'show_library'):
             lib_dict = self.asset_matcher.show_library.get('characters', {})
             available_actors = list(lib_dict.keys())
-            unreal.log(f"Found {len(available_actors)} available actors: {available_actors}")
+            for lib_key, lib_info in lib_dict.items():
+                aliases = lib_info.get('aliases', []) if isinstance(lib_info, dict) else []
+                if isinstance(aliases, str):
+                    aliases = [a.strip() for a in aliases.split(',') if a.strip()]
+                for alias in aliases:
+                    if isinstance(alias, str) and alias.strip():
+                        alias_clean = alias.strip()
+                        alias_to_key[alias_clean.lower()] = lib_key
+                        available_actors.append(alias_clean)
+            unreal.log(f"Found {len(lib_dict)} available actors "
+                       f"(+{len(alias_to_key)} aliases): {list(lib_dict.keys())}")
         else:
             unreal.log_warning(f"Cannot validate - show_name: {self.show_name}")
 
@@ -129,6 +141,14 @@ class SceneBuilder:
                 if rescued:
                     validated_characters = list(validated_characters) + rescued
                     rejected -= set(rescued)
+            # Map alias matches back to their canonical library keys
+            # (deduplicated) so downstream spawning uses real entry names.
+            canonical_characters = []
+            for validated_name in validated_characters:
+                canonical = alias_to_key.get(str(validated_name).lower(), validated_name)
+                if canonical not in canonical_characters:
+                    canonical_characters.append(canonical)
+            validated_characters = canonical_characters
             analysis['characters'] = validated_characters
 
             if rejected:
@@ -153,6 +173,21 @@ class SceneBuilder:
             except Exception as e:
                 unreal.log_warning(f"[Gen3D] prop rescue check failed: {e}")
 
+        # STEP 1: Location/Environment. Runs BEFORE the transaction opens:
+        # loading a level resets the undo buffer, and doing that inside an
+        # open ScopedEditorTransaction leaves the transaction dead and can
+        # crash/corrupt editor state on a later Ctrl+Z.
+        location_name = analysis.get('location') or analysis.get('location_type', 'Default')
+        if location_name in ['Exterior', 'Interior', 'Auto-detect']:
+            location_name = 'Default'
+
+        unreal.log(f"Resolved location: {location_name}")
+        try:
+            location_result = self._setup_location(location_name, analysis)
+        except Exception as e:
+            unreal.log_error(f"Location setup failed: {e}")
+            location_result = {'name': location_name, 'type': location_name}
+
         with unreal.ScopedEditorTransaction(f"Generate Panel {panel_index}") as trans:
             unreal.log(f"Starting build_scene with panel_index={panel_index}")
 
@@ -167,7 +202,7 @@ class SceneBuilder:
 
             scene_data = {
                 'panel_index': panel_index,
-                'location': None,
+                'location': location_result,
                 'sequence': None,
                 'actors': [],
                 'characters': [],
@@ -178,14 +213,6 @@ class SceneBuilder:
             }
 
             try:
-                # STEP 1: Location/Environment
-                location_name = analysis.get('location') or analysis.get('location_type', 'Default')
-                if location_name in ['Exterior', 'Interior', 'Auto-detect']:
-                    location_name = 'Default'
-                    
-                unreal.log(f"Resolved location: {location_name}")
-                scene_data['location'] = self._setup_location(location_name, analysis)
-
                 # STEP 2: Sequence
                 scene_data['sequence'] = self._create_sequence(panel_index, analysis)
                 if not scene_data['sequence'].get('asset'):
@@ -252,7 +279,10 @@ class SceneBuilder:
         """
         location_data = {'name': location_name, 'type': location_name}
 
-        self.clear_build_area()
+        # Own small transaction (closed before any load_level below) so
+        # clearing stays undoable without ever spanning a map load.
+        with unreal.ScopedEditorTransaction("Clear Storyboard Build Area"):
+            self.clear_build_area()
 
         if self.show_name and location_name not in ['Location Unknown', 'Auto-detect', 'Unknown', 'Default']:
             unreal.log(f"Looking for location '{location_name}' in show '{self.show_name}'...")
@@ -327,6 +357,23 @@ class SceneBuilder:
             if unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).does_asset_exist(full_path):
                 sequence = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).load_asset(full_path)
                 unreal.log(f"Using existing sequence: {sequence_name}")
+                # Remove prior spawnable bindings so regenerating the same
+                # panel does not stack duplicate cameras/lights/actors.
+                try:
+                    # Close first: the sequence is typically still open in
+                    # Sequencer from the previous Generate, and mutating an
+                    # open sequence can crash or leave dangling editor state.
+                    unreal.LevelSequenceEditorBlueprintLibrary.close_level_sequence()
+                except Exception as e:
+                    unreal.log_warning(f"Could not close sequence before cleanup: {e}")
+                try:
+                    for binding in list(sequence.get_bindings()):
+                        binding.remove()
+                    sequence.set_playback_start(0)
+                    sequence.set_playback_end(90)
+                    unreal.log(f"Cleared prior bindings from {sequence_name}")
+                except Exception as e:
+                    unreal.log_error(f"Failed to clear prior bindings: {e}")
             else:
                 factory = unreal.LevelSequenceFactoryNew()
                 sequence = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
@@ -682,9 +729,24 @@ class SceneBuilder:
         if name in asset_paths[category]:
             return asset_paths[category][name].get('asset_path', '')
 
+        name_lower = name.lower()
+
+        # Exact alias match (case-insensitive). Must run BEFORE the loose
+        # substring pass so aliases are not shadowed by substring hits
+        # (e.g. alias 'tree' vs key 'Treasure Chest'). Aliases may be
+        # stored as a list or a comma-separated string.
+        for lib_name, info in asset_paths[category].items():
+            aliases = info.get('aliases', []) if isinstance(info, dict) else []
+            if isinstance(aliases, str):
+                aliases = [a.strip() for a in aliases.split(',') if a.strip()]
+            for alias in aliases:
+                if isinstance(alias, str) and alias.strip().lower() == name_lower:
+                    unreal.log(f"Found alias match '{lib_name}' for '{name}'")
+                    return info.get('asset_path', '')
+
         # Partial match
         for lib_name, info in asset_paths[category].items():
-            if name.lower() in lib_name.lower() or lib_name.lower() in name.lower():
+            if name_lower in lib_name.lower() or lib_name.lower() in name_lower:
                 unreal.log(f"Found partial match '{lib_name}'")
                 return info.get('asset_path', '')
 

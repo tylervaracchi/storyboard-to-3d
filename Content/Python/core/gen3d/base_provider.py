@@ -344,8 +344,9 @@ class Gen3DProvider(object):
     def get_timeout_seconds(self):
         # type: () -> float
         """Overall generation timeout ('gen3d.timeout_seconds', default 180)."""
-        value = self._get_setting('gen3d.timeout_seconds',
-                                  self.DEFAULT_TIMEOUT_SECONDS)
+        value = (os.environ.get('GEN3D_TIMEOUT_SECONDS')
+                 or self._get_setting('gen3d.timeout_seconds',
+                                      self.DEFAULT_TIMEOUT_SECONDS))
         try:
             timeout = float(value)
             if timeout <= 0:
@@ -361,7 +362,8 @@ class Gen3DProvider(object):
         # type: () -> str
         """Quality tier from the 'gen3d.quality' setting (lowercased).
         Defaults to the provider's cheapest tier."""
-        value = self._get_setting('gen3d.quality', self.DEFAULT_QUALITY)
+        value = (os.environ.get('GEN3D_QUALITY')
+                 or self._get_setting('gen3d.quality', self.DEFAULT_QUALITY))
         return str(value).strip().lower() or self.DEFAULT_QUALITY
 
     def _resolve_api_key(self, env_var, config_key_name):

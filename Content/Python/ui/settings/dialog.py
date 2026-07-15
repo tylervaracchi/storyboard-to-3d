@@ -128,6 +128,11 @@ class SettingsDialog(QDialog):
         self.advanced_tab.load_settings()
 
         self.apply_btn.setEnabled(False)
+        # Loading fires the tabs' change signals (setChecked/setValue/etc.),
+        # which set changes_made via on_settings_changed. Clear the flag so a
+        # freshly opened dialog is not "dirty" and OK does not rewrite every
+        # settings section when the user changed nothing.
+        self.changes_made = False
 
     def apply_settings(self):
         """Apply settings without closing"""

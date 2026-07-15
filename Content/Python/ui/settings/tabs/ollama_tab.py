@@ -30,6 +30,10 @@ class OllamaSettingsTab(QWidget):
         super().__init__(parent)
         self.settings = settings
         self.available_models = []
+        # Saved model names from settings; used to restore combo selections
+        # after (re)population, including when Ollama is unreachable.
+        self._saved_text_model = ''
+        self._saved_vision_model = ''
         self.setup_ui()
 
     def setup_ui(self):
@@ -267,19 +271,32 @@ class OllamaSettingsTab(QWidget):
             else:
                 text_models.append(name)
 
-        # Update combo boxes
-        current_text = self.default_text_model_combo.currentText()
-        current_vision = self.default_vision_model_combo.currentText()
+        # Update combo boxes. Prefer the live selection (so a user's manual
+        # choice survives Refresh), falling back to the saved setting. Block
+        # signals so repopulation does not mark the dialog dirty, and keep
+        # the desired model selectable even if the server list omits it.
+        desired_text = (self.default_text_model_combo.currentText()
+                        or self._saved_text_model)
+        desired_vision = (self.default_vision_model_combo.currentText()
+                          or self._saved_vision_model)
 
+        self.default_text_model_combo.blockSignals(True)
         self.default_text_model_combo.clear()
         self.default_text_model_combo.addItems(text_models)
-        if current_text in text_models:
-            self.default_text_model_combo.setCurrentText(current_text)
+        if desired_text:
+            if desired_text not in text_models:
+                self.default_text_model_combo.insertItem(0, desired_text)
+            self.default_text_model_combo.setCurrentText(desired_text)
+        self.default_text_model_combo.blockSignals(False)
 
+        self.default_vision_model_combo.blockSignals(True)
         self.default_vision_model_combo.clear()
         self.default_vision_model_combo.addItems(vision_models)
-        if current_vision in vision_models:
-            self.default_vision_model_combo.setCurrentText(current_vision)
+        if desired_vision:
+            if desired_vision not in vision_models:
+                self.default_vision_model_combo.insertItem(0, desired_vision)
+            self.default_vision_model_combo.setCurrentText(desired_vision)
+        self.default_vision_model_combo.blockSignals(False)
 
     def pull_model_dialog(self):
         """Show dialog to pull new model"""
@@ -421,8 +438,21 @@ class OllamaSettingsTab(QWidget):
         self.server_url_edit.setText(ollama.get('server_url', 'http://localhost:11434'))
         self.auto_start_check.setChecked(ollama.get('auto_start', True))
 
-        self.default_text_model_combo.setCurrentText(ollama.get('default_text_model', 'llama3.2'))
-        self.default_vision_model_combo.setCurrentText(ollama.get('default_vision_model', 'llava'))
+        # setCurrentText on an empty non-editable QComboBox is a no-op, so
+        # seed each combo with the saved model name. update_models_list()
+        # re-selects it after the server's model list arrives; if Ollama is
+        # unreachable, get_settings() still round-trips the saved value.
+        self._saved_text_model = ollama.get('default_text_model', 'llama3.2')
+        self._saved_vision_model = ollama.get('default_vision_model', 'llava')
+        for combo, saved in (
+                (self.default_text_model_combo, self._saved_text_model),
+                (self.default_vision_model_combo, self._saved_vision_model)):
+            combo.blockSignals(True)
+            combo.clear()
+            if saved:
+                combo.addItem(saved)
+                combo.setCurrentText(saved)
+            combo.blockSignals(False)
 
         self.context_length_spin.setValue(ollama.get('context_length', 4096))
         self.gpu_layers_spin.setValue(ollama.get('gpu_layers', 0))

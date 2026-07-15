@@ -280,9 +280,20 @@ class GPT4VisionProvider(BaseAIProvider):
         max_tokens = kwargs.get('max_tokens', 1000)
         temperature = kwargs.get('temperature', 0.7)
 
-        # Structured outputs configuration (GPT-4o/GPT-4-turbo only)
-        use_structured_output = kwargs.get('use_structured_output', self.supports_structured_outputs)
+        # Structured outputs configuration (GPT-4o/GPT-4-turbo only).
+        # Opt-in: only force a response_format when the caller supplied a
+        # schema (or explicitly asked). Previously this defaulted to True on
+        # gpt-4o and force-attached the positioning schema, so generic
+        # callers (asset/animation catalogers, external validator) got
+        # positioning JSON no matter what their prompt asked for.
+        # Accept the cross-provider 'json_schema' kwarg (Claude/Gemini honor
+        # it) plus the plural 'use_structured_outputs' alias.
         response_schema = kwargs.get('response_schema', None)
+        json_schema = kwargs.get('json_schema', None)
+        use_structured_output = kwargs.get(
+            'use_structured_output',
+            kwargs.get('use_structured_outputs',
+                       bool(json_schema or response_schema)))
 
         # Only enable structured outputs if model supports it
         if use_structured_output and not self.supports_structured_outputs:
@@ -341,6 +352,10 @@ class GPT4VisionProvider(BaseAIProvider):
                     "text": {"verbosity": "medium"}  # low/medium/high
                 }
                 # Note: GPT-5 doesn't support temperature parameter
+                # Responses API branch does not map schemas yet - warn instead
+                # of silently dropping the caller's schema
+                if json_schema or response_schema:
+                    unreal.log_warning(f"[GPT-4V] json_schema/response_schema not supported on the Responses API path for {self.model}; sending prompt-only request")
             else:
                 # GPT-4 uses Chat Completions API
                 request_json = {
@@ -357,10 +372,31 @@ class GPT4VisionProvider(BaseAIProvider):
 
                 # Add structured outputs if enabled (GPT-4o/GPT-4-turbo only)
                 if use_structured_output:
-                    # Use custom schema if provided, otherwise use positioning schema
-                    schema = response_schema if response_schema else self.get_positioning_schema()
+                    # Precedence: response_schema (already in OpenAI
+                    # response_format form), then json_schema (wrapped here),
+                    # then the legacy positioning schema.
+                    if response_schema:
+                        schema = response_schema
+                    elif json_schema:
+                        if isinstance(json_schema, dict) and json_schema.get('type') == 'json_schema':
+                            # Caller passed an already-wrapped response_format dict
+                            schema = json_schema
+                        else:
+                            # strict=False: caller schemas may contain keywords
+                            # (e.g. minItems/maxItems) that OpenAI strict mode rejects
+                            schema = {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "response",
+                                    "strict": False,
+                                    "schema": json_schema
+                                }
+                            }
+                    else:
+                        schema = self.get_positioning_schema()
                     request_json["response_format"] = schema
-                    unreal.log(f"[GPT-4V] Using JSON schema: {schema['json_schema']['name']}")
+                    schema_name = schema.get('json_schema', {}).get('name', 'custom')
+                    unreal.log(f"[GPT-4V] Using JSON schema: {schema_name}")
 
             # Call OpenAI API
             response = _get_http_session().post(
