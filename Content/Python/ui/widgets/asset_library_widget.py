@@ -1188,6 +1188,47 @@ class AssetLibraryWidget(QWidget):
             unreal.log_warning(f"[Survey] Survey failed for '{name}': {e}")
             return None
 
+    @staticmethod
+    def _read_current_level_package():
+        """Package path of the currently open map, or None.
+
+        Isolated in a helper so the UWorld reference dies on return:
+        a Python-held world reference across a level load trips the
+        editor's fatal 'World Memory Leaks' check.
+        """
+        try:
+            ues = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            world = ues.get_editor_world() if ues else None
+            return str(world.get_package().get_name()) if world else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _trace_ground_z(target_x, target_y, target_z):
+        """Ground Z at (x, y) via a downward line trace, or None.
+
+        Isolated in a helper so the world / hit-result references
+        (hit actors, components) die on return - holding them across a
+        later level load trips the editor's world-leak fatal check.
+        """
+        try:
+            ues = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            world = ues.get_editor_world() if ues else None
+            if world is None:
+                return None
+            hit = unreal.SystemLibrary.line_trace_single(
+                world,
+                unreal.Vector(target_x, target_y, target_z + 1000.0),
+                unreal.Vector(target_x, target_y, target_z - 5000.0),
+                unreal.TraceTypeQuery.TRACE_TYPE_QUERY1,
+                False, [], unreal.DrawDebugTrace.NONE, True)
+            if hit:
+                hit_values = unreal.GameplayStatics.break_hit_result(hit)
+                return float(hit_values[4].z)
+        except Exception:
+            return None
+        return None
+
     def _capture_location_on_add(self, name, asset_path, out_png,
                                  describe_provider=None):
         """Open a location's map, capture the editor viewport as its
@@ -1212,17 +1253,14 @@ class AssetLibraryWidget(QWidget):
 
             ues = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
 
-            # Remember the currently open map so we can put the user back
-            prev_level = None
-            try:
-                world = ues.get_editor_world()
-                if world:
-                    prev_level = str(world.get_package().get_name())
-            except Exception as prev_err:
+            # Remember the currently open map so we can put the user back.
+            # Read via a helper so no world reference survives into the
+            # level load below (fatal 'World Memory Leaks' check otherwise).
+            prev_level = self._read_current_level_package()
+            if prev_level is None:
                 unreal.log_warning(
-                    f"[LocationAdd] Could not read the current map ({prev_err}); "
-                    "the previous map will not be restored after capture")
-                prev_level = None
+                    "[LocationAdd] Could not read the current map; the "
+                    "previous map will not be restored after capture")
 
             def _load(path):
                 try:
@@ -1266,22 +1304,12 @@ class AssetLibraryWidget(QWidget):
                     target_y = float(cam_loc.y) + float(forward.y) * 500.0
                     target_z = float(cam_loc.z) + float(forward.z) * 500.0
 
-                    ground_z = None
-                    try:
-                        world = ues.get_editor_world()
-                        hit = unreal.SystemLibrary.line_trace_single(
-                            world,
-                            unreal.Vector(target_x, target_y, target_z + 1000.0),
-                            unreal.Vector(target_x, target_y, target_z - 5000.0),
-                            unreal.TraceTypeQuery.TRACE_TYPE_QUERY1,
-                            False, [], unreal.DrawDebugTrace.NONE, True)
-                        if hit:
-                            hit_values = unreal.GameplayStatics.break_hit_result(hit)
-                            ground_z = float(hit_values[4].z)
-                    except Exception as trace_err:
-                        unreal.log(f"[LocationAdd] Ground trace unavailable ({trace_err}); "
-                                   "estimating ground from camera height")
+                    # Helper keeps world/hit-result refs from surviving
+                    # into the restore load below
+                    ground_z = self._trace_ground_z(target_x, target_y, target_z)
                     if ground_z is None:
+                        unreal.log("[LocationAdd] Ground trace unavailable; "
+                                   "estimating ground from camera height")
                         ground_z = float(cam_loc.z) - 160.0
 
                     result['stage_center'] = {'x': target_x, 'y': target_y, 'z': ground_z}
@@ -1368,6 +1396,12 @@ class AssetLibraryWidget(QWidget):
         except Exception as e:
             unreal.log_warning(f"Auto-describe unavailable: {e}")
 
+        # Convert the selection to PLAIN DATA and release every asset
+        # reference before doing any work. A selected level is a live
+        # UWorld object: holding it (or any of these references) across
+        # the location capture's map loads trips the editor's fatal
+        # 'World Memory Leaks' check and crashes the whole editor.
+        pending = []
         for asset in selected:
             built = build_entry_from_asset(asset)
             if built is None:
@@ -1377,16 +1411,25 @@ class AssetLibraryWidget(QWidget):
                     label = str(asset)
                 skipped.append(f"{label} (unsupported type)")
                 continue
+            pending.append({
+                'name': built['name'],
+                'category': built['category'],
+                'asset_path': built['entry']['asset_path'],
+                'is_skeletal': isinstance(asset, unreal.SkeletalMesh),
+            })
+        asset = None
+        selected = None
 
-            name = built['name']
-            if built['category'] == 'locations':
+        for item in pending:
+            name = item['name']
+            if item['category'] == 'locations':
                 # Levels are always locations, regardless of the active tab:
                 # a map filed under characters/props would break spawning
                 category = 'locations'
             else:
-                category = active_category or built['category']
+                category = active_category or item['category']
 
-            asset_path = built['entry']['asset_path']
+            asset_path = item['asset_path']
             existing = name in self.library.library.get(category, {})
             if existing:
                 # Highlight + Add on an existing entry = REFRESH it:
@@ -1486,7 +1529,7 @@ class AssetLibraryWidget(QWidget):
             # samples fallback points at assets this project doesn't have)
             if category == 'characters':
                 try:
-                    if isinstance(asset, unreal.SkeletalMesh):
+                    if item['is_skeletal']:
                         from core.animation_cataloger import (
                             build_show_animation_library_for_skeleton)
                         anim_result = build_show_animation_library_for_skeleton(
