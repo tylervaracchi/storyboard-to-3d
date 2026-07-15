@@ -4392,12 +4392,13 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 self._last_temperature = None  # metrics record None
                 unreal.log("FEATURE #3 - Temperature: omitted (Anthropic models manage their own sampling; current models reject the param)")
 
-                # max_tokens sized for the JSON positioning response.
-                # NOTE: extended thinking is NOT enabled in this payload (no
-                # 'thinking' parameter is sent; models with thinking on by
-                # default budget it inside max_tokens themselves). 4096
-                # gives generous JSON room.
-                max_tokens = 4096
+                # max_tokens covers BOTH adaptive reasoning and the JSON
+                # answer on current models (Fable 5 / Sonnet 5 think by
+                # default and budget it inside max_tokens): 4096 was fully
+                # consumed by reasoning, cutting the response off before
+                # any text block. 16000 leaves ample JSON room; only
+                # tokens actually generated are billed.
+                max_tokens = 16000
 
                 payload = {
                     "model": client.model,

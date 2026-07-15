@@ -1172,7 +1172,20 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
 
             # Claude format
             elif "content" in response_data:
-                return response_data['content'][0]['text']
+                # Content is a LIST of blocks; adaptive-thinking models
+                # (Fable 5, Sonnet 5) put a 'thinking' block first, so
+                # content[0]['text'] KeyErrors - collect text blocks
+                # wherever they sit
+                blocks = response_data.get('content') or []
+                text = ''.join(
+                    b.get('text', '') for b in blocks
+                    if isinstance(b, dict) and b.get('type') == 'text')
+                if text:
+                    return text
+                if response_data.get('stop_reason') == 'max_tokens':
+                    print("Claude hit max_tokens while still reasoning - "
+                          "no text emitted; increase max_tokens for thinking models")
+                return None
         except (KeyError, IndexError) as e:
             print(f"Error parsing response: {e}")
 

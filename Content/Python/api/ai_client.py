@@ -859,7 +859,24 @@ class AIClient:
                 parts = candidates[0].get('content', {}).get('parts', [])
                 return ''.join(part.get('text', '') for part in parts if isinstance(part, dict))
             elif "content" in response_data:  # Claude
-                return response_data['content'][0]['text']
+                # Content is a LIST of blocks. Models with adaptive
+                # thinking (Fable 5, Sonnet 5) put a 'thinking' block
+                # FIRST, so content[0]['text'] KeyErrors - collect the
+                # text blocks wherever they sit.
+                blocks = response_data.get('content') or []
+                text = ''.join(
+                    b.get('text', '') for b in blocks
+                    if isinstance(b, dict) and b.get('type') == 'text')
+                if text:
+                    return text
+                if response_data.get('stop_reason') == 'max_tokens':
+                    print("[_parse_response] Claude hit max_tokens while still "
+                          "reasoning - no text block emitted. Increase max_tokens "
+                          "for thinking models.")
+                else:
+                    print(f"[_parse_response] Claude response had no text blocks "
+                          f"(block types: {[b.get('type') for b in blocks if isinstance(b, dict)]})")
+                return None
             elif "response" in response_data:  # Ollama (LLaVA, InternVL2, etc.)
                 return response_data['response']
         except (KeyError, IndexError) as e:

@@ -173,12 +173,18 @@ class MetricsTracker:
         
         # Calculate summary statistics
         summary = self._calculate_summary()
-        
+
         # Save all formats
         self._save_json(summary)
         self._save_csv()
-        self._save_summary_text(summary)
-        
+        if summary:
+            self._save_summary_text(summary)
+        else:
+            # No scored iterations (e.g. every AI call failed): the raw
+            # JSON/CSV are still saved for forensics, but the summary
+            # text assumes at least one score and would KeyError
+            print("No scored iterations - summary text skipped")
+
         return summary
     
     def _calculate_summary(self) -> Dict[str, Any]:
