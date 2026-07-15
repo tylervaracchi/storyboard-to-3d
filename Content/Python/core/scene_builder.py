@@ -300,6 +300,11 @@ class SceneBuilder:
             location_name = 'Default'
 
         unreal.log(f"Resolved location: {location_name}")
+        # Remember the resolved name for the stage-anchor lookup: the
+        # UI-built analysis often carries the location under
+        # 'location_type' (not 'location'), and downstream setup steps
+        # receive that same dict
+        self._resolved_location_name = location_name
         try:
             location_result = self._setup_location(location_name, analysis)
         except Exception as e:
@@ -539,13 +544,29 @@ class SceneBuilder:
         a cornfield or a fence line. Entries without an anchor keep the
         legacy world-origin behavior unchanged.
         """
-        loc_name = str(analysis.get('location') or '').strip()
-        if getattr(self, '_anchor_location', None) == loc_name:
+        # The location name can arrive under 'location' OR 'location_type'
+        # (the UI-built analysis uses the latter - same resolution chain as
+        # build_scene), with the name resolved at location-setup time as
+        # the final authority
+        candidates = []
+        for key in ('location', 'location_type'):
+            value = str(analysis.get(key) or '').strip()
+            if value and value not in ('Exterior', 'Interior', 'Auto-detect',
+                                       'exterior', 'interior', 'outdoor',
+                                       'indoor', 'Default'):
+                candidates.append(value)
+        resolved = str(getattr(self, '_resolved_location_name', '') or '').strip()
+        if resolved and resolved != 'Default' and resolved not in candidates:
+            candidates.append(resolved)
+
+        memo_key = '|'.join(candidates)
+        if getattr(self, '_anchor_memo_key', None) == memo_key:
             return
-        self._anchor_location = loc_name
+        self._anchor_memo_key = memo_key
         self._stage_center = unreal.Vector(0.0, 0.0, 0.0)
         self._stage_yaw = 0.0
         self._camera_start = None
+        loc_name = candidates[0] if candidates else ''
 
         try:
             library = self._get_asset_paths_from_library() or {}
@@ -554,17 +575,26 @@ class SceneBuilder:
                 # The matcher's cached library may lack/trim locations;
                 # the show's asset_library.json on disk is authoritative
                 locations = self._read_show_locations_from_disk()
-            entry = locations.get(loc_name)
-            if not isinstance(entry, dict):
-                loc_lower = loc_name.lower()
+
+            entry = None
+            for candidate in candidates:
+                entry = locations.get(candidate)
+                if isinstance(entry, dict):
+                    loc_name = candidate
+                    break
+                cand_lower = candidate.lower()
                 for key, info in locations.items():
-                    if isinstance(info, dict) and key.strip().lower() == loc_lower:
+                    if isinstance(info, dict) and key.strip().lower() == cand_lower:
                         entry = info
+                        loc_name = key
                         break
+                if isinstance(entry, dict):
+                    break
             if not isinstance(entry, dict):
-                unreal.log("[StageAnchor] No library entry for location '{0}' "
-                           "(library has: {1}); building at world origin".format(
-                               loc_name, list(locations.keys())[:5]))
+                unreal.log("[StageAnchor] No library entry for location "
+                           "candidates {0} (library has: {1}); building at "
+                           "world origin".format(
+                               candidates, list(locations.keys())[:5]))
                 return
 
             center = entry.get('stage_center')
