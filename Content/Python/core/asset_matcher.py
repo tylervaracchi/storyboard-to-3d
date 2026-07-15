@@ -714,22 +714,38 @@ class AssetMatcher:
         Returns:
             Best matching asset if score > 0.5, otherwise None.
         """
+        import re as _re
+
+        def _norm(text):
+            # Compare on letters/digits only: placeholder names like
+            # '(scythe)' and '(ghost)' share enough PUNCTUATION to score
+            # 0.53 raw, which once matched a scythe to the ghost mesh
+            return _re.sub(r'[^a-z0-9]+', ' ', str(text).lower()).strip()
+
         best_match = None
+        best_label = None
         best_score = 0.0
+        norm_object = _norm(object_name)
+        if not norm_object:
+            return None
 
         for asset_name, asset_path in self.asset_cache.items():
-            score = SequenceMatcher(None, object_name, asset_name).ratio()
+            norm_asset = _norm(asset_name)
+            if not norm_asset:
+                continue
+            score = SequenceMatcher(None, norm_object, norm_asset).ratio()
 
             # Bonus for substring match
-            if object_name in asset_name:
+            if norm_object in norm_asset:
                 score += 0.3
 
             if score > best_score and score > 0.5:
                 best_score = score
                 best_match = asset_path
+                best_label = asset_name
 
         if best_match:
-            _log(f"Fuzzy matched '{object_name}' with score {best_score:.2f}")
+            _log(f"Fuzzy matched '{object_name}' to '{best_label}' with score {best_score:.2f}")
             return self.load_asset(best_match)
 
         return None

@@ -549,7 +549,11 @@ class SceneBuilder:
 
         try:
             library = self._get_asset_paths_from_library() or {}
-            locations = library.get('locations', {})
+            locations = library.get('locations')
+            if not isinstance(locations, dict) or not locations:
+                # The matcher's cached library may lack/trim locations;
+                # the show's asset_library.json on disk is authoritative
+                locations = self._read_show_locations_from_disk()
             entry = locations.get(loc_name)
             if not isinstance(entry, dict):
                 loc_lower = loc_name.lower()
@@ -558,6 +562,9 @@ class SceneBuilder:
                         entry = info
                         break
             if not isinstance(entry, dict):
+                unreal.log("[StageAnchor] No library entry for location '{0}' "
+                           "(library has: {1}); building at world origin".format(
+                               loc_name, list(locations.keys())[:5]))
                 return
 
             center = entry.get('stage_center')
@@ -590,6 +597,29 @@ class SceneBuilder:
                            "record one.".format(loc_name))
         except Exception as e:
             unreal.log_warning(f"[StageAnchor] Could not resolve anchor: {e}")
+
+    def _read_show_locations_from_disk(self) -> Dict[str, Any]:
+        """Locations dict read directly from the show's asset_library.json.
+
+        Fallback for _ensure_stage_anchor when the matcher's in-memory
+        library has no usable 'locations' section. Returns {} on any
+        failure; never raises."""
+        try:
+            if not self.show_name:
+                return {}
+            import json
+            from core.utils import get_shows_manager
+            library_path = (get_shows_manager().shows_root / self.show_name
+                            / 'asset_library.json')
+            if not library_path.exists():
+                return {}
+            with open(str(library_path), 'r') as f:
+                data = json.load(f)
+            locations = data.get('locations') if isinstance(data, dict) else None
+            return locations if isinstance(locations, dict) else {}
+        except Exception as e:
+            unreal.log_warning(f"[StageAnchor] Disk read of locations failed: {e}")
+            return {}
 
     def _offset_from_stage(self, offset: unreal.Vector) -> unreal.Vector:
         """World position for an offset defined stage-relative (offsets
