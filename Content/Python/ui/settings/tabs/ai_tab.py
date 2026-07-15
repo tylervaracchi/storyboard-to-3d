@@ -24,6 +24,9 @@ class AISettingsTab(QWidget):
     """AI configuration settings tab - COMPLETE MODEL LIST"""
 
     settings_changed = Signal()
+    # Emitted from the auto-refresh worker thread with (provider, models,
+    # error); Qt queues the delivery so the slot runs on the UI thread.
+    _models_fetched = Signal(str, list, str)
 
     # Built-in Claude model list - used at startup and as the fallback when
     # the Anthropic Models API cannot be reached via "Refresh Models"
@@ -84,6 +87,8 @@ class AISettingsTab(QWidget):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.settings = settings
+        self._auto_refresh_started = False
+        self._models_fetched.connect(self._on_models_auto_fetched)
         self.setup_ui()
 
     def setup_ui(self):
@@ -550,25 +555,8 @@ class AISettingsTab(QWidget):
 
         progress.close()
 
-        # Keep the current selection across the repopulate
-        current = self.claude_model_combo.currentText()
-
-        # Fall back to the hardcoded list if the API returned nothing
-        items = models if models else list(self.CLAUDE_FALLBACK_MODELS)
-
-        # Block signals so repopulating does not emit spurious settings_changed
-        self.claude_model_combo.blockSignals(True)
-        self.claude_model_combo.clear()
-        self.claude_model_combo.addItems(items)
-
-        index = self.claude_model_combo.findText(current)
-        if index >= 0:
-            self.claude_model_combo.setCurrentIndex(index)
-        elif current:
-            # Preserve a custom or no-longer-listed model at the top
-            self.claude_model_combo.insertItem(0, current)
-            self.claude_model_combo.setCurrentIndex(0)
-        self.claude_model_combo.blockSignals(False)
+        self._repopulate_model_combo(self.claude_model_combo, models,
+                                     self.CLAUDE_FALLBACK_MODELS)
 
         if models:
             unreal.log(f"[AI Settings] Loaded {len(models)} Claude models from the Anthropic API")
@@ -594,31 +582,7 @@ class AISettingsTab(QWidget):
 
         models = []
         try:
-            import requests
-            response = requests.get(
-                "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=10
-            )
-            response.raise_for_status()
-            data = response.json().get("data", [])
-
-            # Keep only chat/vision-capable model families
-            include_prefixes = ("gpt-4o", "gpt-4.", "gpt-5", "o3", "o4")
-            exclude_terms = ("audio", "realtime", "transcribe", "tts",
-                             "embedding", "image", "moderation")
-
-            for entry in data:
-                if not isinstance(entry, dict):
-                    continue
-                model_id = entry.get("id", "")
-                if not model_id.startswith(include_prefixes):
-                    continue
-                if any(term in model_id for term in exclude_terms):
-                    continue
-                models.append(model_id)
-
-            models.sort(reverse=True)
+            models = self._fetch_openai_models_direct(api_key)
         except Exception as e:
             progress.close()
             QMessageBox.critical(self, "Error", f"Model refresh failed: {str(e)}")
@@ -626,25 +590,8 @@ class AISettingsTab(QWidget):
 
         progress.close()
 
-        # Keep the current selection across the repopulate
-        current = self.openai_model_combo.currentText()
-
-        # Fall back to the hardcoded list if the API returned nothing
-        items = models if models else list(self.OPENAI_FALLBACK_MODELS)
-
-        # Block signals so repopulating does not emit spurious settings_changed
-        self.openai_model_combo.blockSignals(True)
-        self.openai_model_combo.clear()
-        self.openai_model_combo.addItems(items)
-
-        index = self.openai_model_combo.findText(current)
-        if index >= 0:
-            self.openai_model_combo.setCurrentIndex(index)
-        elif current:
-            # Preserve a custom or no-longer-listed model at the top
-            self.openai_model_combo.insertItem(0, current)
-            self.openai_model_combo.setCurrentIndex(0)
-        self.openai_model_combo.blockSignals(False)
+        self._repopulate_model_combo(self.openai_model_combo, models,
+                                     self.OPENAI_FALLBACK_MODELS)
 
         if models:
             unreal.log(f"[AI Settings] Loaded {len(models)} OpenAI models from the OpenAI API")
@@ -670,22 +617,9 @@ class AISettingsTab(QWidget):
 
         models = []
         try:
-            # core.ai_providers resolves via the plugin root already on
-            # sys.path while the UI is running - no hardcoded
-            # Plugins/StoryboardTo3D path insertion needed (the old block
-            # was copy-pasted four times and assumed the plugin folder name)
-
             # Prefer the provider's own model listing; fall back to a direct
             # REST call if the Gemini provider module is not available yet
-            try:
-                from core.ai_providers.gemini_provider import GeminiProvider
-            except ImportError:
-                GeminiProvider = None
-
-            if GeminiProvider is not None and hasattr(GeminiProvider, "list_available_models"):
-                models = GeminiProvider.list_available_models(api_key)
-            else:
-                models = self._fetch_gemini_models_direct(api_key)
+            models = self._fetch_gemini_models(api_key)
         except Exception as e:
             progress.close()
             QMessageBox.critical(self, "Error", f"Model refresh failed: {str(e)}")
@@ -693,25 +627,8 @@ class AISettingsTab(QWidget):
 
         progress.close()
 
-        # Keep the current selection across the repopulate
-        current = self.gemini_model_combo.currentText()
-
-        # Fall back to the hardcoded list if the API returned nothing
-        items = models if models else list(self.GEMINI_FALLBACK_MODELS)
-
-        # Block signals so repopulating does not emit spurious settings_changed
-        self.gemini_model_combo.blockSignals(True)
-        self.gemini_model_combo.clear()
-        self.gemini_model_combo.addItems(items)
-
-        index = self.gemini_model_combo.findText(current)
-        if index >= 0:
-            self.gemini_model_combo.setCurrentIndex(index)
-        elif current:
-            # Preserve a custom or no-longer-listed model at the top
-            self.gemini_model_combo.insertItem(0, current)
-            self.gemini_model_combo.setCurrentIndex(0)
-        self.gemini_model_combo.blockSignals(False)
+        self._repopulate_model_combo(self.gemini_model_combo, models,
+                                     self.GEMINI_FALLBACK_MODELS)
 
         if models:
             unreal.log(f"[AI Settings] Loaded {len(models)} Gemini models from the Google Gemini API")
@@ -751,6 +668,145 @@ class AISettingsTab(QWidget):
             if name:
                 models.append(name)
         return models
+
+    def _repopulate_model_combo(self, combo, models, fallback_models):
+        """Repopulate a model dropdown, preserving the current selection.
+
+        Falls back to the built-in list when the API returned nothing.
+        Signals are blocked so repopulating never marks the dialog dirty."""
+        current = combo.currentText()
+        items = models if models else list(fallback_models)
+
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(items)
+
+        index = combo.findText(current)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        elif current:
+            # Preserve a custom or no-longer-listed model at the top
+            combo.insertItem(0, current)
+            combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+    def _fetch_openai_models_direct(self, api_key):
+        """List OpenAI chat/vision models via GET /v1/models.
+
+        Returns the filtered, newest-first model ids. Exceptions propagate
+        to the caller."""
+        import requests
+        response = requests.get(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json().get("data", [])
+
+        # Keep only chat/vision-capable model families
+        include_prefixes = ("gpt-4o", "gpt-4.", "gpt-5", "o3", "o4")
+        exclude_terms = ("audio", "realtime", "transcribe", "tts",
+                         "embedding", "image", "moderation")
+
+        models = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            model_id = entry.get("id", "")
+            if not model_id.startswith(include_prefixes):
+                continue
+            if any(term in model_id for term in exclude_terms):
+                continue
+            models.append(model_id)
+
+        models.sort(reverse=True)
+        return models
+
+    def _fetch_gemini_models(self, api_key):
+        """List Gemini models via the provider module, falling back to the
+        direct REST call. Exceptions propagate to the caller."""
+        try:
+            from core.ai_providers.gemini_provider import GeminiProvider
+        except ImportError:
+            GeminiProvider = None
+
+        if GeminiProvider is not None and hasattr(GeminiProvider, "list_available_models"):
+            return GeminiProvider.list_available_models(api_key)
+        return self._fetch_gemini_models_direct(api_key)
+
+    def auto_refresh_models(self):
+        """Silently refresh the cloud model dropdowns when Settings opens.
+
+        The dropdowns used to show the built-in fallback lists until the
+        user clicked each Refresh button. This fetches the live model lists
+        in a daemon thread for every provider with a saved key and applies
+        them via the _models_fetched signal (queued to the UI thread).
+        No dialogs, no popups: a provider with no key or an unreachable
+        API just keeps its current list."""
+        if self._auto_refresh_started:
+            return
+        self._auto_refresh_started = True
+
+        jobs = []
+        claude_key = self.claude_api_key_edit.text().strip()
+        if claude_key:
+            jobs.append(('claude', claude_key))
+        openai_key = self.openai_api_key_edit.text().strip()
+        if openai_key:
+            jobs.append(('openai', openai_key))
+        gemini_key = self.gemini_api_key_edit.text().strip()
+        if gemini_key:
+            jobs.append(('gemini', gemini_key))
+
+        if not jobs:
+            return
+
+        import threading
+
+        def _worker(jobs=jobs):
+            # No unreal.log / widget access here - this runs off the game
+            # thread. Results (and errors) travel through the queued signal.
+            for provider, key in jobs:
+                models, error = [], ''
+                try:
+                    if provider == 'claude':
+                        from core.ai_providers import ClaudeProvider
+                        models = ClaudeProvider.list_available_models(key) or []
+                    elif provider == 'openai':
+                        models = self._fetch_openai_models_direct(key)
+                    else:
+                        models = self._fetch_gemini_models(key)
+                except Exception as fetch_err:
+                    error = str(fetch_err)
+                try:
+                    self._models_fetched.emit(provider, list(models), error)
+                except RuntimeError:
+                    # Dialog was closed and the C++ widget destroyed - drop
+                    return
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="StoryboardTo3D-ModelAutoRefresh").start()
+
+    def _on_models_auto_fetched(self, provider, models, error):
+        """UI-thread slot: apply one provider's auto-refreshed model list."""
+        try:
+            combos = {
+                'claude': (self.claude_model_combo, self.CLAUDE_FALLBACK_MODELS),
+                'openai': (self.openai_model_combo, self.OPENAI_FALLBACK_MODELS),
+                'gemini': (self.gemini_model_combo, self.GEMINI_FALLBACK_MODELS),
+            }
+            combo, fallback = combos.get(provider, (None, None))
+            if combo is None:
+                return
+            if models:
+                self._repopulate_model_combo(combo, models, fallback)
+                unreal.log(f"[AI Settings] Auto-refreshed {len(models)} {provider} models from the live API")
+            else:
+                reason = error or "no models returned"
+                unreal.log_warning(f"[AI Settings] {provider} model auto-refresh skipped: {reason} (keeping current list)")
+        except Exception as slot_err:
+            unreal.log_warning(f"[AI Settings] Model auto-refresh apply failed: {slot_err}")
 
     def _restore_model_selection(self, combo, saved):
         """Select the saved model, inserting it if the list does not have it.

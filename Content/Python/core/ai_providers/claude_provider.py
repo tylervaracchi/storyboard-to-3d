@@ -158,6 +158,22 @@ class ClaudeProvider(BaseAIProvider):
         self.cache_read_tokens = 0
         self.total_cache_savings = 0.0
 
+    # Model families where the Anthropic API REMOVED sampling params:
+    # temperature/top_p/top_k return 400 unconditionally on these (they
+    # also reject the legacy thinking budget_tokens block - reasoning is
+    # built in / adaptive). Matched as substrings of the model id.
+    SAMPLING_REMOVED_MARKERS = (
+        "opus-4-7", "opus-4-8", "opus-4-9",
+        "sonnet-5", "opus-5", "haiku-5",
+        "fable", "mythos", "claude-5",
+    )
+
+    def _model_accepts_sampling(self):
+        """True when this model still accepts temperature (older models);
+        False for current models where the param was removed from the API."""
+        model = (self.model or "").lower()
+        return not any(marker in model for marker in self.SAMPLING_REMOVED_MARKERS)
+
     @staticmethod
     def _resolve_api_key():
         """
@@ -314,13 +330,19 @@ class ClaudeProvider(BaseAIProvider):
                 }]
             }
 
-            # Add extended thinking for complex spatial reasoning (Sonnet 4+)
+            # Add extended thinking for complex spatial reasoning (Sonnet 4+).
+            # Current models (Opus 4.7+, Sonnet 5, Fable 5) reject the legacy
+            # budget_tokens block - their reasoning is built in / adaptive,
+            # so we simply omit the param for them.
             if self.use_extended_thinking:
-                request_body["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": self.thinking_budget_tokens
-                }
-                unreal.log(f"[Claude] Extended thinking enabled (budget: {self.thinking_budget_tokens} tokens)")
+                if self._model_accepts_sampling():
+                    request_body["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": self.thinking_budget_tokens
+                    }
+                    unreal.log(f"[Claude] Extended thinking enabled (budget: {self.thinking_budget_tokens} tokens)")
+                else:
+                    unreal.log(f"[Claude] {self.model} reasons adaptively by default; legacy thinking param omitted")
 
             # Add system prompt if provided with optional cache control
             # BEST PRACTICE: Cache system prompt (static shot rules, composition guidelines)
@@ -338,14 +360,20 @@ class ClaudeProvider(BaseAIProvider):
                     # Regular string format when caching disabled
                     request_body["system"] = system_prompt
 
-            # Temperature handling: Extended thinking REQUIRES temperature=1.0
+            # Temperature handling. Omitting the field is valid on EVERY
+            # Claude model, so it is only ever sent for older
+            # sampling-compatible models with thinking off:
+            # - Current models (Opus 4.7+, Sonnet 5, Fable 5) removed
+            #   temperature/top_p/top_k from the API entirely (any value 400s)
+            # - Older models with extended thinking enabled require 1.0
             if self.use_extended_thinking:
-                # Extended thinking only works with temperature=1.0, so we must NOT set it
-                # (Claude API will default to 1.0)
                 if temperature != 1.0:
                     unreal.log_warning(f"[Claude] Temperature {temperature} ignored - extended thinking requires 1.0")
+            elif not self._model_accepts_sampling():
+                if temperature != 1.0:
+                    unreal.log(f"[Claude] Temperature {temperature} omitted - {self.model} does not accept sampling params")
             else:
-                # Normal mode: use requested temperature
+                # Older model, thinking off: use requested temperature
                 if temperature != 1.0:
                     request_body["temperature"] = temperature
 
@@ -384,18 +412,32 @@ class ClaudeProvider(BaseAIProvider):
                 timeout=request_timeout
             )
 
-            # Graceful degradation: if the model rejects output_config (older
-            # models return HTTP 400 mentioning it), retry once without it and
-            # fall back to prompt-based JSON parsing downstream.
-            if structured_output_active and response.status_code == 400:
+            # Graceful degradation on HTTP 400: strip whichever optional
+            # param the model rejected and retry once.
+            # - output_config: older models don't support structured outputs
+            # - temperature/top_p/top_k: removed on current models
+            # - thinking/budget_tokens: legacy block rejected on current models
+            if response.status_code == 400:
                 error_detail = ''
                 try:
                     error_detail = response.json().get('error', {}).get('message', '')
                 except Exception:
                     error_detail = response.text or ''
-                if 'output_config' in error_detail:
-                    unreal.log_warning(f"[Claude] Model {self.model} rejected output_config (structured outputs not supported). Retrying once without it.")
+                error_lower = error_detail.lower()
+                retry_needed = False
+                if structured_output_active and 'output_config' in error_detail:
+                    unreal.log_warning(f"[Claude] Model {self.model} rejected output_config (structured outputs not supported). Retrying without it.")
                     request_body.pop('output_config', None)
+                    retry_needed = True
+                if ('temperature' in error_lower or 'top_p' in error_lower or 'top_k' in error_lower):
+                    if request_body.pop('temperature', None) is not None:
+                        unreal.log_warning(f"[Claude] Model {self.model} rejected sampling params. Retrying without temperature.")
+                        retry_needed = True
+                if 'thinking' in error_lower or 'budget_tokens' in error_lower:
+                    if request_body.pop('thinking', None) is not None:
+                        unreal.log_warning(f"[Claude] Model {self.model} rejected the thinking param. Retrying without it.")
+                        retry_needed = True
+                if retry_needed:
                     response = _get_http_session().post(
                         self.base_url,
                         headers=headers,

@@ -694,8 +694,10 @@ class AIClient:
                     "role": "user",
                     "content": content
                 }],
-                "max_tokens": max_tokens,
-                "temperature": 0.7
+                # max_tokens is deprecated on Chat Completions;
+                # max_completion_tokens works for every current model
+                "max_completion_tokens": max_tokens,
+                "temperature": 0.7  # non-reasoning branch only (gpt-4o family accepts 0-2)
             }
 
         return payload

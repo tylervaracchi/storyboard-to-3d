@@ -386,8 +386,10 @@ class GPT4VisionProvider(BaseAIProvider):
                             {"type": "text", "text": prompt}  #  text for GPT-4
                         ] + image_contents
                     }],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature
+                    # max_tokens is deprecated on Chat Completions;
+                    # max_completion_tokens works for every current model
+                    "max_completion_tokens": max_tokens,
+                    "temperature": temperature  # non-reasoning branch only (gpt-4o family accepts 0-2)
                 }
 
                 # Add structured outputs if enabled (GPT-4o/GPT-4-turbo only)

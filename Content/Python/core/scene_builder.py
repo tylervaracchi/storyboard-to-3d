@@ -1422,18 +1422,38 @@ class SceneBuilder:
 
             action = analysis.get('action')
             if isinstance(action, str) and action.strip():
-                return action.strip()
+                return self._focus_action_text(action.strip(), entity_name)
 
             actions = analysis.get('actions')
             if isinstance(actions, str) and actions.strip():
-                return actions.strip()
+                return self._focus_action_text(actions.strip(), entity_name)
             if isinstance(actions, (list, tuple)):
                 joined = ' '.join(str(a) for a in actions if a)
                 if joined.strip():
-                    return joined.strip()
+                    return self._focus_action_text(joined.strip(), entity_name)
         except Exception as e:
             unreal.log_warning(f"[AnimationPicker] Could not read action text: {e}")
         return None
+
+    @staticmethod
+    def _focus_action_text(text: str, entity_name: str) -> str:
+        """Narrow scene-level action text to the clauses mentioning the
+        entity. With one shared description ("A farmer ... stands ...,
+        looking startled at a floating ghost"), every character used to
+        match the FIRST verb in the text - the ghost got the farmer's
+        'stands' instead of its own 'floating'. Falls back to the full
+        text when the entity is not mentioned by name."""
+        try:
+            wanted = str(entity_name).strip().lower().strip('()').strip()
+            if not wanted:
+                return text
+            clauses = [c.strip() for c in re.split(r'[.;,]', text) if c.strip()]
+            hits = [c for c in clauses if wanted in c.lower()]
+            if hits:
+                return '. '.join(hits)
+        except Exception:
+            pass
+        return text
 
     def _apply_auto_animations(self, analysis: Dict[str, Any]) -> None:
         """

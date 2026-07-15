@@ -134,6 +134,14 @@ class SettingsDialog(QDialog):
         # settings section when the user changed nothing.
         self.changes_made = False
 
+        # Silently refresh the AI model dropdowns from the live Models APIs
+        # (background thread; keeps saved selection; no popups) so the lists
+        # are current without the user clicking each Refresh button.
+        try:
+            self.ai_tab.auto_refresh_models()
+        except Exception as e:
+            unreal.log_warning(f"[Settings] Model auto-refresh could not start: {e}")
+
     def apply_settings(self):
         """Apply settings without closing"""
         # Gather settings from all tabs, merging each top-level section

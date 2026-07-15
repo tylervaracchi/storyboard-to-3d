@@ -4281,21 +4281,20 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
                 unreal.log(f"\n    Total images in payload: {image_count}")
 
-                # FEATURE #3: Temperature scheduling (shared helper)
-                temperature = self._iteration_temperature()
-                self._last_temperature = temperature  # recorded by _record_iteration_metrics
-
-                unreal.log(f"FEATURE #3 - Temperature: {temperature} (iteration {self.current_iteration})")
-                if self.current_iteration <= 2:
-                    unreal.log(f"Strategy: EXPLORE solutions (high temperature)")
-                else:
-                    unreal.log(f"Strategy: REFINE/CONVERGE (low temperature)")
+                # TEMPERATURE: never sent to Anthropic. Current models
+                # (Opus 4.7+, Sonnet 5, Fable 5) return 400 for ANY sampling
+                # param - temperature/top_p/top_k were removed from the API -
+                # and older models with thinking enabled require it to be 1.
+                # Omitting it is valid on EVERY Claude model, so the
+                # temperature schedule (FEATURE #3) does not apply here.
+                self._last_temperature = None  # metrics record None
+                unreal.log("FEATURE #3 - Temperature: omitted (Anthropic models manage their own sampling; current models reject the param)")
 
                 # max_tokens sized for the JSON positioning response.
                 # NOTE: extended thinking is NOT enabled in this payload (no
-                # 'thinking' parameter is sent, and the API rejects the
-                # temperature field when thinking is on), so no thinking-
-                # budget headroom is needed. 4096 gives generous JSON room.
+                # 'thinking' parameter is sent; models with thinking on by
+                # default budget it inside max_tokens themselves). 4096
+                # gives generous JSON room.
                 max_tokens = 4096
 
                 payload = {
@@ -4304,14 +4303,13 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                         "role": "user",
                         "content": content
                     }],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature
+                    "max_tokens": max_tokens
                 }
 
                 unreal.log("\n DEBUG: CLAUDE PAYLOAD STRUCTURE")
                 unreal.log(f"Model: {payload['model']}")
                 unreal.log(f"Content items: {len(content)}")
-                unreal.log(f"Temperature: {temperature}")
+                unreal.log(f"Temperature: omitted (not supported on current Anthropic models)")
                 unreal.log(f"Max tokens: {payload['max_tokens']}")
             elif is_gpt5:
                 # GPT-5 Responses API format
@@ -4514,8 +4512,11 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                         "role": "user",
                         "content": content
                     }],
-                    "max_tokens": 2000,
-                    "temperature": temperature  # Dynamic temperature based on iteration
+                    # max_tokens is deprecated on Chat Completions;
+                    # max_completion_tokens works for every current model
+                    # (gpt-4o family included)
+                    "max_completion_tokens": 2000,
+                    "temperature": temperature  # Dynamic temperature (gpt-4o family accepts 0-2)
                 }
 
                 unreal.log("\n DEBUG: GPT-4 PAYLOAD STRUCTURE")
@@ -4648,6 +4649,44 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 unreal.log_error(f"- Out of memory")
                 unreal.log_error(f"Try reducing number of depth maps or image quality")
                 raise  # Re-raise to be caught by outer exception handler
+
+            # Self-healing retry: some current models reject sampling params
+            # with a 400 (e.g. Anthropic models with thinking active only
+            # accept temperature=1: "temperature may only be set to 1 when
+            # thinking is enabled"). Strip temperature and retry once instead
+            # of failing the whole iteration.
+            if response.status_code == 400:
+                try:
+                    err_text = response.text or ''
+                except Exception:
+                    err_text = ''
+                stripped = False
+                if 'temperature' in err_text.lower() or 'thinking' in err_text.lower():
+                    if 'temperature' in payload:
+                        payload.pop('temperature', None)
+                        stripped = True
+                    _options = payload.get('options')
+                    if isinstance(_options, dict) and 'temperature' in _options:
+                        _options.pop('temperature', None)
+                        stripped = True
+                    _gen_cfg = payload.get('generationConfig')
+                    if isinstance(_gen_cfg, dict) and 'temperature' in _gen_cfg:
+                        _gen_cfg.pop('temperature', None)
+                        stripped = True
+                if stripped:
+                    unreal.log_warning(f"[AI] Model rejected sampling params: {err_text[:200]}")
+                    unreal.log_warning("[AI] Retrying once WITHOUT temperature (model manages its own sampling)")
+                    self._last_temperature = None  # metrics: no temperature actually used
+                    try:
+                        response = client.session.post(
+                            endpoint,
+                            json=payload,
+                            headers=request_headers,
+                            timeout=timeout_duration
+                        )
+                    except Exception as retry_error:
+                        unreal.log_error(f"HTTP retry without temperature failed: {retry_error}")
+                        raise
 
             unreal.log(f"\n    HTTP Response: {response.status_code}")
 
