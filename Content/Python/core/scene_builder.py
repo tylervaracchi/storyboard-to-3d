@@ -1078,6 +1078,13 @@ class SceneBuilder:
                 # NOTHING (this made gen3d meshes like the Tripo ghost
                 # invisible). Wrap the mesh in its proper actor class and
                 # assign it on the spawnable's template instead.
+                def _discard_broken(broken):
+                    try:
+                        if broken is not None:
+                            broken.remove()
+                    except Exception:
+                        pass
+
                 try:
                     if isinstance(asset, unreal.StaticMesh):
                         spawnable = sequence.add_spawnable_from_class(unreal.StaticMeshActor)
@@ -1088,6 +1095,7 @@ class SceneBuilder:
                             unreal.log(f"Spawnable '{name}': StaticMeshActor wrapping {asset_path}")
                         else:
                             unreal.log_warning(f"Spawnable '{name}': could not access the StaticMeshActor template")
+                            _discard_broken(spawnable)
                             spawnable = None
                     elif isinstance(asset, unreal.SkeletalMesh):
                         spawnable = sequence.add_spawnable_from_class(unreal.SkeletalMeshActor)
@@ -1101,9 +1109,11 @@ class SceneBuilder:
                             unreal.log(f"Spawnable '{name}': SkeletalMeshActor wrapping {asset_path}")
                         else:
                             unreal.log_warning(f"Spawnable '{name}': could not access the SkeletalMeshActor template")
+                            _discard_broken(spawnable)
                             spawnable = None
                 except Exception as mesh_err:
                     unreal.log_warning(f"Mesh spawnable wrap failed for {name}: {mesh_err}")
+                    _discard_broken(spawnable)
                     spawnable = None
 
                 # Try as blueprint

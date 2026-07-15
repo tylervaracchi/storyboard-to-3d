@@ -991,7 +991,7 @@ class AssetLibraryWidget(QWidget):
                         continue
                     origin, extent = actor.get_actor_bounds(False)
                     max_extent = max(float(extent.x), float(extent.y), float(extent.z))
-                    if max_extent < 100.0:  # ignore sub-1m clutter
+                    if max_extent < 100.0:  # half-extent: ignores items under ~2m full size
                         continue
                     candidates.append((max_extent, label, loc, extent))
                 except Exception:
@@ -1218,7 +1218,10 @@ class AssetLibraryWidget(QWidget):
                 world = ues.get_editor_world()
                 if world:
                     prev_level = str(world.get_package().get_name())
-            except Exception:
+            except Exception as prev_err:
+                unreal.log_warning(
+                    f"[LocationAdd] Could not read the current map ({prev_err}); "
+                    "the previous map will not be restored after capture")
                 prev_level = None
 
             def _load(path):
@@ -1382,17 +1385,25 @@ class AssetLibraryWidget(QWidget):
                 category = 'locations'
             else:
                 category = active_category or built['category']
-            if name in self.library.library.get(category, {}):
-                skipped.append(f"{name} (already in {category})")
-                continue
 
             asset_path = built['entry']['asset_path']
-            # save=False: one save_library() write after the loop instead of
-            # rewriting asset_library.json once per asset (plus once per
-            # thumbnail) for an N-asset selection
-            self.library.add_asset(category, name, asset_path, "", [], save=False)
-            added.append(f"{name} ({category})")
-            unreal.log(f"Added asset from Content Browser: {name} -> {asset_path} [{category}]")
+            existing = name in self.library.library.get(category, {})
+            if existing:
+                # Highlight + Add on an existing entry = REFRESH it:
+                # update the asset path and re-run the thumbnail /
+                # anchor+survey / describe pipeline below. Descriptions
+                # the entry already has are preserved (describe step only
+                # fills empty ones), so nothing user-written is lost.
+                self.library.library[category][name]['asset_path'] = asset_path
+                added.append(f"{name} ({category} - refreshed)")
+                unreal.log(f"Refreshing existing {category} entry from Content Browser: {name} -> {asset_path}")
+            else:
+                # save=False: one save_library() write after the loop instead
+                # of rewriting asset_library.json once per asset (plus once
+                # per thumbnail) for an N-asset selection
+                self.library.add_asset(category, name, asset_path, "", [], save=False)
+                added.append(f"{name} ({category})")
+                unreal.log(f"Added asset from Content Browser: {name} -> {asset_path} [{category}]")
 
             if category == 'locations':
                 # Levels: open the map, capture the viewport as the
@@ -1444,25 +1455,52 @@ class AssetLibraryWidget(QWidget):
             if describe_asset is not None:
                 try:
                     entry = self.library.library[category][name]
-                    unreal.log(f"Auto-describing '{name}' with AI...")
-                    described = describe_asset(
-                        name, entry, provider=describe_provider,
-                        thumb_dir=str(thumb_dir))
-                    if isinstance(described, dict):
-                        entry['description'] = described['description']
-                        entry['aliases'] = merge_aliases(
-                            entry.get('aliases'), described.get('aliases'))
-                        if category == 'characters' and described.get('attached_props'):
-                            entry['attached_props'] = described['attached_props']
-                        describe_cost += float(described.get('cost') or 0.0)
-                        described_count += 1
-                        unreal.log(f"Auto-described '{name}': {entry['description'][:80]}")
+                    if str(entry.get('description') or '').strip():
+                        # Refreshed entry with a real description: keep it
+                        # (thumbnail/anchor/survey above were still updated)
+                        unreal.log(f"'{name}' already described; keeping the existing description")
                     else:
-                        unreal.log_warning(
-                            f"Auto-describe returned nothing for '{name}' "
-                            "(use Edit or AI Describe All to retry)")
+                        unreal.log(f"Auto-describing '{name}' with AI...")
+                        described = describe_asset(
+                            name, entry, provider=describe_provider,
+                            thumb_dir=str(thumb_dir))
+                        if isinstance(described, dict):
+                            entry['description'] = described['description']
+                            entry['aliases'] = merge_aliases(
+                                entry.get('aliases'), described.get('aliases'))
+                            if category == 'characters' and described.get('attached_props'):
+                                entry['attached_props'] = described['attached_props']
+                            describe_cost += float(described.get('cost') or 0.0)
+                            described_count += 1
+                            unreal.log(f"Auto-described '{name}': {entry['description'][:80]}")
+                        else:
+                            unreal.log_warning(
+                                f"Auto-describe returned nothing for '{name}' "
+                                "(use Edit or AI Describe All to retry)")
                 except Exception as e:
                     unreal.log_warning(f"Auto-describe errored for '{name}': {e}")
+
+            # Skeletal characters: auto-discover AnimSequences compatible
+            # with this skeleton into the show's animation library so the
+            # animation picker has real clips (T-pose otherwise - the
+            # samples fallback points at assets this project doesn't have)
+            if category == 'characters':
+                try:
+                    if isinstance(asset, unreal.SkeletalMesh):
+                        from core.animation_cataloger import (
+                            build_show_animation_library_for_skeleton)
+                        anim_result = build_show_animation_library_for_skeleton(
+                            self.current_show, asset_path)
+                        if anim_result.get('added'):
+                            unreal.log(
+                                f"Animation library: auto-added {anim_result['added']} "
+                                f"clips compatible with '{name}' "
+                                f"({anim_result.get('total_compatible', 0)} found)")
+                        elif anim_result.get('skipped_reason'):
+                            unreal.log(f"Animation discovery for '{name}': "
+                                       f"{anim_result['skipped_reason']}")
+                except Exception as e:
+                    unreal.log_warning(f"Animation discovery errored for '{name}': {e}")
 
         # Single write for the whole selection (adds + thumbnails)
         if added:

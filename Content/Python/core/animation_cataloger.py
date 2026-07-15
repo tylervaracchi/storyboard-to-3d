@@ -644,6 +644,134 @@ def _merge_aliases(existing, new_aliases):
     return merged
 
 
+def build_show_animation_library_for_skeleton(show_name, skeletal_mesh_path,
+                                              limit=60):
+    """Discover AnimSequences compatible with a character's skeleton and
+    merge them into the show's animation_library.json.
+
+    Without this the animation picker only ever sees the read-only
+    samples fallback (whose asset paths do not exist in the project), so
+    characters stay in T-pose. Called automatically when a SkeletalMesh
+    character is added from the Content Browser.
+
+    Keys are lowercased asset names; aliases are the name's word tokens
+    (so 'Walk_Fwd' matches action text containing 'walk'). Existing
+    entries are never overwritten. Editor-only; never raises.
+
+    Returns:
+        dict {'added': int, 'total_compatible': int,
+              'library_path': str|None, 'skipped_reason': str|None}
+    """
+    result = {'added': 0, 'total_compatible': 0,
+              'library_path': None, 'skipped_reason': None}
+    try:
+        if not UNREAL_AVAILABLE:
+            result['skipped_reason'] = 'not running in the editor'
+            return result
+
+        asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+        mesh = asset_subsystem.load_asset(str(skeletal_mesh_path)) if asset_subsystem else None
+        if not isinstance(mesh, unreal.SkeletalMesh):
+            result['skipped_reason'] = 'asset is not a SkeletalMesh'
+            return result
+        skeleton = mesh.get_editor_property('skeleton')
+        if skeleton is None:
+            result['skipped_reason'] = 'skeletal mesh has no skeleton'
+            return result
+        skeleton_path = str(skeleton.get_path_name())
+
+        registry = unreal.AssetRegistryHelpers.get_asset_registry()
+        try:
+            anim_class = unreal.TopLevelAssetPath('/Script/Engine', 'AnimSequence')
+            all_anims = list(registry.get_assets_by_class(anim_class, True))
+        except Exception as e:
+            result['skipped_reason'] = 'asset registry query failed: {0}'.format(e)
+            return result
+
+        compatible = []
+        for asset_data in all_anims:
+            try:
+                tag = asset_data.get_tag_value('Skeleton')
+                if tag and skeleton_path in str(tag):
+                    compatible.append(asset_data)
+            except Exception:
+                continue
+        result['total_compatible'] = len(compatible)
+        if not compatible:
+            result['skipped_reason'] = ('no AnimSequences found for skeleton '
+                                        + skeleton_path)
+            _log('No compatible AnimSequences for {0}'.format(skeleton_path))
+            return result
+        if len(compatible) > limit:
+            _log('Found {0} compatible AnimSequences; keeping the first '
+                 '{1}'.format(len(compatible), limit))
+            compatible = compatible[:limit]
+
+        from core.shows_manager import ShowsManager
+        lib_path = (Path(ShowsManager().shows_root) / str(show_name)
+                    / 'animation_library.json')
+        result['library_path'] = str(lib_path)
+
+        data = {'animations': {}}
+        if lib_path.exists():
+            try:
+                with open(str(lib_path), 'r') as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {'animations': {}}
+            except (json.JSONDecodeError, OSError) as e:
+                # Do not clobber a file we cannot read
+                result['skipped_reason'] = 'existing library unreadable: {0}'.format(e)
+                _error('Could not read {0}: {1}'.format(lib_path, e))
+                return result
+        animations = data.setdefault('animations', {})
+        if not isinstance(animations, dict):
+            animations = {}
+            data['animations'] = animations
+
+        import re as _re
+        for asset_data in compatible:
+            try:
+                asset_name = str(asset_data.asset_name)
+                package = str(asset_data.package_name)
+                key = asset_name.lower()
+                if key in animations:
+                    existing_path = str(animations[key].get('asset_path') or '')
+                    if existing_path == package:
+                        continue  # same clip, already in the library
+                    # Different clip sharing a base name (e.g. two packs
+                    # with 'Idle'): disambiguate instead of dropping it
+                    suffix = 2
+                    while f"{key}_{suffix}" in animations:
+                        suffix += 1
+                    key = f"{key}_{suffix}"
+                spaced = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', asset_name)
+                tokens = [t for t in _re.split(r'[^a-zA-Z0-9]+', spaced) if t]
+                aliases = sorted({t.lower() for t in tokens if len(t) > 2})
+                animations[key] = {
+                    'asset_path': package,
+                    'aliases': aliases,
+                    'description': '',
+                }
+                result['added'] += 1
+            except Exception:
+                continue
+
+        if result['added']:
+            lib_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(lib_path), 'w') as f:
+                json.dump(data, f, indent=2)
+            _log('Animation library for show {0}: added {1} clips compatible '
+                 'with {2} -> {3}'.format(show_name, result['added'],
+                                          skeleton_path, lib_path))
+        else:
+            _log('Animation library already contains all compatible clips')
+    except Exception as e:
+        _error('build_show_animation_library_for_skeleton failed: {0}'.format(e))
+        _error(traceback.format_exc())
+    return result
+
+
 def catalog_animation_library(show_name, overwrite=False, progress_cb=None):
     """Fill descriptions and alias lists across a show's animation library.
 

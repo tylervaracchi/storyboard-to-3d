@@ -453,6 +453,13 @@ def capture_level_view(location, rotation, output_png, size):
         comp = get_capture_component(capture)
         if comp is None:
             return False
+        # Pin the FOV explicitly: the survey's coordinate-grid math assumes
+        # 90 deg (ground span = 2x height for a straight-down shot), so
+        # enforce it rather than trusting the engine default to never change
+        try:
+            comp.set_editor_property('fov_angle', 90.0)
+        except Exception:
+            pass
         rt = _make_ldr_render_target(max(int(size), 16))
         if rt is None:
             return False
@@ -516,6 +523,8 @@ def overlay_coordinate_grid(input_png, output_png, center_x, center_y,
         except ImportError:
             _log('PIL unavailable; cannot draw the survey coordinate grid')
             return False
+        if grid_step <= 0:
+            grid_step = 500  # a non-positive step would hang the loops below
         img = Image.open(str(input_png)).convert('RGB')
         width, height = img.size
         draw = ImageDraw.Draw(img)
