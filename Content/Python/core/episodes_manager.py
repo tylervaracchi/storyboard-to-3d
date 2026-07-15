@@ -119,8 +119,15 @@ class EpisodesManager:
         (episode_path / "Assets").mkdir(exist_ok=True)
         (episode_path / "Scripts").mkdir(exist_ok=True)
 
-        # Create metadata
+        # Create metadata. The directory name may have been deduped above
+        # (e.g. Episode_01 -> Episode_01_1), so force safe_name to match the
+        # ACTUAL directory instead of the raw episode-name derivation.
         metadata = self.create_episode_metadata(episode_name, episode_path)
+        if metadata.get('safe_name') != episode_path.name:
+            metadata['safe_name'] = episode_path.name
+            metadata_file = episode_path / "episode_metadata.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
 
         unreal.log(f"Created episode: {episode_name} in show: {show_name}")
 

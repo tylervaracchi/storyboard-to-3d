@@ -1085,14 +1085,24 @@ def _build_toolset_class(tool_call, base_class):
             })
 
         @tool_call
-        def render_animatic(self) -> str:
-            """Render an animatic from the current scene, if the module exists.
+        def render_animatic(self, master_sequence_path: str, level_path: str = "") -> str:
+            """Render an animatic from a master sequence, if the module exists.
 
             Lazily imports core.animatic_renderer (an optional module
             that may not be present in this build) and calls its
-            render_animatic() entry point. When the module is absent
-            this tool reports that cleanly instead of raising, so the
-            toolset works with or without the animatic feature.
+            render_animatic(master_sequence_path, level_path=...) entry
+            point. When the module is absent this tool reports that
+            cleanly instead of raising, so the toolset works with or
+            without the animatic feature.
+
+            Args:
+                master_sequence_path: Asset path of the master level
+                    sequence to render (e.g.
+                    '/Game/Shows/MyShow/Sequences/Master_EP01').
+                    Required.
+                level_path: Optional asset path of the level to load
+                    before rendering. Empty string uses the renderer's
+                    default (current level).
 
             Returns:
                 JSON string: {"success": true, "result": ...} from the
@@ -1100,6 +1110,9 @@ def _build_toolset_class(tool_call, base_class):
                 module not available"} when the module or its entry
                 point is missing.
             """
+            if not master_sequence_path or not str(master_sequence_path).strip():
+                return _json_error("master_sequence_path is required")
+
             try:
                 from core import animatic_renderer
             except ImportError:
@@ -1115,7 +1128,8 @@ def _build_toolset_class(tool_call, base_class):
                     "(render_animatic entry point missing)")
 
             try:
-                result = render_func()
+                result = render_func(str(master_sequence_path),
+                                     level_path=str(level_path) or None)
             except Exception as e:
                 return _json_error("Animatic render failed: {0}".format(e))
 

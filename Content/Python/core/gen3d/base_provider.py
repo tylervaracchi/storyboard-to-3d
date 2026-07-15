@@ -393,12 +393,15 @@ class Gen3DProvider(object):
 
         if not api_key:
             # Settings UI key (Features tab), e.g. 'gen3d.tripo_api_key'.
+            # Keyed by provider name (self.name), NOT config_key_name: the
+            # Features tab saves 'gen3d.tripo_api_key' while Tripo's config
+            # key is 'tripo3d', so formatting config_key_name silently missed.
             # settings_manager imports unreal, so this is editor-only; guarded
             # so headless use falls through to the config path unchanged.
             try:
                 from core.settings_manager import get_setting
                 candidate = get_setting(
-                    "gen3d.{}_api_key".format(config_key_name), None)
+                    "gen3d.{}_api_key".format(self.name), None)
                 if candidate:
                     api_key = str(candidate).strip() or None
             except Exception:

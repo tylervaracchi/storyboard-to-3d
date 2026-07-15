@@ -375,8 +375,8 @@ class GenAnimProvider(object):
             return float(self.DEFAULT_TIMEOUT_SECONDS)
 
     @staticmethod
-    def _lookup_key(env_var, config_key_name):
-        # type: (str, str) -> Optional[str]
+    def _lookup_key(env_var, config_key_name, settings_key_name=None):
+        # type: (str, str, Optional[str]) -> Optional[str]
         """
         Uncached key lookup shared by _resolve_api_key and providers that
         need more than one credential (DeepMotion id + secret):
@@ -394,12 +394,16 @@ class GenAnimProvider(object):
             return api_key
 
         # Settings UI key (Features tab), e.g. 'genanim.tripo_api_key'.
+        # Keyed by provider name when the caller supplies one (the Features
+        # tab saves 'genanim.tripo_api_key' while Tripo's config key is
+        # 'tripo3d', so formatting config_key_name silently missed).
         # settings_manager imports unreal; guarded so headless use falls
         # through to the config path unchanged.
         try:
             from core.settings_manager import get_setting
             candidate = get_setting(
-                "genanim.{}_api_key".format(config_key_name), None)
+                "genanim.{}_api_key".format(
+                    settings_key_name or config_key_name), None)
             if candidate:
                 candidate = str(candidate).strip()
                 if candidate:
@@ -439,7 +443,11 @@ class GenAnimProvider(object):
             return self._api_key
 
         self._api_key_resolved = True
-        self._api_key = self._lookup_key(env_var, config_key_name)
+        # Settings-UI lookup is keyed by provider name (self.name); safe for
+        # DeepMotion (name='deepmotion' has no settings key, so resolution
+        # falls through to env/config exactly as before).
+        self._api_key = self._lookup_key(env_var, config_key_name,
+                                         settings_key_name=self.name)
         return self._api_key
 
     @staticmethod

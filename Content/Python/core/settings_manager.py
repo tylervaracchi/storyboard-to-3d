@@ -101,7 +101,9 @@ class SettingsManager:
 
             # AI Settings (general)
             'ai_settings': {
-                'provider': 'Ollama (Local)',
+                # Must match an AI-tab combo item ('LLaVA (Local)'); the old
+                # 'Ollama (Local)' default is still mapped in ai_tab.load_settings
+                'provider': 'LLaVA (Local)',
                 'api_key': '',
                 'endpoint': '',
                 'text_model': 'llama3.2',

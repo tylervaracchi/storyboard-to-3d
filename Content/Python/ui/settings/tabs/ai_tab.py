@@ -437,21 +437,32 @@ class AISettingsTab(QWidget):
         QApplication.processEvents()
 
         try:
-            # core.ai_providers resolves via the plugin root already on
-            # sys.path while the UI is running - no hardcoded
-            # Plugins/StoryboardTo3D path insertion needed (the old block
-            # was copy-pasted four times and assumed the plugin folder name)
-
-            from core.ai_providers import GPT4VisionProvider
-
-            gpt4v = GPT4VisionProvider(api_key=api_key)
+            # Real round-trip to the OpenAI API: is_available() only checks
+            # that the key string is non-empty, so it would report success
+            # for ANY non-empty key. Mirror refresh_openai_models instead.
+            import requests
+            response = requests.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10
+            )
 
             progress.close()
 
-            if gpt4v.is_available():
+            if response.ok:
                 QMessageBox.information(self, "Success", " OpenAI API key is valid!")
             else:
-                QMessageBox.warning(self, "Failed", "API key validation failed")
+                detail = ""
+                try:
+                    detail = response.text[:500]
+                except Exception:
+                    pass
+                hint = ""
+                if response.status_code in (401, 403):
+                    hint = "\n\nThe API key appears to be invalid."
+                QMessageBox.warning(
+                    self, "Failed",
+                    f"OpenAI API returned status {response.status_code}{hint}\n\n{detail}")
 
         except Exception as e:
             progress.close()
@@ -471,21 +482,39 @@ class AISettingsTab(QWidget):
         QApplication.processEvents()
 
         try:
-            # core.ai_providers resolves via the plugin root already on
-            # sys.path while the UI is running - no hardcoded
-            # Plugins/StoryboardTo3D path insertion needed (the old block
-            # was copy-pasted four times and assumed the plugin folder name)
-
+            # Real round-trip to the Anthropic API: is_available() only checks
+            # that the key string is non-empty, and list_available_models
+            # swallows all errors (returns []), so neither can distinguish an
+            # invalid key from a network failure. Hit the Models endpoint
+            # directly so HTTP errors surface here.
+            import requests
             from core.ai_providers import ClaudeProvider
 
-            claude = ClaudeProvider(api_key=api_key)
+            response = requests.get(
+                ClaudeProvider.MODELS_URL,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": ClaudeProvider.API_VERSION,
+                },
+                timeout=10
+            )
 
             progress.close()
 
-            if claude.is_available():
+            if response.ok:
                 QMessageBox.information(self, "Success", " Anthropic API key is valid!")
             else:
-                QMessageBox.warning(self, "Failed", "API key validation failed")
+                detail = ""
+                try:
+                    detail = response.text[:500]
+                except Exception:
+                    pass
+                hint = ""
+                if response.status_code in (401, 403):
+                    hint = "\n\nThe API key appears to be invalid."
+                QMessageBox.warning(
+                    self, "Failed",
+                    f"Anthropic API returned status {response.status_code}{hint}\n\n{detail}")
 
         except Exception as e:
             progress.close()
@@ -743,11 +772,21 @@ class AISettingsTab(QWidget):
         """Load settings into UI"""
         ai_settings = self.settings.get('ai_settings', {})
 
-        # Provider
+        # Provider. Map legacy stored names first (the settings-manager
+        # default 'Ollama (Local)' predates the 'LLaVA (Local)' combo item),
+        # then restore any still-unknown value with the insert-and-select
+        # pattern instead of silently reverting to 'Auto' (index 0).
         provider = ai_settings.get('provider', 'Auto')
+        legacy_provider_map = {'Ollama (Local)': 'LLaVA (Local)'}
+        provider = legacy_provider_map.get(provider, provider)
+        self.provider_combo.blockSignals(True)
         index = self.provider_combo.findText(provider)
         if index >= 0:
             self.provider_combo.setCurrentIndex(index)
+        elif provider:
+            self.provider_combo.insertItem(0, provider)
+            self.provider_combo.setCurrentIndex(0)
+        self.provider_combo.blockSignals(False)
 
         # LLaVA
         self.llava_url_edit.setText(ai_settings.get('llava_url', 'http://localhost:11434'))

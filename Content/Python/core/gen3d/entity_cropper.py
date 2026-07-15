@@ -6,10 +6,12 @@ AI Entity Cropper
 Given a storyboard panel image and an entity (name + description), asks
 the configured vision provider for the entity's normalized bounding box
 as strict JSON ({'x','y','width','height'}, each 0-1 fractions of the
-image), then crops that region out with PIL and saves it next to the
-panel as <panel>_crop_<safe_entity>.png. The crop gets ~12% padding on
-every side, is clamped to the image bounds, and is upscaled so its
-smaller edge is at least 256px.
+image), then crops that region out with PIL and saves it as
+<panel>_crop_<safe_entity>.png under Saved/StoryboardTo3D/Crops (system
+temp dir outside UE) - never next to the panel, where enumerators would
+pick it up as a phantom panel. The crop gets ~12% padding on every
+side, is clamped to the image bounds, and is upscaled so its smaller
+edge is at least 256px.
 
 The provider call mirrors core/asset_cataloger.py exactly: one image via
 provider.analyze_images() with a json_schema kwarg (Claude honors it via
@@ -54,6 +56,25 @@ def _log_warning(message):
         unreal.log_warning(message)
     else:
         print("WARNING: {}".format(message))
+
+
+def _crop_output_dir():
+    """Directory for saved entity crops, created on demand.
+
+    NEVER the panel's own directory: episode panel enumerators glob the
+    Panels folder for *.png, so crops written there become phantom
+    storyboard panels. In-editor this is Saved/StoryboardTo3D/Crops;
+    outside UE it falls back to the system temp directory.
+    """
+    if unreal is not None and hasattr(unreal, 'Paths'):
+        base = os.path.join(unreal.Paths.project_saved_dir(),
+                            'StoryboardTo3D', 'Crops')
+    else:
+        import tempfile
+        base = os.path.join(tempfile.gettempdir(),
+                            'StoryboardTo3D', 'Crops')
+    os.makedirs(base, exist_ok=True)
+    return base
 
 
 # Crop geometry constants
@@ -265,11 +286,14 @@ def crop_entity(panel_image_path, entity_name, entity_description=None,
                 resample = getattr(Image, 'LANCZOS', Image.BICUBIC)
                 crop = crop.resize(new_size, resample)
 
-            panel_dir = os.path.dirname(os.path.abspath(panel_image_path))
+            # Save crops OUTSIDE the panel directory: panel enumerators
+            # glob the episode's Panels folder for *.png, so a crop saved
+            # next to the panel would show up as a phantom storyboard panel.
+            crop_dir = _crop_output_dir()
             panel_stem = os.path.splitext(
                 os.path.basename(panel_image_path))[0]
             crop_path = os.path.join(
-                panel_dir, '{}_crop_{}.png'.format(
+                crop_dir, '{}_crop_{}.png'.format(
                     panel_stem, safe_entity_filename(entity_name)))
             crop.save(crop_path, 'PNG')
 

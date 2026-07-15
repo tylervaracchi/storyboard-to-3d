@@ -204,8 +204,13 @@ class ModernStoryboardWindow(QMainWindow):
         # a show used the previous show's context.)
         self.update_active_panel_context()
 
-        # Clear panels until episode is selected
+        # Clear panels until episode is selected. Also drop the previous
+        # show's episode/panel context so Import Panels can't target a
+        # phantom episode path from the old show.
         self.panels = []
+        self.current_episode = None
+        self.current_episode_path = None
+        self.active_panel = None
         self.panel_grid.set_panels([])
         self.panels_episode_label.setText("Select an episode")
         if hasattr(self, 'active_panel_widget'):
@@ -248,6 +253,13 @@ class ModernStoryboardWindow(QMainWindow):
 
         # Update panels label
         self.panels_episode_label.setText(f"Episode: {episode_data['name']}")
+
+        # Drop the previous episode's active panel BEFORE loading, so
+        # on_panel_clicked's save-before-switch cannot write the old
+        # episode's panel state into this episode's panels_metadata.json.
+        self.active_panel = None
+        if hasattr(self, 'active_panel_widget'):
+            self.active_panel_widget.clear_panel()
 
         # Load panels for this episode
         self.load_episode_panels()

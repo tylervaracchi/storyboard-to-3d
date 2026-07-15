@@ -1871,6 +1871,12 @@ class ActivePanelWidget(QWidget):
             if not level_loaded:
                 unreal.log_error(f"Failed to load level for location '{location}'")
                 unreal.log_error(f"Cannot continue with capture - sequence won't be visible")
+                if self.batch_capture_mode:
+                    # [AbortFix] No modal dialog in batch mode - record the
+                    # failure and keep the batch queue advancing.
+                    self._abort_capture_run(
+                        f"Failed to load level for location '{location}'")
+                    return
                 QMessageBox.warning(
                     self, "Cannot Capture",
                     f"Failed to load the level for location '{location}'.\n\n"
@@ -1896,6 +1902,10 @@ class ActivePanelWidget(QWidget):
 
                 if not sequence_asset:
                     unreal.log_error(f"Failed to load sequence asset: {sequence_path}")
+                    if self.batch_capture_mode:
+                        self._abort_capture_run(
+                            f"Failed to load sequence asset: {sequence_path}")
+                        return
                     QMessageBox.warning(
                         self, "Cannot Capture",
                         f"Failed to load the sequence asset:\n{sequence_path}\n\n"
@@ -1919,6 +1929,9 @@ class ActivePanelWidget(QWidget):
                 unreal.log_error(f"Failed to open sequence: {e}")
                 import traceback
                 unreal.log_error(traceback.format_exc())
+                if self.batch_capture_mode:
+                    self._abort_capture_run(f"Failed to open sequence: {e}")
+                    return
                 QMessageBox.warning(
                     self, "Cannot Capture",
                     f"Failed to open the sequence in Sequencer:\n{e}")
@@ -1926,6 +1939,10 @@ class ActivePanelWidget(QWidget):
         else:
             unreal.log_warning("No sequence_path in panel data - cannot open sequence")
             unreal.log_warning("Generate the scene first before capturing")
+            if self.batch_capture_mode:
+                self._abort_capture_run(
+                    "No sequence_path in panel data - generate the scene first")
+                return
             QMessageBox.warning(
                 self, "Cannot Capture",
                 "No generated scene for this panel.\n\nClick GENERATE first.")
@@ -5906,6 +5923,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
         # Reset iteration state
         self.auto_iterate = False
+        self.capture_workflow_active = False
         self.current_iteration = 0
 
     # [AdaptiveViews] Views kept during reduced refinement iterations. Hero is
@@ -8078,6 +8096,7 @@ You can edit them before generating the scene.{available_info}"""
         )
 
         # Reset batch mode and clear results
+        self.capture_workflow_active = False
         self.batch_capture_mode = False
         self.batch_capture_queue = []
         self.batch_capture_results = []
