@@ -435,19 +435,19 @@ def _get_viewport_camera_info():
     return None, None
 
 
-def _capture_loaded_level_thumbnail(output_png, size):
-    """Capture the currently open level from the editor viewport camera
-    with a temporary SceneCapture2D (least invasive in-editor capture:
-    the viewport camera is read, never moved, and the capture actor is
-    destroyed in the finally block). True when a valid PNG was written."""
+def capture_level_view(location, rotation, output_png, size):
+    """Capture the currently open level from an ARBITRARY camera pose with
+    a temporary SceneCapture2D (the editor viewport is never read or
+    moved; the capture actor is destroyed in the finally block). Used by
+    the location survey and the loaded-level thumbnail. True when a valid
+    PNG was written."""
     capture = None
     try:
         if not RIG_HELPERS_AVAILABLE or get_editor_world() is None:
             return False
-        cam_location, cam_rotation = _get_viewport_camera_info()
-        if cam_location is None or cam_rotation is None:
+        if location is None or rotation is None:
             return False
-        capture = spawn_capture_actor(cam_location, cam_rotation)
+        capture = spawn_capture_actor(location, rotation)
         if capture is None:
             return False
         comp = get_capture_component(capture)
@@ -480,10 +480,90 @@ def _capture_loaded_level_thumbnail(output_png, size):
                 pass
         return False
     except Exception as e:
-        _log('Loaded-level viewport capture failed: {0}'.format(e))
+        _log('Level view capture failed: {0}'.format(e))
         return False
     finally:
         _destroy_actor(capture)
+
+
+def _capture_loaded_level_thumbnail(output_png, size):
+    """Capture the currently open level from the editor viewport camera
+    (least invasive: the camera is read, never moved). True when a valid
+    PNG was written."""
+    try:
+        cam_location, cam_rotation = _get_viewport_camera_info()
+    except Exception:
+        return False
+    return capture_level_view(cam_location, cam_rotation, output_png, size)
+
+
+def overlay_coordinate_grid(input_png, output_png, center_x, center_y,
+                            span, grid_step=500):
+    """Burn a labeled world-coordinate grid onto a top-down capture.
+
+    VLMs are unreliable at regressing metric coordinates from raw images;
+    a Scaffold/Set-of-Mark style grid with world-coordinate tick labels
+    turns 'estimate the position' into 'read the position off the grid',
+    which is the proven protocol. The image is assumed to be a straight-
+    down capture whose center is world point (center_x, center_y), TOP
+    edge toward +X, RIGHT edge toward +Y, covering span x span units.
+
+    Returns True when the annotated PNG was written.
+    """
+    try:
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            _log('PIL unavailable; cannot draw the survey coordinate grid')
+            return False
+        img = Image.open(str(input_png)).convert('RGB')
+        width, height = img.size
+        draw = ImageDraw.Draw(img)
+        px_per_unit = width / float(span)
+        half = span / 2.0
+
+        def world_to_px(wx, wy):
+            # +X is up in the image, +Y is right
+            px = (wy - center_y + half) * px_per_unit
+            py = (half - (wx - center_x)) * px_per_unit
+            return px, py
+
+        import math
+        start_x = math.floor((center_x - half) / grid_step) * grid_step
+        start_y = math.floor((center_y - half) / grid_step) * grid_step
+        line_color = (255, 255, 0)
+        text_color = (255, 255, 0)
+
+        wx = start_x
+        while wx <= center_x + half:
+            _, py = world_to_px(wx, center_y)
+            if 0 <= py <= height:
+                draw.line([(0, py), (width, py)], fill=line_color, width=1)
+                draw.text((4, max(py - 12, 0)), f"X={wx:.0f}", fill=text_color)
+            wx += grid_step
+        wy = start_y
+        while wy <= center_y + half:
+            px, _ = world_to_px(center_x, wy)
+            if 0 <= px <= width:
+                draw.line([(px, 0), (px, height)], fill=line_color, width=1)
+                draw.text((min(px + 3, width - 60), height - 14), f"Y={wy:.0f}",
+                          fill=text_color)
+            wy += grid_step
+
+        # Stage center marker
+        cx_px, cy_px = world_to_px(center_x, center_y)
+        r = 6
+        draw.ellipse([cx_px - r, cy_px - r, cx_px + r, cy_px + r],
+                     outline=(255, 60, 60), width=2)
+        draw.text((cx_px + 8, cy_px - 6), "STAGE", fill=(255, 60, 60))
+
+        out = Path(output_png)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img.save(str(out), 'PNG')
+        return is_valid_png(out)
+    except Exception as e:
+        _warn('Could not draw the survey grid: {0}'.format(e))
+        return False
 
 
 def write_location_placeholder(output_png, location_name, size=DEFAULT_THUMBNAIL_SIZE):

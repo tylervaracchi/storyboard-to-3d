@@ -958,19 +958,253 @@ class AssetLibraryWidget(QWidget):
             return None
         return {0: 'characters', 1: 'props', 2: 'locations'}.get(index)
 
-    def _capture_location_on_add(self, name, asset_path, out_png):
+    def _gather_level_landmark_actors(self, cx, cy, radius, limit=30):
+        """Ground-truth landmark inventory from the open level: labels and
+        exact world positions/sizes of the significant placed actors near
+        the stage. The engine already knows where everything is - the AI
+        only needs to NAME things, never measure them.
+
+        Returns a list of one-line strings ready for the survey prompt.
+        Never raises.
+        """
+        lines = []
+        try:
+            actor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+            if actor_subsystem is None:
+                return lines
+            skip_terms = ('light', 'volume', 'playerstart', 'fog', 'sky',
+                          'atmosphere', 'postprocess', 'camera', 'brush',
+                          'landscape', 'navmesh', 'worldsettings', 'recast',
+                          'reflection', 'audio', 'capture', 'trigger')
+            candidates = []
+            for actor in actor_subsystem.get_all_level_actors() or []:
+                try:
+                    class_name = type(actor).__name__.lower()
+                    label = str(actor.get_actor_label())
+                    if any(term in class_name for term in skip_terms):
+                        continue
+                    if any(term in label.lower() for term in skip_terms):
+                        continue
+                    loc = actor.get_actor_location()
+                    dx, dy = float(loc.x) - cx, float(loc.y) - cy
+                    if (dx * dx + dy * dy) ** 0.5 > radius:
+                        continue
+                    origin, extent = actor.get_actor_bounds(False)
+                    max_extent = max(float(extent.x), float(extent.y), float(extent.z))
+                    if max_extent < 100.0:  # ignore sub-1m clutter
+                        continue
+                    candidates.append((max_extent, label, loc, extent))
+                except Exception:
+                    continue
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            for _, label, loc, extent in candidates[:limit]:
+                lines.append(
+                    f"- {label}: (X={float(loc.x):.0f}, Y={float(loc.y):.0f}, "
+                    f"Z={float(loc.z):.0f}), size {float(extent.x) / 50.0:.0f}x"
+                    f"{float(extent.y) / 50.0:.0f}x{float(extent.z) / 50.0:.0f}m")
+        except Exception as e:
+            unreal.log_warning(f"[Survey] Actor inventory unavailable: {e}")
+        return lines
+
+    def _survey_location(self, name, stage_center, describe_provider):
+        """Map the open level: capture a posed top-down overview plus four
+        compass views around the stage anchor (temporary SceneCapture2D,
+        the editor viewport is never moved), then have the vision provider
+        turn them into a landmark map with estimated world coordinates.
+
+        This follows the posed-multi-view approach used by VLM spatial
+        mapping systems: a top-down map with a known ground span is the
+        coordinate reference, eye-level views identify what things are.
+        SceneBuilder / the positioning prompt consume the result so the
+        AI knows where the barn, fences, and open areas actually are.
+
+        Args:
+            name: location display name (used for filenames/logs).
+            stage_center: (x, y, z) tuple of the recorded stage anchor.
+            describe_provider: vision provider to build the landmark map,
+                or None to capture posed images only.
+
+        Returns:
+            Survey dict {'points': [...], 'landmarks': [...],
+            'open_areas': [...]} or None when nothing could be captured.
+            Never raises.
+        """
+        try:
+            from core.thumbnail_generator import capture_level_view, safe_thumbnail_filename
+            cx, cy, cz = (float(stage_center[0]), float(stage_center[1]),
+                          float(stage_center[2]))
+
+            survey_dir = Path(self.current_show_path) / "Survey"
+            base = safe_thumbnail_filename(name)
+
+            top_height = 2500.0   # capture FOV is ~90 deg -> ground span ~2x height
+            eye_height = 170.0
+            shots = [
+                ('top_down',
+                 unreal.Vector(cx, cy, cz + top_height),
+                 unreal.Rotator(pitch=-90.0, yaw=0.0, roll=0.0)),
+                ('yaw000',
+                 unreal.Vector(cx, cy, cz + eye_height),
+                 unreal.Rotator(pitch=-5.0, yaw=0.0, roll=0.0)),
+                ('yaw090',
+                 unreal.Vector(cx, cy, cz + eye_height),
+                 unreal.Rotator(pitch=-5.0, yaw=90.0, roll=0.0)),
+                ('yaw180',
+                 unreal.Vector(cx, cy, cz + eye_height),
+                 unreal.Rotator(pitch=-5.0, yaw=180.0, roll=0.0)),
+                ('yaw270',
+                 unreal.Vector(cx, cy, cz + eye_height),
+                 unreal.Rotator(pitch=-5.0, yaw=270.0, roll=0.0)),
+            ]
+
+            points = []
+            for tag, loc, rot in shots:
+                png = survey_dir / f"{base}_{tag}.png"
+                try:
+                    if capture_level_view(loc, rot, str(png), 640):
+                        points.append({
+                            'tag': tag,
+                            'image': str(png),
+                            'camera': {
+                                'location': {'x': float(loc.x), 'y': float(loc.y), 'z': float(loc.z)},
+                                'rotation': {'pitch': float(rot.pitch), 'yaw': float(rot.yaw), 'roll': float(rot.roll)},
+                            },
+                        })
+                    else:
+                        unreal.log_warning(f"[Survey] Capture failed for '{tag}'")
+                except Exception as shot_err:
+                    unreal.log_warning(f"[Survey] Capture errored for '{tag}': {shot_err}")
+
+            if not points:
+                unreal.log_warning(f"[Survey] No survey captures for '{name}'")
+                return None
+
+            # Burn a labeled world-coordinate grid onto the top-down map
+            # (Scaffold/Set-of-Mark protocol: VLMs read coordinates off a
+            # labeled grid far more reliably than they estimate them)
+            span = top_height * 2.0
+            for point in points:
+                if point['tag'] != 'top_down':
+                    continue
+                try:
+                    from core.thumbnail_generator import overlay_coordinate_grid
+                    grid_png = survey_dir / f"{base}_top_down_grid.png"
+                    if overlay_coordinate_grid(point['image'], str(grid_png),
+                                               cx, cy, span):
+                        point['image'] = str(grid_png)
+                        point['grid'] = True
+                except Exception as grid_err:
+                    unreal.log_warning(f"[Survey] Grid overlay failed: {grid_err}")
+
+            # Ground-truth actor inventory: exact names + coordinates from
+            # the engine (the AI's job is naming/regions, not measuring)
+            inventory_lines = self._gather_level_landmark_actors(cx, cy, span / 2.0)
+
+            survey = {'points': points, 'landmarks': [], 'open_areas': []}
+            unreal.log(f"[Survey] '{name}': captured {len(points)} posed views, "
+                       f"{len(inventory_lines)} inventory actors")
+
+            if describe_provider is None:
+                unreal.log("[Survey] No AI provider; posed images stored without a landmark map")
+                return survey
+
+            span = int(span)
+            pose_lines = []
+            for idx, point in enumerate(points, 1):
+                cam = point['camera']
+                if point['tag'] == 'top_down':
+                    grid_note = (" Yellow gridlines with X=/Y= labels show EXACT world "
+                                 "coordinates - read positions off them; the red circle "
+                                 "marks the stage center." if point.get('grid') else "")
+                    pose_lines.append(
+                        f"Image {idx} (TOP-DOWN MAP): camera at "
+                        f"({cam['location']['x']:.0f}, {cam['location']['y']:.0f}, {cam['location']['z']:.0f}) "
+                        "looking straight down. The image TOP edge points toward +X, the RIGHT edge "
+                        f"toward +Y. The visible ground spans roughly {span}x{span} units and the image "
+                        f"center is world point ({cx:.0f}, {cy:.0f}).{grid_note}")
+                else:
+                    yaw = cam['rotation']['yaw']
+                    pose_lines.append(
+                        f"Image {idx}: eye-level camera at ({cam['location']['x']:.0f}, "
+                        f"{cam['location']['y']:.0f}, {cam['location']['z']:.0f}) looking yaw {yaw:.0f} deg.")
+
+            inventory_block = ""
+            if inventory_lines:
+                inventory_block = (
+                    "\nGROUND-TRUTH ACTOR INVENTORY (exact engine coordinates - "
+                    "prefer these over visual estimates; your job is to give them "
+                    "human-meaningful names and group them):\n"
+                    + "\n".join(inventory_lines[:30]) + "\n")
+
+            survey_prompt = (
+                "You are mapping a 3D game level for cinematic staging. All "
+                f"{len(points)} images are posed screenshots of the SAME level.\n"
+                "Units: Unreal (1 meter = 100 units). Coordinates: X forward, Y right, "
+                "Z up; yaw 0 looks toward +X, yaw 90 toward +Y.\n\n"
+                + "\n".join(pose_lines) + "\n"
+                + inventory_block +
+                "\nTask: identify up to 12 major landmarks (buildings, structures, "
+                "terrain features, fences, roads) and up to 4 open clear areas "
+                "suitable for staging characters. For anything in the inventory, "
+                "use its exact coordinates and give it a human-readable name; for "
+                "regions (clearings, paths, crop fields) read coordinates off the "
+                "labeled grid on the TOP-DOWN map. Use the eye-level views to "
+                "recognize what things are. Ground Z near the stage is about "
+                f"{cz:.0f}.\n"
+                'Return STRICT JSON only: {"landmarks": [{"name": str, "x": float, '
+                '"y": float, "z": float, "notes": str}], "open_areas": '
+                '[{"name": str, "x": float, "y": float}]}')
+
+            try:
+                result = describe_provider.analyze_images(
+                    [p['image'] for p in points], survey_prompt, max_tokens=2048)
+                if isinstance(result, dict) and result.get('success'):
+                    from core.json_extractor import parse_llm_json
+                    parsed = parse_llm_json(result.get('response') or '')
+                    if isinstance(parsed, dict):
+                        landmarks = [lm for lm in (parsed.get('landmarks') or [])
+                                     if isinstance(lm, dict) and lm.get('name')][:12]
+                        open_areas = [oa for oa in (parsed.get('open_areas') or [])
+                                      if isinstance(oa, dict) and oa.get('name')][:4]
+                        survey['landmarks'] = landmarks
+                        survey['open_areas'] = open_areas
+                        unreal.log(f"[Survey] '{name}': mapped {len(landmarks)} landmarks, "
+                                   f"{len(open_areas)} open areas "
+                                   f"(cost ${float(result.get('cost') or 0.0):.4f})")
+                        for lm in landmarks:
+                            try:
+                                unreal.log(f"[Survey]   {lm.get('name')}: "
+                                           f"({float(lm.get('x', 0)):.0f}, {float(lm.get('y', 0)):.0f})")
+                            except (TypeError, ValueError):
+                                pass
+                else:
+                    reason = result.get('error') if isinstance(result, dict) else 'no result'
+                    unreal.log_warning(f"[Survey] Landmark mapping call failed: {reason}")
+            except Exception as map_err:
+                unreal.log_warning(f"[Survey] Landmark mapping errored: {map_err}")
+
+            return survey
+        except Exception as e:
+            unreal.log_warning(f"[Survey] Survey failed for '{name}': {e}")
+            return None
+
+    def _capture_location_on_add(self, name, asset_path, out_png,
+                                 describe_provider=None):
         """Open a location's map, capture the editor viewport as its
         thumbnail, record the camera pose plus a traced ground point as
-        the location's stage anchor, then restore the previously open map.
+        the location's stage anchor, run the multi-view survey (posed
+        captures -> AI landmark map), then restore the previously open map.
 
         The recorded 'camera_start' / 'stage_center' are what SceneBuilder
         uses to build scenes at a known-good vantage instead of world
-        origin (which may be inside scenery).
+        origin (which may be inside scenery); 'survey' feeds the
+        positioning prompt's SCENE LANDMARKS.
 
         Returns {'thumbnail': bool, 'camera_start': dict|None,
-        'stage_center': dict|None}. Never raises.
+        'stage_center': dict|None, 'survey': dict|None}. Never raises.
         """
-        result = {'thumbnail': False, 'camera_start': None, 'stage_center': None}
+        result = {'thumbnail': False, 'camera_start': None,
+                  'stage_center': None, 'survey': None}
         try:
             from core.thumbnail_generator import (
                 generate_asset_thumbnail, LOCATION_THUMBNAIL_DEFERRED)
@@ -1052,6 +1286,11 @@ class AssetLibraryWidget(QWidget):
                                f"({target_x:.0f}, {target_y:.0f}, {ground_z:.0f}) "
                                "from the current viewport. Scenes for this "
                                "location will build there.")
+
+                    # Multi-view survey: posed captures + AI landmark map
+                    # so the positioner knows where things are in this map
+                    result['survey'] = self._survey_location(
+                        name, (target_x, target_y, ground_z), describe_provider)
                 else:
                     unreal.log_warning("[LocationAdd] No viewport camera info available; "
                                        "no stage anchor recorded")
@@ -1162,7 +1401,8 @@ class AssetLibraryWidget(QWidget):
                 try:
                     from core.thumbnail_generator import safe_thumbnail_filename
                     out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
-                    capture = self._capture_location_on_add(name, asset_path, out_png)
+                    capture = self._capture_location_on_add(
+                        name, asset_path, out_png, describe_provider)
                     entry = self.library.library[category][name]
                     if capture.get('thumbnail'):
                         entry['thumbnail'] = {
@@ -1173,6 +1413,8 @@ class AssetLibraryWidget(QWidget):
                         entry['camera_start'] = capture['camera_start']
                     if capture.get('stage_center'):
                         entry['stage_center'] = capture['stage_center']
+                    if capture.get('survey'):
+                        entry['survey'] = capture['survey']
                 except Exception as e:
                     unreal.log_warning(f"Location capture flow errored for {name}: {e}")
             else:

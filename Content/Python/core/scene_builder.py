@@ -1072,8 +1072,42 @@ class SceneBuilder:
 
                 spawnable = None
 
+                # Mesh ASSETS cannot become spawnables directly:
+                # add_spawnable_from_instance(StaticMesh) creates a binding
+                # with NO object template - it accepts keyframes but renders
+                # NOTHING (this made gen3d meshes like the Tripo ghost
+                # invisible). Wrap the mesh in its proper actor class and
+                # assign it on the spawnable's template instead.
+                try:
+                    if isinstance(asset, unreal.StaticMesh):
+                        spawnable = sequence.add_spawnable_from_class(unreal.StaticMeshActor)
+                        template = spawnable.get_object_template() if spawnable else None
+                        component = getattr(template, 'static_mesh_component', None) if template else None
+                        if component:
+                            component.set_static_mesh(asset)
+                            unreal.log(f"Spawnable '{name}': StaticMeshActor wrapping {asset_path}")
+                        else:
+                            unreal.log_warning(f"Spawnable '{name}': could not access the StaticMeshActor template")
+                            spawnable = None
+                    elif isinstance(asset, unreal.SkeletalMesh):
+                        spawnable = sequence.add_spawnable_from_class(unreal.SkeletalMeshActor)
+                        template = spawnable.get_object_template() if spawnable else None
+                        component = getattr(template, 'skeletal_mesh_component', None) if template else None
+                        if component:
+                            try:
+                                component.set_skeletal_mesh_asset(asset)
+                            except AttributeError:
+                                component.set_skeletal_mesh(asset)
+                            unreal.log(f"Spawnable '{name}': SkeletalMeshActor wrapping {asset_path}")
+                        else:
+                            unreal.log_warning(f"Spawnable '{name}': could not access the SkeletalMeshActor template")
+                            spawnable = None
+                except Exception as mesh_err:
+                    unreal.log_warning(f"Mesh spawnable wrap failed for {name}: {mesh_err}")
+                    spawnable = None
+
                 # Try as blueprint
-                if 'BP_' in asset_path or 'blueprint' in asset_path.lower():
+                if not spawnable and ('BP_' in asset_path or 'blueprint' in asset_path.lower()):
                     try:
                         blueprint_class = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).load_blueprint_class(asset_path)
                         if blueprint_class:
@@ -1081,11 +1115,29 @@ class SceneBuilder:
                     except:
                         pass
 
-                # Try as instance
+                # Try as instance (actors and other spawnable-capable assets)
                 if not spawnable:
                     try:
                         spawnable = sequence.add_spawnable_from_instance(asset)
                     except:
+                        pass
+
+                # A binding without an object template renders nothing.
+                # Fail loudly instead of silently keyframing an invisible
+                # actor for the next twenty minutes.
+                if spawnable:
+                    try:
+                        if spawnable.get_object_template() is None:
+                            unreal.log_error(
+                                f"Spawnable '{name}' was created WITHOUT an object template "
+                                f"(asset type {type(asset).__name__}) - it would be invisible. "
+                                "Removing the broken binding.")
+                            try:
+                                spawnable.remove()
+                            except Exception:
+                                pass
+                            spawnable = None
+                    except Exception:
                         pass
 
                 if spawnable:

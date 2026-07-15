@@ -3437,6 +3437,64 @@ class ActivePanelWidget(QWidget):
             # Always finish sequence even on crash
             self._finish_capture_sequence()
 
+    def _get_location_survey_lines(self, location_name):
+        """Landmark lines for the positioning prompt from the location's
+        recorded survey (posed screenshots + AI landmark map captured when
+        the location was added from the Content Browser)."""
+        lines = []
+        try:
+            library = self.asset_library if isinstance(getattr(self, 'asset_library', None), dict) else None
+            if not library or not location_name:
+                return lines
+            locations = library.get('locations', {})
+            entry = locations.get(location_name)
+            if not isinstance(entry, dict):
+                loc_lower = str(location_name).strip().lower()
+                for key, info in locations.items():
+                    if isinstance(info, dict) and key.strip().lower() == loc_lower:
+                        entry = info
+                        break
+            if not isinstance(entry, dict):
+                return lines
+
+            stage = entry.get('stage_center')
+            if isinstance(stage, dict):
+                try:
+                    lines.append(
+                        "- Stage center (clear build area): "
+                        f"(X={float(stage.get('x', 0)):.0f}, "
+                        f"Y={float(stage.get('y', 0)):.0f}, "
+                        f"Z={float(stage.get('z', 0)):.0f})")
+                except (TypeError, ValueError):
+                    pass
+
+            survey = entry.get('survey') or {}
+            for lm in (survey.get('landmarks') or [])[:12]:
+                if not isinstance(lm, dict) or not lm.get('name'):
+                    continue
+                try:
+                    line = (f"- {lm['name']}: (X={float(lm.get('x', 0)):.0f}, "
+                            f"Y={float(lm.get('y', 0)):.0f}, "
+                            f"Z={float(lm.get('z', 0)):.0f})")
+                    if lm.get('notes'):
+                        line += f" - {str(lm['notes'])[:80]}"
+                    lines.append(line)
+                except (TypeError, ValueError):
+                    continue
+            for oa in (survey.get('open_areas') or [])[:4]:
+                if not isinstance(oa, dict) or not oa.get('name'):
+                    continue
+                try:
+                    lines.append(
+                        f"- Open staging area '{oa['name']}': "
+                        f"(X={float(oa.get('x', 0)):.0f}, "
+                        f"Y={float(oa.get('y', 0)):.0f})")
+                except (TypeError, ValueError):
+                    continue
+        except Exception as e:
+            unreal.log_warning(f"[Survey] Could not read location landmarks: {e}")
+        return lines
+
     def _build_positioning_prompt(self, scene_context):
         """Build the AI prompt for positioning analysis"""
 
@@ -3460,6 +3518,18 @@ class ActivePanelWidget(QWidget):
                     '  * Feet/origin: Always at Z=0 (ground level)',
                 ])
                 unreal.log(f"DEBUG: Added Oat character landmarks (4 items)")
+
+            # Location survey landmarks: recorded when the location was
+            # added (posed captures + AI landmark map + ground-truth actor
+            # inventory). Gives the positioner real world-coordinate
+            # context for THIS map instead of just "ground is Z=0".
+            try:
+                survey_lines = self._get_location_survey_lines(
+                    scene_context.get('location', ''))
+                if survey_lines:
+                    landmarks.extend(survey_lines)
+            except Exception as survey_err:
+                unreal.log_warning(f"[Survey] Could not load location landmarks: {survey_err}")
 
             landmarks_text = '\n'.join(landmarks)
             unreal.log(f"\n DEBUG: SCENE LANDMARKS ({len(landmarks)} total):")
