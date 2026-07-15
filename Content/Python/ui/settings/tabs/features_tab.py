@@ -338,9 +338,17 @@ class FeaturesTab(QWidget):
         # One Tripo field serves both consumers (gen3d + genanim)
         genanim['tripo_api_key'] = tripo_key
 
-        performance = dict(self.settings.get('performance', {}))
-        performance['optimize_images'] = self.optimize_images_check.isChecked()
-        performance['reduced_refinement_views'] = self.reduced_views_check.isChecked()
+        # 'performance' is SHARED with the General tab (thumbnail_size,
+        # max_panels_display, cache_ai_results, hardware_acceleration), so
+        # return ONLY the keys this tab owns. A copy-then-overwrite of
+        # self.settings here would carry stale copies of the General tab's
+        # keys and clobber its fresh values when the dialog merges sections.
+        # Non-dialog sibling keys (hero_settle_ms, iteration_delay_ms, ...)
+        # are preserved by the dialog's section-wise merge instead.
+        performance = {
+            'optimize_images': self.optimize_images_check.isChecked(),
+            'reduced_refinement_views': self.reduced_views_check.isChecked(),
+        }
 
         cost = dict(self.settings.get('cost', {}))
         cost['use_files_api'] = self.files_api_check.isChecked()

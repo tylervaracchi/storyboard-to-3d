@@ -1,0 +1,198 @@
+{
+  "summary": {
+    "sandbox": "C:\\Users\\tyler\\AppData\\Local\\Temp\\storyboard_harness_sandbox",
+    "findings_count": 0,
+    "ue_log_errors": 11,
+    "ue_log_warnings": 21,
+    "modal_dialogs_intercepted": 24
+  },
+  "findings": [],
+  "intercepted_dialogs": [
+    {
+      "step": "create-show",
+      "type": "QInputDialog.getText",
+      "title": "New Show",
+      "response": [
+        "Harness Show",
+        true
+      ]
+    },
+    {
+      "step": "create-episode",
+      "type": "QInputDialog.getText",
+      "title": "New Episode",
+      "response": [
+        "Episode 01",
+        true
+      ]
+    },
+    {
+      "step": "import-panel",
+      "type": "QFileDialog.getOpenFileNames",
+      "caption": "Import Panels",
+      "response": [
+        "C:\\Users\\tyler\\AppData\\Local\\Temp\\storyboard_harness_sandbox\\harness_panel_001.png"
+      ]
+    },
+    {
+      "step": "field-auto-save",
+      "type": "QInputDialog.getText",
+      "title": "Add Character",
+      "response": [
+        "Farmer John",
+        true
+      ]
+    },
+    {
+      "step": "field-auto-save",
+      "type": "QInputDialog.getText",
+      "title": "Add Prop",
+      "response": [
+        "Hay Bale",
+        true
+      ]
+    },
+    {
+      "step": "action:menu[File]>New Show",
+      "type": "QInputDialog.getText",
+      "title": "New Show",
+      "response": [
+        "",
+        false
+      ]
+    },
+    {
+      "step": "action:menu[File]>New Episode",
+      "type": "QInputDialog.getText",
+      "title": "New Episode",
+      "response": [
+        "",
+        false
+      ]
+    },
+    {
+      "step": "action:menu[File]>Settings...",
+      "type": "QDialog.exec",
+      "class": "SettingsDialog",
+      "title": "StoryboardTo3D Settings"
+    },
+    {
+      "step": "action:menu[Import]>Import Panels",
+      "type": "QFileDialog.getOpenFileNames",
+      "caption": "Import Panels",
+      "response": []
+    },
+    {
+      "step": "action:menu[Tools]>\ud83c\udf9e\ufe0f Render Animatic",
+      "type": "QInputDialog.getText",
+      "title": "Render Animatic",
+      "response": [
+        "",
+        false
+      ]
+    },
+    {
+      "step": "action:menu[Tools]>\ud83d\udcca Calibration Dashboard",
+      "type": "QDialog.exec",
+      "class": "QDialog",
+      "title": "Calibration Dashboard"
+    },
+    {
+      "step": "action:menu[Tools]>\ud83c\udf19 Overnight Batch...",
+      "type": "QDialog.exec",
+      "class": "QDialog",
+      "title": "\ud83c\udf19 Overnight Batch"
+    },
+    {
+      "step": "action:toolbar>Settings",
+      "type": "QDialog.exec",
+      "class": "SettingsDialog",
+      "title": "StoryboardTo3D Settings"
+    },
+    {
+      "step": "button:ActivePanelWidget button 'Analyze Panel'",
+      "type": "QMessageBox.warning",
+      "title": "AI Unavailable",
+      "text": "AI unavailable - used library defaults. Check Ollama or AI Settings.\n\n Defaults applied:\n\u2022 Characters: None (add manually)\n\u2022 Props: None (add manually)\n\u2022 Location: Current\n\u2022 Shot Type: Medium\n\nThese are first-in-library placeholders, not an analysis of your drawing. Edit them manually or fix the AI connection and re-run Analyze."
+    },
+    {
+      "step": "button:ActivePanelWidget button '+'",
+      "type": "QInputDialog.getText",
+      "title": "Add Character",
+      "response": [
+        "",
+        false
+      ]
+    },
+    {
+      "step": "button:ActivePanelWidget button '+'",
+      "type": "QInputDialog.getText",
+      "title": "Add Prop",
+      "response": [
+        "",
+        false
+      ]
+    },
+    {
+      "step": "button:ActivePanelWidget button 'GENERATE'",
+      "type": "QMessageBox.warning",
+      "title": "Generation Failed",
+      "text": "Failed to start generation"
+    },
+    {
+      "step": "button:ActivePanelWidget button 'RUN PANEL'",
+      "type": "QMessageBox.warning",
+      "title": "Generation Failed",
+      "text": "Failed to start generation"
+    },
+    {
+      "step": "button:ActivePanelWidget button 'BATCH GENERATE'",
+      "type": "QMessageBox.question",
+      "title": "Batch Generate Confirmation",
+      "text": "Generate 3D scenes for 1 analyzed panels?\n\nThis will process each panel in order."
+    },
+    {
+      "step": "button:ActivePanelWidget button 'BATCH GENERATE'",
+      "type": "QMessageBox.information",
+      "title": "Batch Generate Complete",
+      "text": "Batch generation finished!\n\n Successful: 0\n Failed: 1\nTotal: 1 panels"
+    },
+    {
+      "step": "button:ActivePanelWidget button 'CAPTURE'",
+      "type": "QMessageBox.warning",
+      "title": "Cannot Capture",
+      "text": "No generated scene for this panel.\n\nClick GENERATE first."
+    },
+    {
+      "step": "button:ActivePanelWidget button 'BATCH CAPTURE'",
+      "type": "QMessageBox.information",
+      "title": "No Generated Scenes",
+      "text": "No panels have had scenes generated yet.\n\nPlease generate 3D scenes first using the 'Batch Generate' button."
+    },
+    {
+      "step": "button:ActivePanelWidget button 'RUN ALL'",
+      "type": "QMessageBox.question",
+      "title": "Run All Confirmation",
+      "text": "Generate + capture for 1 analyzed panels?\n\nEach panel will be generated, then run iterative positioning\nuntil score >80 or max iterations, ONE AT A TIME (sequential).\n\n This may take several hours and incur significant AI API costs!"
+    },
+    {
+      "step": "button:ActivePanelWidget button 'RUN ALL'",
+      "type": "QMessageBox.information",
+      "title": "Batch Capture Complete",
+      "text": "Batch capture complete!\n\nTotal: 1 panels\n Successful: 0\n Failed: 1\n\nMetrics saved to: Saved/ThesisMetrics/"
+    }
+  ],
+  "ue_log_errors_tail": [
+    "[HYBRID] AI provider failed: Invalid OpenAI API key",
+    "[HYBRID] AI provider failed: Invalid OpenAI API key",
+    "Failed to create sequence!",
+    "Failed to create sequence - canceling",
+    "Failed to create sequence!",
+    "Failed to create sequence - canceling",
+    "Failed to create sequence!",
+    "Failed to create sequence - canceling",
+    "Failed to create sequence!",
+    "Failed to create sequence - canceling",
+    "Capture run aborted: Scene generation failed (RUN ALL)"
+  ]
+}

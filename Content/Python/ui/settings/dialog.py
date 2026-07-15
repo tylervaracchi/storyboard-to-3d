@@ -136,14 +136,27 @@ class SettingsDialog(QDialog):
 
     def apply_settings(self):
         """Apply settings without closing"""
-        # Gather settings from all tabs
+        # Gather settings from all tabs, merging each top-level section
+        # KEY-WISE instead of replacing it wholesale. Two tabs can
+        # contribute to the same section (General + Features both write
+        # 'performance'); a plain dict.update() here let the later tab's
+        # section drop the earlier tab's keys, so General-tab performance
+        # values never persisted. Seeding each dict section from the
+        # currently saved settings also keeps sibling keys that no tab
+        # owns (e.g. performance.hero_settle_ms) alive across a save.
+        current = get_settings()
         new_settings = {}
-        new_settings.update(self.general_tab.get_settings())
-        new_settings.update(self.ai_tab.get_settings())
-        new_settings.update(self.features_tab.get_settings())
-        new_settings.update(self.ollama_tab.get_settings())
-        new_settings.update(self.paths_tab.get_settings())
-        new_settings.update(self.advanced_tab.get_settings())
+        tabs = (self.general_tab, self.ai_tab, self.features_tab,
+                self.ollama_tab, self.paths_tab, self.advanced_tab)
+        for tab in tabs:
+            for section, values in tab.get_settings().items():
+                if isinstance(values, dict):
+                    if section not in new_settings:
+                        base = current.get(section)
+                        new_settings[section] = dict(base) if isinstance(base, dict) else {}
+                    new_settings[section].update(values)
+                else:
+                    new_settings[section] = values
 
         # Save settings
         if update_settings(new_settings):
