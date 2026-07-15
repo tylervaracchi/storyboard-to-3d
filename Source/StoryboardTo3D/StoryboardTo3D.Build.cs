@@ -51,7 +51,9 @@ public class StoryboardTo3D : ModuleRules
                 "DesktopPlatform",
                 "SequencerScripting",
                 "LevelSequenceEditor",
-                "PythonScriptPlugin"
+                "PythonScriptPlugin",
+                "ImageWrapper",
+                "ImageCore"
             }
         );
         

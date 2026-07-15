@@ -997,14 +997,18 @@ class AssetLibraryWidget(QWidget):
                 # skip generation instead of logging a guaranteed failure
                 continue
 
-            # Auto-generate a thumbnail; a failure here only logs
+            # Auto-generate a thumbnail; a failure here only logs.
+            # Content Browser thumbnail first (cached/editor-rendered via
+            # the C++ helper), then the turntable capture as fallback.
             try:
                 from core.thumbnail_generator import (
-                    generate_asset_thumbnail, safe_thumbnail_filename
+                    generate_asset_thumbnail, safe_thumbnail_filename,
+                    try_export_editor_thumbnail
                 )
                 thumb_dir = Path(self.current_show_path) / "Thumbnails"
                 out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
-                if generate_asset_thumbnail(asset_path, str(out_png)):
+                if try_export_editor_thumbnail(asset_path, str(out_png)) \
+                        or generate_asset_thumbnail(asset_path, str(out_png)):
                     self.library.library[category][name]['thumbnail'] = {
                         'type': 'content_browser',
                         'path': str(out_png),

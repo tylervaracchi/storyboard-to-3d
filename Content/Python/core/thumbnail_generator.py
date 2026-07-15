@@ -110,6 +110,49 @@ def is_valid_png(path):
         return False
 
 
+def try_export_editor_thumbnail(asset_path, out_png, min_size=256):
+    """Export the Content Browser's own thumbnail for an asset, if possible.
+
+    Calls the plugin's C++ helper (UStoryboardThumbnailLibrary), which reuses
+    the thumbnail cached in the asset's package or renders one with the same
+    thumbnail renderer the Content Browser uses. Guarded with hasattr so
+    editors running older plugin binaries (without the C++ class) silently
+    fall back to the turntable pipeline.
+
+    Args:
+        asset_path: Content Browser path (e.g. /Game/Props/SM_Ball).
+        out_png: absolute path of the PNG to write.
+        min_size: reject thumbnails smaller than this on either side.
+
+    Returns:
+        True when a valid PNG was written to out_png, False otherwise.
+        Never raises.
+    """
+    try:
+        if not UNREAL_AVAILABLE or not asset_path:
+            return False
+        lib = getattr(unreal, 'StoryboardThumbnailLibrary', None)
+        if lib is None or not hasattr(lib, 'export_asset_thumbnail'):
+            return False
+        out = Path(out_png)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if not lib.export_asset_thumbnail(str(asset_path), str(out), int(min_size)):
+            return False
+        if not is_valid_png(out):
+            _warn('Editor thumbnail export wrote non-PNG data for {0}; '
+                  'removing {1}'.format(asset_path, out))
+            try:
+                out.unlink()
+            except OSError:
+                pass
+            return False
+        _log('Exported Content Browser thumbnail for {0}: {1}'.format(asset_path, out))
+        return True
+    except Exception as e:
+        _warn('try_export_editor_thumbnail failed for {0}: {1}'.format(asset_path, e))
+        return False
+
+
 def _make_ldr_render_target(size):
     """Create a square RTF_RGBA8 render target.
 
@@ -343,11 +386,19 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
         if not UNREAL_AVAILABLE:
             _warn('unreal module unavailable (not running in the editor)')
             return False
-        if not RIG_HELPERS_AVAILABLE:
-            _error('ai_vision.scene_capture_rig helpers unavailable; cannot capture')
-            return False
         if not asset_path:
             _warn('Empty asset path; nothing to capture')
+            return False
+
+        # First choice: the Content Browser's own thumbnail (cached in the
+        # package, or rendered by the editor's thumbnail renderer via the
+        # plugin's C++ helper). Needs no staging, no temp actors, no world.
+        if try_export_editor_thumbnail(asset_path, output_png,
+                                       min_size=max(int(size), 16)):
+            return True
+
+        if not RIG_HELPERS_AVAILABLE:
+            _error('ai_vision.scene_capture_rig helpers unavailable; cannot capture')
             return False
 
         # Spawning into a null world crashes the editor natively, so verify
