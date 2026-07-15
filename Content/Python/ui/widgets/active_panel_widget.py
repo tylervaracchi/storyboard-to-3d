@@ -6445,6 +6445,15 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 'shot_type': panel_info['shot_type'],    # From UI dropdown
                 'num_characters': len(panel_info['characters'])
             }
+            # [Gen3D image mode] Thread the panel's image path through the
+            # analysis so the optional gen3d rescue can crop entities from
+            # it ('gen3d.mode' == 'image'). Optional key: when absent the
+            # matcher stays in text mode, zero behavior change.
+            try:
+                if panel_info.get('path'):
+                    panel_info['analysis']['panel_image_path'] = str(panel_info['path'])
+            except Exception as e:
+                unreal.log_warning(f"[Gen3D] Could not attach panel image path: {e}")
             # Merge mood/action context from the stored AI analysis so the
             # opt-in mood-lighting / auto-animation features see it (the
             # UI fields alone never carry these keys).
@@ -7399,6 +7408,15 @@ You can edit them before generating the scene.{available_info}"""
                 'shot_type': panel_info['shot_type'],
                 'num_characters': len(panel_info['characters'])
             }
+            # [Gen3D image mode] Thread the panel's image path through the
+            # analysis so the optional gen3d rescue can crop entities from
+            # it ('gen3d.mode' == 'image'). Optional key: when absent the
+            # matcher stays in text mode, zero behavior change.
+            try:
+                if panel_info.get('path'):
+                    panel_info['analysis']['panel_image_path'] = str(panel_info['path'])
+            except Exception as e:
+                unreal.log_warning(f"[Gen3D] Could not attach panel image path: {e}")
             # Merge mood/action context from the stored AI analysis so the
             # opt-in mood-lighting / auto-animation features see it (the
             # UI fields alone never carry these keys).

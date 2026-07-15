@@ -1379,6 +1379,13 @@ class SceneBuilder:
         if not isinstance(description, str):
             description = None
 
+        # Optional panel image for the gen3d image mode ('gen3d.mode').
+        # The key is threaded in by the UI call sites; when absent the
+        # matcher stays in text mode, so behavior is unchanged.
+        panel_image_path = analysis.get('panel_image_path')
+        if not isinstance(panel_image_path, str) or not panel_image_path.strip():
+            panel_image_path = None
+
         # Only freshly generated assets may be rescued: find_best_match
         # searches every tier, and force-accepting a fuzzy/library hit on
         # a rejected name would defeat EntityValidator.
@@ -1390,7 +1397,8 @@ class SceneBuilder:
         for name in rejected_names:
             try:
                 asset = self.asset_matcher.find_best_match(
-                    name, category=category, description=description)
+                    name, category=category, description=description,
+                    panel_image_path=panel_image_path)
                 if asset is None or not hasattr(asset, 'get_path_name'):
                     continue
                 asset_path = asset.get_path_name()

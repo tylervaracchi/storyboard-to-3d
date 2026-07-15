@@ -16,18 +16,22 @@ outside the Unreal Editor.
 
 Public API:
     get_configured()          -> configured provider instance or None
+    get_mode()                -> 'text' (default) or 'image' (gen3d.mode)
     Gen3DProvider, Gen3DError -> base class / error type
     MeshyProvider, TripoProvider
     import_generated_model(file_path, asset_name) -> asset path or None
     manifest.lookup(description) / manifest.record(description, path, provider)
+    entity_cropper.crop_entity(panel_image_path, entity_name,
+        entity_description) -> cropped PNG path or None
 """
 
 from .base_provider import Gen3DProvider, Gen3DError
 from .meshy_provider import MeshyProvider
 from .tripo_provider import TripoProvider
-from .gen3d_factory import get_configured
+from .gen3d_factory import get_configured, get_mode
 from .importer import import_generated_model, sanitize_asset_name
 from . import manifest
+from . import entity_cropper
 
 __all__ = [
     'Gen3DProvider',
@@ -35,7 +39,9 @@ __all__ = [
     'MeshyProvider',
     'TripoProvider',
     'get_configured',
+    'get_mode',
     'import_generated_model',
     'sanitize_asset_name',
     'manifest',
+    'entity_cropper',
 ]

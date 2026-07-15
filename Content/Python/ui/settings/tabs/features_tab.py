@@ -113,6 +113,23 @@ class FeaturesTab(QWidget):
         gen3d_row.addStretch()
         matching_layout.addLayout(gen3d_row)
 
+        gen3d_mode_row = QHBoxLayout()
+        gen3d_mode_row.addSpacing(24)
+        gen3d_mode_row.addWidget(QLabel("Generation mode:"))
+        self.gen3d_mode_combo = QComboBox()
+        self.gen3d_mode_combo.addItem("Text prompt (default)", "text")
+        self.gen3d_mode_combo.addItem("Panel image crop", "image")
+        self.gen3d_mode_combo.setToolTip(
+            "Text prompt: generate missing assets from their name and "
+            "description (existing behavior). Panel image crop: ask the vision "
+            "provider for the entity's bounding box in the storyboard panel, "
+            "crop it out, and generate from that image (Tripo only). Any "
+            "failure in image mode falls back to the text prompt.")
+        self.gen3d_mode_combo.currentIndexChanged.connect(self.on_change)
+        gen3d_mode_row.addWidget(self.gen3d_mode_combo)
+        gen3d_mode_row.addStretch()
+        matching_layout.addLayout(gen3d_mode_row)
+
         self.genanim_check = QCheckBox("Generative animation fallback (create missing clips; needs Tripo or DeepMotion key)")
         self.genanim_check.setToolTip(
             "When no animation_library.json clip matches a character's action text, "
@@ -244,6 +261,9 @@ class FeaturesTab(QWidget):
             self.gen3d_max_spin.setValue(int(gen3d.get('max_per_run', 3)))
         except (TypeError, ValueError):
             self.gen3d_max_spin.setValue(3)
+        mode = str(gen3d.get('mode', 'text')).strip().lower()
+        mode_index = self.gen3d_mode_combo.findData(mode)
+        self.gen3d_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
 
         self.genanim_check.setChecked(bool(genanim.get('enabled', False)))
         self.genanim_provider_combo.setCurrentText(str(genanim.get('provider', 'tripo')))
@@ -281,6 +301,7 @@ class FeaturesTab(QWidget):
         gen3d['enabled'] = self.gen3d_check.isChecked()
         gen3d['provider'] = self.gen3d_provider_combo.currentText()
         gen3d['max_per_run'] = self.gen3d_max_spin.value()
+        gen3d['mode'] = self.gen3d_mode_combo.currentData() or 'text'
 
         # Copy-then-overwrite so sibling keys (e.g. genanim.timeout_seconds,
         # genanim.tripo_rig_task_id) survive the dialog save

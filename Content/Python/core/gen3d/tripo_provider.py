@@ -40,6 +40,18 @@ and the draft-tier flags are best-known shapes marked VERIFY-BEFORE-USE.
   Model download URLs live under data.output; Tripo delivers GLB files.
   Preference order here: pbr_model, model, base_model.
 
+Image-to-model (generate_from_image):
+  Upload image: POST https://api.tripo3d.ai/v2/openapi/upload/sts
+                (multipart field 'file') -> data.image_token.
+                VERIFY-BEFORE-USE: older accounts/doc revisions use
+                POST /v2/openapi/upload instead, so this module tries
+                /upload/sts first and falls back to /upload.
+  Create body:  {"type": "image_to_model",
+                 "file": {"type": "<png|jpg|webp>", "file_token": <token>}}
+                plus the same draft-tier texture/pbr flags as text tasks.
+  Polling, status mapping, and model download reuse the exact same
+  base-provider machinery as text_to_model.
+
 Quality tiers via the 'gen3d.quality' setting:
   'draft' (default, also accepts 'preview'/'fast'/'low'):
       untextured model, cheapest and fastest (VERIFY-BEFORE-USE flags).
@@ -50,9 +62,10 @@ API key: TRIPO_API_KEY environment variable, then the plugin
 config_manager pattern (see Gen3DProvider._resolve_api_key).
 """
 
+import os
 from typing import Any, Dict, Optional, Tuple
 
-from .base_provider import Gen3DProvider, Gen3DError, _log_warning
+from .base_provider import Gen3DProvider, Gen3DError, _log, _log_warning
 
 try:
     import unreal  # noqa: F401  (parity guard; not directly used here)
@@ -61,13 +74,18 @@ except ImportError:
 
 
 TRIPO_API_BASE = "https://api.tripo3d.ai/v2/openapi/task"
+TRIPO_UPLOAD_STS_URL = "https://api.tripo3d.ai/v2/openapi/upload/sts"
+TRIPO_UPLOAD_URL = "https://api.tripo3d.ai/v2/openapi/upload"
 TRIPO_PROMPT_MAX_CHARS = 1024
 TRIPO_DRAFT_QUALITIES = ('draft', 'preview', 'fast', 'low')
 TRIPO_OUTPUT_PREFERENCE = ('pbr_model', 'model', 'base_model')
+TRIPO_IMAGE_TYPE_MAP = {'.png': 'png', '.jpg': 'jpg', '.jpeg': 'jpg',
+                        '.webp': 'webp'}
 
 
 class TripoProvider(Gen3DProvider):
-    """Tripo3D text-to-model provider (https://platform.tripo3d.ai/docs)."""
+    """Tripo3D text-to-model and image-to-model provider
+    (https://platform.tripo3d.ai/docs)."""
 
     name = 'tripo'
     pricing_note = ("Tripo3D text_to_model in draft (untextured) mode is the "
@@ -80,6 +98,75 @@ class TripoProvider(Gen3DProvider):
         # type: () -> Optional[str]
         """TRIPO_API_KEY env var, then plugin config ('api.keys.tripo3d')."""
         return self._resolve_api_key('TRIPO_API_KEY', 'tripo3d')
+
+    # ------------------------------------------------------------------
+    # Image-to-model entrypoint (parallel to Gen3DProvider.generate)
+    # ------------------------------------------------------------------
+
+    def generate_from_image(self, image_path, name=None, **kwargs):
+        # type: (str, Optional[str], **Any) -> Dict[str, Any]
+        """
+        Run a full image-to-3D generation: upload the image, create an
+        image_to_model task, poll to completion, download the resulting
+        model file to a temp file.
+
+        Mirrors the Gen3DProvider.generate() contract exactly (the polling
+        and download plumbing is the same base-provider machinery).
+
+        Args:
+            image_path: Local path of a PNG/JPG/WEBP image of the object.
+            name: Optional entity name, used only for logging.
+            **kwargs: Reserved for future options; ignored.
+
+        Returns:
+            {'status': 'succeeded', 'file_path': str, 'provider': str} or
+            {'status': 'failed', 'error': str, 'provider': str}.
+            Never raises.
+        """
+        try:
+            if not image_path or not os.path.isfile(str(image_path)):
+                raise Gen3DError(
+                    "Image file not found: {}".format(image_path))
+
+            if not self.get_api_key():
+                raise Gen3DError(
+                    "No API key available for provider '{}'".format(self.name))
+
+            label = name or os.path.basename(str(image_path))
+            _log("[Gen3D] Creating {} image-to-3D task for '{}' from {}".format(
+                self.name, label, image_path))
+
+            file_token = self._upload_image(str(image_path))
+            task_id = self._create_image_task(
+                file_token, self._image_file_type(str(image_path)))
+            if not task_id:
+                raise Gen3DError("Provider returned no task id")
+
+            task_data = self._poll_until_done(task_id)
+            task_data = self._finalize(task_data)
+
+            url_info = self._model_url(task_data)
+            if not url_info or not url_info[0]:
+                raise Gen3DError("No downloadable model URL in task result")
+
+            url, extension = url_info
+            file_path = self._download_to_temp(url, extension)
+            _log("[Gen3D] {} image-to-3D generation succeeded, model saved "
+                 "to {}".format(self.name, file_path))
+            return {
+                'status': 'succeeded',
+                'file_path': file_path,
+                'provider': self.name
+            }
+        except Gen3DError as e:
+            _log_warning("[Gen3D] {} image-to-3D generation failed: {}".format(
+                self.name, e))
+            return {'status': 'failed', 'error': str(e), 'provider': self.name}
+        except Exception as e:
+            # Belt and braces: generate_from_image() must never raise.
+            _log_warning("[Gen3D] {} image-to-3D generation failed "
+                         "unexpectedly: {}".format(self.name, e))
+            return {'status': 'failed', 'error': str(e), 'provider': self.name}
 
     # ------------------------------------------------------------------
     # Gen3DProvider hooks
@@ -162,6 +249,111 @@ class TripoProvider(Gen3DProvider):
             if url:
                 return str(url), self._extension_from_url(url, default='.glb')
         return None
+
+    def _create_image_task(self, file_token, file_type):
+        # type: (str, str) -> str
+        """Create an image_to_model task from an uploaded image token;
+        returns the task id. Sends the same draft-tier quality flags as
+        the text task where applicable."""
+        body = {
+            'type': 'image_to_model',
+            'file': {
+                'type': file_type,
+                'file_token': file_token
+            }
+        }
+
+        if self.get_quality() in TRIPO_DRAFT_QUALITIES:
+            # VERIFY-BEFORE-USE: skip texturing for the cheapest/fastest
+            # tier. Remove these two fields if the live API rejects them.
+            body['texture'] = False
+            body['pbr'] = False
+
+        data = self._request_json(
+            'POST', TRIPO_API_BASE, headers=self._headers(), json_body=body)
+        payload = self._unwrap(data)
+
+        task_id = payload.get('task_id')
+        if not task_id:
+            raise Gen3DError(
+                "Tripo create-task response had no task_id: {}".format(
+                    str(data)[:200]))
+        return str(task_id)
+
+    def _upload_image(self, image_path):
+        # type: (str) -> str
+        """
+        Upload an image to Tripo and return its image token.
+
+        Tries POST /v2/openapi/upload/sts first (current docs), then the
+        legacy POST /v2/openapi/upload; both take a multipart 'file' field
+        and answer {'code': 0, 'data': {'image_token': ...}}.
+
+        Raises:
+            Gen3DError when both endpoints fail.
+        """
+        requests = self._requests()
+        last_error = None
+
+        for url in (TRIPO_UPLOAD_STS_URL, TRIPO_UPLOAD_URL):
+            try:
+                with open(image_path, 'rb') as handle:
+                    response = requests.post(
+                        url,
+                        headers={'Authorization': 'Bearer {}'.format(
+                            self.get_api_key())},
+                        files={'file': (os.path.basename(image_path), handle)},
+                        timeout=self.DOWNLOAD_TIMEOUT_SECONDS)
+            except Exception as e:
+                last_error = "POST {} failed: {}".format(url, e)
+                _log_warning("[Gen3D] Tripo image upload attempt failed "
+                             "({}); trying next endpoint".format(last_error))
+                continue
+
+            if response.status_code < 200 or response.status_code >= 300:
+                last_error = "POST {} returned HTTP {}: {}".format(
+                    url, response.status_code, response.text[:300])
+                _log_warning("[Gen3D] Tripo image upload attempt failed "
+                             "({}); trying next endpoint".format(last_error))
+                continue
+
+            try:
+                data = response.json()
+            except ValueError as e:
+                last_error = "Non-JSON response from {}: {}".format(url, e)
+                _log_warning("[Gen3D] Tripo image upload attempt failed "
+                             "({}); trying next endpoint".format(last_error))
+                continue
+
+            if not isinstance(data, dict):
+                last_error = "Unexpected response shape from {}".format(url)
+                continue
+
+            try:
+                payload = self._unwrap(data)
+            except Gen3DError as e:
+                last_error = str(e)
+                _log_warning("[Gen3D] Tripo image upload attempt failed "
+                             "({}); trying next endpoint".format(last_error))
+                continue
+
+            token = (payload.get('image_token') or payload.get('token')
+                     or payload.get('file_token'))
+            if token:
+                return str(token)
+            last_error = "no image_token in upload response: {}".format(
+                str(data)[:200])
+
+        raise Gen3DError("Tripo image upload failed: {}".format(
+            last_error or 'unknown error'))
+
+    @staticmethod
+    def _image_file_type(image_path):
+        # type: (str) -> str
+        """Map an image file extension onto Tripo's file.type values
+        ('png' / 'jpg' / 'webp'); 'png' when unrecognized."""
+        ext = os.path.splitext(str(image_path))[1].lower()
+        return TRIPO_IMAGE_TYPE_MAP.get(ext, 'png')
 
     # ------------------------------------------------------------------
     # Helpers

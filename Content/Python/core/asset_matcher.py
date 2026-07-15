@@ -214,7 +214,8 @@ class AssetMatcher:
                 self._semantic_index = []
 
     def find_best_match(self, object_name: str, category: Optional[str] = None,
-                        description: Optional[str] = None) -> Optional[Any]:
+                        description: Optional[str] = None,
+                        panel_image_path: Optional[str] = None) -> Optional[Any]:
         """
         Find the best matching asset for an object name.
 
@@ -229,6 +230,11 @@ class AssetMatcher:
             description: Optional entity description. Only used by the
                      optional generative text-to-3D step to build a richer
                      prompt; existing matching tiers ignore it.
+            panel_image_path: Optional path of the source storyboard panel
+                     image. Only used by the optional generative step when
+                     'gen3d.mode' is 'image' (crop the entity and generate
+                     from the image); absent means text mode, existing
+                     matching tiers ignore it.
 
         Returns:
             Loaded Unreal asset object, or None if no match found.
@@ -268,7 +274,8 @@ class AssetMatcher:
         # PRIORITY 5: Generative text-to-3D (optional, off by default).
         # Any failure inside returns None so we fall through to shapes;
         # with 'gen3d.enabled' false this is a no-op.
-        asset = self._generative_match(object_name_lower, description)
+        asset = self._generative_match(object_name_lower, description,
+                                       panel_image_path=panel_image_path)
         if asset:
             return asset
 
@@ -733,8 +740,24 @@ class AssetMatcher:
                          f"using default {GEN3D_DEFAULT_MAX_PER_RUN}")
             return GEN3D_DEFAULT_MAX_PER_RUN
 
+    def _get_gen3d_mode(self) -> str:
+        """
+        Read the generation mode ('gen3d.mode': 'text' default, 'image').
+
+        Returns:
+            'text' or 'image'; 'text' on any failure. Never raises.
+        """
+        try:
+            from core.gen3d.gen3d_factory import get_mode
+            return get_mode()
+        except Exception as e:
+            _log_warning(f"[Gen3D] Could not read 'gen3d.mode': {e}; "
+                         f"using 'text'")
+            return 'text'
+
     def _generative_match(self, object_name: str,
-                          description: Optional[str] = None) -> Optional[Any]:
+                          description: Optional[str] = None,
+                          panel_image_path: Optional[str] = None) -> Optional[Any]:
         """
         Generate a 3D asset for an unmatched entity via core/gen3d.
 
@@ -745,9 +768,15 @@ class AssetMatcher:
         registers the new asset so later panels in this run match it via
         the normal tiers.
 
+        When 'gen3d.mode' is 'image' and a panel image path is available,
+        the entity is cropped from the panel (core.gen3d.entity_cropper)
+        and generated via the provider's image-to-model entrypoint; any
+        failure in that branch falls back to the text prompt below.
+
         Args:
             object_name: Lowercase object name that failed all match tiers.
             description: Optional entity description for a richer prompt.
+            panel_image_path: Optional source panel image for image mode.
 
         Returns:
             Loaded asset or None. Never raises; every failure logs and
@@ -808,12 +837,23 @@ class AssetMatcher:
             prompt = f"a low-poly game-ready {object_name}, single object, neutral pose"
 
         self._gen3d_generation_count += 1
-        try:
-            result = provider.generate(prompt)
-        except Exception as e:
-            # provider.generate() should never raise; belt and braces.
-            _log_warning(f"[Gen3D] Generation failed for '{object_name}': {e}")
-            return None
+
+        # Image mode (opt-in via 'gen3d.mode'): crop the entity out of the
+        # panel image and generate from the crop. Any failure inside
+        # returns None and we fall back to the text prompt below, so this
+        # branch can never break the existing text path.
+        result = None
+        if self._get_gen3d_mode() == 'image':
+            result = self._generative_match_image(
+                provider, object_name, description, panel_image_path)
+
+        if result is None:
+            try:
+                result = provider.generate(prompt)
+            except Exception as e:
+                # provider.generate() should never raise; belt and braces.
+                _log_warning(f"[Gen3D] Generation failed for '{object_name}': {e}")
+                return None
 
         if (not isinstance(result, dict)
                 or result.get('status') != 'succeeded'
@@ -854,6 +894,61 @@ class AssetMatcher:
         _log(f"[Gen3D] generated and imported {object_name} via "
              f"{provider_name}: {asset_path}")
         return asset
+
+    def _generative_match_image(self, provider: Any, object_name: str,
+                                description: Optional[str],
+                                panel_image_path: Optional[str]) -> Optional[Dict[str, Any]]:
+        """
+        Image-mode generation attempt ('gen3d.mode' == 'image'): crop the
+        entity from the panel image (core.gen3d.entity_cropper) and run
+        the provider's generate_from_image entrypoint.
+
+        Args:
+            provider: Configured Gen3D provider instance.
+            object_name: Lowercase entity name being generated.
+            description: Optional entity description for the cropper.
+            panel_image_path: Source storyboard panel image path, or None.
+
+        Returns:
+            The provider's result dict on success, or None so the caller
+            falls back to the text prompt. Never raises.
+        """
+        try:
+            if not panel_image_path or not os.path.isfile(str(panel_image_path)):
+                _log(f"[Gen3D] image mode: no panel image available for "
+                     f"'{object_name}'; falling back to text mode")
+                return None
+
+            if not hasattr(provider, 'generate_from_image'):
+                _log_warning(f"[Gen3D] image mode: provider "
+                             f"'{getattr(provider, 'name', 'unknown')}' has no "
+                             f"image-to-model support; falling back to text mode")
+                return None
+
+            from core.gen3d import entity_cropper
+            crop_path = entity_cropper.crop_entity(
+                str(panel_image_path), object_name, description)
+            if not crop_path:
+                _log(f"[Gen3D] image mode: entity crop failed for "
+                     f"'{object_name}'; falling back to text mode")
+                return None
+
+            result = provider.generate_from_image(crop_path, object_name)
+            if (isinstance(result, dict)
+                    and result.get('status') == 'succeeded'
+                    and result.get('file_path')):
+                return result
+
+            error = 'unknown error'
+            if isinstance(result, dict):
+                error = result.get('error', error)
+            _log_warning(f"[Gen3D] image mode: image-to-model failed for "
+                         f"'{object_name}': {error}; falling back to text mode")
+            return None
+        except Exception as e:
+            _log_warning(f"[Gen3D] image mode failed for '{object_name}': "
+                         f"{e}; falling back to text mode")
+            return None
 
     def _register_generated_asset(self, object_name: str, asset_path: str) -> None:
         """

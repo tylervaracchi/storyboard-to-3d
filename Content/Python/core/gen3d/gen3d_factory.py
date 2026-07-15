@@ -13,6 +13,11 @@ Settings (read via core.settings_manager.get_setting):
                   settings system is unavailable) get_configured() returns
                   None and callers behave exactly as before.
   gen3d.provider  'meshy' (default) or 'tripo' (alias 'tripo3d').
+  gen3d.mode      'text' (default) or 'image'. Read via get_mode(); in
+                  'image' mode callers crop the entity from the panel
+                  image and use the provider's generate_from_image
+                  entrypoint (Tripo only), falling back to text prompts
+                  on any failure.
 
 A provider is only returned when its API key is also resolvable
 (MESHY_API_KEY / TRIPO_API_KEY environment variables, or the plugin
@@ -54,10 +59,46 @@ def _is_truthy(value):
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on', 'enabled')
 
 
-def get_configured():
-    # type: () -> Optional[object]
+GEN3D_MODES = ('text', 'image')
+
+
+def get_mode():
+    # type: () -> str
+    """
+    Read the generation mode from the 'gen3d.mode' setting.
+
+    Returns:
+        'text' (the default) or 'image'. Any unreadable or unrecognized
+        value degrades to 'text'. Never raises.
+    """
+    try:
+        from core.settings_manager import get_setting
+        value = get_setting('gen3d.mode', 'text')
+    except Exception as e:
+        _log_warning("[Gen3D] Could not read 'gen3d.mode': {}. "
+                     "Using 'text'.".format(e))
+        return 'text'
+
+    mode = str(value or 'text').strip().lower()
+    if mode not in GEN3D_MODES:
+        _log_warning("[Gen3D] Unknown gen3d.mode value '{}' (expected "
+                     "'text' or 'image'). Using 'text'.".format(mode))
+        return 'text'
+    return mode
+
+
+def get_configured(mode=None):
+    # type: (Optional[str]) -> Optional[object]
     """
     Build a Gen3DProvider from the 'gen3d.*' global settings.
+
+    Args:
+        mode: Optional generation mode the caller intends to use ('text'
+            or 'image', see get_mode()). When 'image' is requested but
+            the configured provider has no generate_from_image support,
+            a warning is logged and the provider is still returned so
+            callers can fall back to text prompts. Omitting it (the
+            default) preserves the original behavior exactly.
 
     Returns:
         A ready provider instance (Meshy or Tripo), or None when the
@@ -132,6 +173,11 @@ def get_configured():
                      "or the plugin config). Generative 3D disabled.".format(
                          provider_name))
         return None
+
+    if mode == 'image' and not hasattr(provider, 'generate_from_image'):
+        _log_warning("[Gen3D] gen3d.mode is 'image' but provider '{}' has "
+                     "no image-to-model support; callers will fall back to "
+                     "text prompts.".format(provider.name))
 
     _log("[Gen3D] Provider configured: {}. {}".format(
         provider.name, provider.pricing_note))
