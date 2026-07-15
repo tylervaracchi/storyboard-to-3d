@@ -84,7 +84,8 @@ def build_entry_from_asset(asset):
     is_skeletal = _asset_is_instance_of(asset, 'SkeletalMesh')
     is_blueprint = _asset_is_instance_of(asset, 'Blueprint')
     is_static = _asset_is_instance_of(asset, 'StaticMesh')
-    if not (is_static or is_skeletal or is_blueprint):
+    is_world = _asset_is_instance_of(asset, 'World')
+    if not (is_static or is_skeletal or is_blueprint or is_world):
         return None
     try:
         raw_name = str(asset.get_name())
@@ -101,7 +102,12 @@ def build_entry_from_asset(asset):
         package, obj_name = asset_path.rsplit('.', 1)
         if package.rsplit('/', 1)[-1] == obj_name:
             asset_path = package
-    category = 'characters' if (is_skeletal or is_blueprint) else 'props'
+    if is_world:
+        category = 'locations'
+    elif is_skeletal or is_blueprint:
+        category = 'characters'
+    else:
+        category = 'props'
     return {
         'name': prettify_asset_name(raw_name),
         'category': category,
@@ -952,7 +958,8 @@ class AssetLibraryWidget(QWidget):
                 self, "Nothing Selected",
                 "Select one or more assets in the Content Browser first, "
                 "then click this button.\n\n"
-                "Supported: Static Meshes, Skeletal Meshes and Blueprints.")
+                "Supported: Static Meshes, Skeletal Meshes, Blueprints, "
+                "and Levels (added as locations).")
             return
 
         active_category = self.get_active_category()
@@ -970,7 +977,12 @@ class AssetLibraryWidget(QWidget):
                 continue
 
             name = built['name']
-            category = active_category or built['category']
+            if built['category'] == 'locations':
+                # Levels are always locations, regardless of the active tab:
+                # a map filed under characters/props would break spawning
+                category = 'locations'
+            else:
+                category = active_category or built['category']
             if name in self.library.library.get(category, {}):
                 skipped.append(f"{name} (already in {category})")
                 continue
@@ -979,6 +991,11 @@ class AssetLibraryWidget(QWidget):
             self.library.add_asset(category, name, asset_path, "", [])
             added.append(f"{name} ({category})")
             unreal.log(f"Added asset from Content Browser: {name} -> {asset_path} [{category}]")
+
+            if category == 'locations':
+                # Levels cannot be staged as actors for a turntable thumbnail;
+                # skip generation instead of logging a guaranteed failure
+                continue
 
             # Auto-generate a thumbnail; a failure here only logs
             try:
