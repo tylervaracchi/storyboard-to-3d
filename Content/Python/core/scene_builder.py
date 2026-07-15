@@ -546,18 +546,18 @@ class SceneBuilder:
         """
         # The location name can arrive under 'location' OR 'location_type'
         # (the UI-built analysis uses the latter - same resolution chain as
-        # build_scene), with the name resolved at location-setup time as
-        # the final authority
+        # build_scene). The name resolved at location-setup time goes FIRST:
+        # it is provably the value the level loader actually consumed.
         candidates = []
+        resolved = str(getattr(self, '_resolved_location_name', '') or '').strip()
+        if resolved and resolved != 'Default':
+            candidates.append(resolved)
         for key in ('location', 'location_type'):
             value = str(analysis.get(key) or '').strip()
-            if value and value not in ('Exterior', 'Interior', 'Auto-detect',
-                                       'exterior', 'interior', 'outdoor',
-                                       'indoor', 'Default'):
+            if value and value not in candidates and value not in (
+                    'Exterior', 'Interior', 'Auto-detect', 'exterior',
+                    'interior', 'outdoor', 'indoor', 'Default'):
                 candidates.append(value)
-        resolved = str(getattr(self, '_resolved_location_name', '') or '').strip()
-        if resolved and resolved != 'Default' and resolved not in candidates:
-            candidates.append(resolved)
 
         memo_key = '|'.join(candidates)
         if getattr(self, '_anchor_memo_key', None) == memo_key:
@@ -569,33 +569,39 @@ class SceneBuilder:
         loc_name = candidates[0] if candidates else ''
 
         try:
+            def _find_entry(location_map):
+                for candidate in candidates:
+                    found = location_map.get(candidate)
+                    if isinstance(found, dict):
+                        return candidate, found
+                    cand_lower = candidate.lower()
+                    for key, info in location_map.items():
+                        if isinstance(info, dict) and key.strip().lower() == cand_lower:
+                            return key, info
+                return None, None
+
             library = self._get_asset_paths_from_library() or {}
             locations = library.get('locations')
-            if not isinstance(locations, dict) or not locations:
-                # The matcher's cached library may lack/trim locations;
-                # the show's asset_library.json on disk is authoritative
-                locations = self._read_show_locations_from_disk()
-
-            entry = None
-            for candidate in candidates:
-                entry = locations.get(candidate)
-                if isinstance(entry, dict):
-                    loc_name = candidate
-                    break
-                cand_lower = candidate.lower()
-                for key, info in locations.items():
-                    if isinstance(info, dict) and key.strip().lower() == cand_lower:
-                        entry = info
-                        loc_name = key
-                        break
-                if isinstance(entry, dict):
-                    break
-            if not isinstance(entry, dict):
+            if not isinstance(locations, dict):
+                locations = {}
+            found_key, entry = _find_entry(locations)
+            if entry is None:
+                # The in-memory library can be stale or trimmed (a
+                # long-lived matcher in batch runs won't see locations
+                # added mid-batch); the show's asset_library.json on
+                # disk is authoritative
+                disk_locations = self._read_show_locations_from_disk()
+                if disk_locations:
+                    found_key, entry = _find_entry(disk_locations)
+                    if entry is not None:
+                        locations = disk_locations
+            if entry is None:
                 unreal.log("[StageAnchor] No library entry for location "
                            "candidates {0} (library has: {1}); building at "
                            "world origin".format(
                                candidates, list(locations.keys())[:5]))
                 return
+            loc_name = found_key
 
             center = entry.get('stage_center')
             if isinstance(center, dict):
