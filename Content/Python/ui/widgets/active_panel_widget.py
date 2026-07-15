@@ -3437,6 +3437,32 @@ class ActivePanelWidget(QWidget):
             # Always finish sequence even on crash
             self._finish_capture_sequence()
 
+    def _get_stage_ground_z(self, location_name):
+        """Ground Z from the location's stage anchor (traced terrain
+        height, self-healed by the scene builder), or 0.0 when the
+        location has no anchor. Keeps the positioning prompt's 'ground
+        level' consistent with where characters actually stand."""
+        try:
+            library = self.asset_library if isinstance(getattr(self, 'asset_library', None), dict) else None
+            if not library or not location_name:
+                return 0.0
+            locations = library.get('locations', {})
+            entry = locations.get(location_name)
+            if not isinstance(entry, dict):
+                loc_lower = str(location_name).strip().lower()
+                for key, info in locations.items():
+                    if isinstance(info, dict) and key.strip().lower() == loc_lower:
+                        entry = info
+                        break
+            if not isinstance(entry, dict):
+                return 0.0
+            stage = entry.get('stage_center')
+            if isinstance(stage, dict):
+                return float(stage.get('z', 0.0) or 0.0)
+        except Exception as e:
+            unreal.log_warning(f"[Survey] Could not read stage ground Z: {e}")
+        return 0.0
+
     def _get_location_survey_lines(self, location_name):
         """Landmark lines for the positioning prompt from the location's
         recorded survey (posed screenshots + AI landmark map captured when
@@ -3504,8 +3530,14 @@ class ActivePanelWidget(QWidget):
         # Build mode-specific instructions
         if self.use_absolute_positioning:
             # SIMPLIFIED POSITIONING FOR THESIS PROOF-OF-CONCEPT
-            # All characters at ground level (Z=0) in T-pose for rough spatial layout
-            landmarks = ["- Ground level: Z=0 (all characters positioned at ground level)"]
+            # Characters at ground level in T-pose for rough spatial layout.
+            # Ground Z comes from the location's traced stage anchor when
+            # one exists: real maps rarely have terrain at exactly Z=0
+            # (the demo farm sits at ~Z=68), and telling the AI "ground
+            # is Z=0" sank every actor waist-deep on each adjustment.
+            ground_z = self._get_stage_ground_z(scene_context.get('location', ''))
+            landmarks = [
+                f"- Ground level: Z={ground_z:.0f} (all characters stand at this Z)"]
 
             # Add character-specific landmarks only for characters that exist
             characters = scene_context.get('characters', [])
@@ -3536,16 +3568,16 @@ class ActivePanelWidget(QWidget):
             for landmark in landmarks:
                 unreal.log(f"{landmark}")
 
-            # Simplified calculation example - always Z=0 for T-pose
+            # Simplified calculation example - characters stay at ground Z
             calc_example = f"""EXAMPLE CALCULATION (ABSOLUTE MODE - T-POSE PROOF-OF-CONCEPT):
 Storyboard: Character in scene
 Step 1: This is a rough spatial layout test using T-pose static models
-Step 2: All characters are positioned at ground level (Z=0)
+Step 2: All characters are positioned at ground level (Z={ground_z:.0f})
 Step 3: Focus on horizontal positioning (X, Y) and facing direction (Yaw rotation)
 Step 4: Calculate X, Y based on storyboard composition
-ANSWER: {{"actor": "{characters[0] if characters else 'ActorName'}", "position": {{"x": 100, "y": 50, "z": 0}}}}
+ANSWER: {{"actor": "{characters[0] if characters else 'ActorName'}", "position": {{"x": 100, "y": 50, "z": {ground_z:.0f}}}}}
 
- All T-pose characters stay at Z=0 for this proof-of-concept"""
+ All T-pose characters stay at Z={ground_z:.0f} for this proof-of-concept"""
             unreal.log("DEBUG: Using simplified T-POSE calculation example")
 
             mode_instructions = f"""--- ABSOLUTE MODE ACTIVE ---
