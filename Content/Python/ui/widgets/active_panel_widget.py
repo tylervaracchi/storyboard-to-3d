@@ -281,6 +281,16 @@ class ActivePanelWidget(QWidget):
         # Iteration tracking for auto-loop
         self.current_iteration = 0
         self.max_iterations = 7  # 7 iterations max, stops early if score > 80
+        # [DemoFlow] Restore the persisted iteration count (saved by
+        # _on_iteration_count_changed) so an editor restart doesn't silently
+        # reset it to 7. Falls back to 7 when unset or unreadable.
+        try:
+            from core.settings_manager import get_setting
+            saved_iterations = int(get_setting('ui.max_iterations', self.max_iterations) or self.max_iterations)
+            if saved_iterations > 0:
+                self.max_iterations = saved_iterations
+        except Exception as e:
+            unreal.log_warning(f"[DemoFlow] Could not restore iteration count: {e}")
         self.iteration_scores = []  # Track scores across iterations
         self.iteration_details = []  # Detailed metrics per iteration
         self.auto_iterate = False  # Flag to enable auto-iteration
@@ -389,16 +399,15 @@ class ActivePanelWidget(QWidget):
             self.marker_renderer = None
             unreal.log_warning(f"Could not load VisualMarkerRenderer: {e}")
 
-        # Initialize depth analyzer (Feature #2) - Subprocess mode for stability
+        # Depth analyzer (Feature #2) - Subprocess mode for stability
         # NOTE: Runs PyTorch in separate process to avoid DLL conflicts with UE
-        try:
-            from analysis.depth_analyzer import DepthAnalyzer
-            self.depth_analyzer = DepthAnalyzer()
-            if self.depth_analyzer.available:
-                unreal.log(f"DepthAnalyzer initialized (device: {self.depth_analyzer.device}, subprocess mode)")
-        except Exception as e:
-            self.depth_analyzer = None
-            unreal.log_warning(f"Could not load DepthAnalyzer: {e}")
+        # [DemoFlow] LAZY-INITIALIZED: DepthAnalyzer.__init__ can block up to
+        # 60s waiting on the PyTorch subprocess (and may download the model on
+        # first run), which used to freeze the editor when opening the plugin
+        # window. It is now constructed on first use via
+        # _ensure_depth_analyzer() at the top of _send_to_ai_analysis.
+        self.depth_analyzer = None
+        self._depth_analyzer_initialized = False
 
         # Initialize intelligent view selector (Optimization #3: 51% image cost savings)
         if INTELLIGENT_VIEW_SELECTOR_AVAILABLE:
@@ -419,7 +428,7 @@ class ActivePanelWidget(QWidget):
         unreal.log("ACTIVE FEATURES SUMMARY")
         unreal.log("="*70)
         unreal.log(f"[1] Visual Markers: {' ACTIVE' if (self.marker_renderer and self.marker_renderer.available) else ' DISABLED'}")
-        unreal.log(f"[2] Depth Analysis: {' ACTIVE' if (self.depth_analyzer and self.depth_analyzer.available) else ' DISABLED'}")
+        unreal.log("[2] Depth Analysis: LAZY (initialized on first capture run)")
         unreal.log(f"[3] Sketch Analysis: {' ACTIVE' if (self.sketch_analyzer and self.sketch_analyzer.available) else ' DISABLED'}")
         unreal.log(f"[4] Intelligent View Selection: {' ACTIVE (51% cost reduction)' if self.use_intelligent_view_selection else ' DISABLED (using all 7 views)'}")
         unreal.log("="*70 + "\n")
@@ -497,6 +506,48 @@ class ActivePanelWidget(QWidget):
             characters = self.asset_library.get('characters', {})
             return list(characters.keys())
         return []
+
+    def _ensure_depth_analyzer(self):
+        """[DemoFlow] Lazily construct the DepthAnalyzer on first use.
+
+        DepthAnalyzer.__init__ can block up to 60s waiting on the PyTorch
+        subprocess ready signal (and may download the model on a first-ever
+        run), so it must not run in ActivePanelWidget.__init__. Construction
+        is attempted once; on failure self.depth_analyzer stays None and all
+        existing `if self.depth_analyzer and self.depth_analyzer.available`
+        guards keep working. Never raises.
+        """
+        if self._depth_analyzer_initialized:
+            return self.depth_analyzer
+        self._depth_analyzer_initialized = True
+        try:
+            from analysis.depth_analyzer import DepthAnalyzer
+            self.depth_analyzer = DepthAnalyzer()
+            if self.depth_analyzer.available:
+                unreal.log(f"DepthAnalyzer initialized (device: {self.depth_analyzer.device}, subprocess mode)")
+        except Exception as e:
+            self.depth_analyzer = None
+            unreal.log_warning(f"Could not load DepthAnalyzer: {e}")
+        return self.depth_analyzer
+
+    def _notify_status(self, title, message, level="info"):
+        """[DemoFlow] Route a notification through the main window's
+        non-modal notify_user path (status bar + Output Log; modeless box
+        only for error/warning levels). Falls back to the Unreal log when
+        the main window is unavailable. Never raises.
+        """
+        try:
+            win = self.window()
+            if win is not None and hasattr(win, 'notify_user'):
+                win.notify_user(title, message, level)
+                return
+        except Exception:
+            pass
+        try:
+            unreal.log("[StoryboardTo3D] {0}: {1}".format(
+                title, str(message).replace("\n", " | ")))
+        except Exception:
+            pass
 
     def setup_ui(self):
         """Setup the UI"""
@@ -787,6 +838,46 @@ class ActivePanelWidget(QWidget):
 
         scroll_layout.addSpacing(10)
 
+        # Generate button
+        # [DemoFlow] Placed ABOVE the capture buttons so the visual order
+        # matches the actual workflow: Analyze -> GENERATE -> CAPTURE.
+        generate_btn = QPushButton(" GENERATE")
+        generate_btn.setObjectName("generateButton")
+        generate_btn.clicked.connect(self.generate_scene_from_panel)  # Changed from emit
+        generate_btn.setStyleSheet("""
+            QPushButton#generateButton {
+                background-color: #00AA00;
+                color: #FFFFFF;
+                font-weight: bold;
+                padding: 12px;
+                font-size: 14px;
+            }
+            QPushButton#generateButton:hover {
+                background-color: #00CC00;
+            }
+        """)
+        scroll_layout.addWidget(generate_btn)
+
+        # BATCH GENERATE button
+        batch_generate_btn = QPushButton(" BATCH GENERATE")
+        batch_generate_btn.setObjectName("batchGenerateButton")
+        batch_generate_btn.clicked.connect(self.batch_generate_all_panels)
+        batch_generate_btn.setStyleSheet("""
+            QPushButton#batchGenerateButton {
+                background-color: #F59E0B;
+                color: #FFFFFF;
+                font-weight: bold;
+                padding: 12px;
+                font-size: 14px;
+            }
+            QPushButton#batchGenerateButton:hover {
+                background-color: #D97706;
+            }
+        """)
+        scroll_layout.addWidget(batch_generate_btn)
+
+        scroll_layout.addSpacing(10)
+
         # CAPTURE button (PHASE 4 - CAPTURE ALL + AI ANALYSIS)
         compare_btn = QPushButton(" CAPTURE")
         compare_btn.setObjectName("compareButton")
@@ -853,44 +944,11 @@ class ActivePanelWidget(QWidget):
                 self.iteration_progress_widget = None
                 unreal.log_warning(f"[IterationProgress] Could not create progress widget: {e}")
 
-        # Generate button
-        generate_btn = QPushButton(" GENERATE")
-        generate_btn.setObjectName("generateButton")
-        generate_btn.clicked.connect(self.generate_scene_from_panel)  # Changed from emit
-        generate_btn.setStyleSheet("""
-            QPushButton#generateButton {
-                background-color: #00AA00;
-                color: #FFFFFF;
-                font-weight: bold;
-                padding: 12px;
-                font-size: 14px;
-            }
-            QPushButton#generateButton:hover {
-                background-color: #00CC00;
-            }
-        """)
-        scroll_layout.addWidget(generate_btn)
-
-        # BATCH GENERATE button
-        batch_generate_btn = QPushButton(" BATCH GENERATE")
-        batch_generate_btn.setObjectName("batchGenerateButton")
-        batch_generate_btn.clicked.connect(self.batch_generate_all_panels)
-        batch_generate_btn.setStyleSheet("""
-            QPushButton#batchGenerateButton {
-                background-color: #F59E0B;
-                color: #FFFFFF;
-                font-weight: bold;
-                padding: 12px;
-                font-size: 14px;
-            }
-            QPushButton#batchGenerateButton:hover {
-                background-color: #D97706;
-            }
-        """)
-        scroll_layout.addWidget(batch_generate_btn)
-
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
+        # [DemoFlow] Keep a handle on the scroll area so the iteration run
+        # can auto-scroll the live progress readout into view.
+        self._panel_scroll = scroll
 
     def create_section_header(self, text):
         """Create section header"""
@@ -1015,6 +1073,14 @@ class ActivePanelWidget(QWidget):
                 if count > 0:
                     self.max_iterations = count
                     unreal.log(f"Iteration count updated: {count}")
+                    # [DemoFlow] Persist so an editor restart doesn't reset
+                    # the count back to 7 (read back in __init__).
+                    try:
+                        from core.settings_manager import set_setting, save_settings
+                        set_setting('ui.max_iterations', count)
+                        save_settings()
+                    except Exception as persist_error:
+                        unreal.log_warning(f"[DemoFlow] Could not persist iteration count: {persist_error}")
                 else:
                     unreal.log_warning("Iteration count must be positive")
             except ValueError:
@@ -1902,8 +1968,19 @@ class ActivePanelWidget(QWidget):
 
         try:
             # Schedule hero shot capture
-            unreal.log("⏳ Scheduling Hero Shot in 15 seconds...\n")
-            QTimer.singleShot(15000, self._capture_hero_delayed)
+            # [DemoFlow] Settle delay configurable via
+            # 'performance.hero_settle_ms' (default 5000ms, demo-friendly);
+            # falls back to the historical 15000ms if settings are unreadable.
+            hero_settle_ms = 15000
+            try:
+                from core.settings_manager import get_setting
+                hero_settle_ms = int(get_setting('performance.hero_settle_ms', 5000) or 5000)
+            except Exception:
+                hero_settle_ms = 15000
+            if hero_settle_ms < 0:
+                hero_settle_ms = 5000
+            unreal.log("⏳ Scheduling Hero Shot in {0:.0f} seconds...\n".format(hero_settle_ms / 1000.0))
+            QTimer.singleShot(hero_settle_ms, self._capture_hero_delayed)
         except Exception as sched_err:
             unreal.log_error(f"[CaptureChain] Could not schedule hero capture: {sched_err} - finishing capture sequence")
             self._finish_capture_sequence()
@@ -2575,6 +2652,12 @@ class ActivePanelWidget(QWidget):
                 self._finish_capture_sequence()
                 return
 
+            # [DemoFlow] Lazy depth-analyzer construction (moved out of
+            # __init__ so opening the plugin window never blocks). All the
+            # depth-map code below already guards on
+            # `self.depth_analyzer and self.depth_analyzer.available`.
+            self._ensure_depth_analyzer()
+
             # Get screenshot directory
             screenshot_dir = Path(unreal.Paths.project_saved_dir()) / "Screenshots" / "WindowsEditor"
 
@@ -2997,6 +3080,17 @@ class ActivePanelWidget(QWidget):
                 unreal.log(f"Model: {client.model}")
                 unreal.log(f"Iteration: {self.current_iteration}/{self.max_iterations}")
                 unreal.log(f"Last match score: {self.last_match_score if hasattr(self, 'last_match_score') else 'N/A'}")
+
+                # [DemoFlow] The multi-image call below is synchronous and
+                # freezes the Qt event loop; surface a visible status first
+                # so the UI doesn't look dead while waiting on the AI.
+                try:
+                    self.comparison_result.show()
+                    self.match_label.setText(
+                        "Iteration {0}: waiting on AI...".format(self.current_iteration))
+                    QApplication.processEvents()
+                except Exception:
+                    pass
 
                 # Build multi-image request
                 result = self._call_ai_with_multiple_images(
@@ -4314,7 +4408,17 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             if is_ollama:
                 timeout_duration = 180  # Ollama needs more time for large payloads
             else:
-                timeout_duration = 300  # 5 minutes for cloud APIs with many images
+                # [DemoFlow] Configurable via 'api.iteration_timeout'
+                # (default 60s). Fail fast instead of freezing the editor
+                # for 5 minutes on a stalled connection.
+                timeout_duration = 60
+                try:
+                    from core.settings_manager import get_setting
+                    timeout_duration = int(get_setting('api.iteration_timeout', 60) or 60)
+                except Exception:
+                    timeout_duration = 60
+                if timeout_duration <= 0:
+                    timeout_duration = 60
 
             unreal.log(f"⏱ Timeout: {timeout_duration}s")
             unreal.log(f"Sending request to AI...")
@@ -5316,8 +5420,85 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             import traceback
             unreal.log_error(traceback.format_exc())
 
+    def _run_external_validation(self):
+        """[ExternalValidation] Run the configured external validator once
+        for the current iteration.
+
+        Hoisted out of the (self-score > 80) early-stop gate so the
+        self-vs-external comparison runs on EVERY iteration whenever
+        'validation.external_validation' != 'off' and a self score exists.
+        Stores the result in self.last_validation_result (persisted through
+        _record_iteration_metrics) and returns the external score as float,
+        or None when validation is off, unavailable, or failed. Never raises.
+        """
+        # Fresh per iteration so a failed/skipped validation never persists
+        # a stale result from an earlier iteration.
+        self.last_validation_result = None
+
+        if self.last_match_score is None:
+            return None
+        try:
+            try:
+                from core.external_validator import ExternalValidator
+            except ImportError as import_error:
+                unreal.log_warning(f"[ExternalValidation] Module unavailable: {import_error}")
+                return None
+
+            validator = ExternalValidator.get_configured()
+            if validator is None:
+                return None
+
+            storyboard_path = None
+            if self.active_panel and 'path' in self.active_panel:
+                storyboard_path = self.active_panel['path']
+
+            hero_capture_path = None
+            if hasattr(unreal, 'Paths') and hasattr(unreal.Paths, 'project_saved_dir'):
+                screenshot_dir = Path(unreal.Paths.project_saved_dir()) / "Screenshots" / "WindowsEditor"
+                hero_capture_path = screenshot_dir / "test_hero.png"
+            else:
+                unreal.log_warning("[ExternalValidation] unreal.Paths.project_saved_dir unavailable; cannot locate hero capture")
+
+            if not storyboard_path or hero_capture_path is None:
+                unreal.log_warning("[ExternalValidation] Storyboard or hero capture path unavailable; skipping external validation")
+                return None
+
+            validation_result = validator.validate(str(storyboard_path), str(hero_capture_path))
+            external_score = None
+            if isinstance(validation_result, dict):
+                external_score = validation_result.get('score')
+
+            if external_score is None:
+                unreal.log_warning("[ExternalValidation] No external score produced; falling back to self-score only")
+                return None
+
+            self_value = float(self.last_match_score)
+            external_value = float(external_score)
+            gap = abs(self_value - external_value)
+            unreal.log(f"[ExternalValidation] self={self_value:.0f} external={external_value:.0f} gap={gap:.0f}")
+
+            # Persisted with this iteration's metrics via
+            # _record_iteration_metrics(validation_result=...).
+            self.last_validation_result = {
+                'external_score': external_value,
+                'composite_objective_score': external_value / 100.0,
+                'discrepancy': gap / 100.0,
+                'valid': gap <= 20
+            }
+            return external_value
+        except Exception as validation_error:
+            unreal.log_warning(f"[ExternalValidation] Skipped due to error: {validation_error}")
+            return None
+
     def _finish_capture_sequence(self):
         """Print final summary and loop if auto-iteration is enabled"""
+        # [ExternalValidation] Run the configured external validator on EVERY
+        # iteration (hoisted out of the self-score > 80 early-stop gate) so
+        # the self-vs-external comparison is computed, shown, and persisted
+        # via _record_iteration_metrics below. None when the feature is off,
+        # unavailable, or failed.
+        external_score = self._run_external_validation()
+
         # Store the current match score and details
         if self.last_match_score is not None:
             self.iteration_scores.append(self.last_match_score)
@@ -5338,12 +5519,23 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             # into the live progress readout. Display only; loop unchanged.
             self._iteration_progress_record_iteration()
 
+            # [ExternalValidation] Surface the self-vs-external banner and
+            # red sparkline point. After add_score above so the external
+            # point aligns with this iteration's self-score point.
+            if external_score is not None:
+                try:
+                    if self.iteration_progress_widget is not None:
+                        self.iteration_progress_widget.set_validation(
+                            float(self.last_match_score), float(external_score))
+                except Exception as banner_error:
+                    unreal.log_warning(f"[ExternalValidation] Could not update banner: {banner_error}")
+
             # [SeamFix] Also surface the score on the basic match readout so
             # progress is visible even without the sparkline widget.
             try:
                 self.comparison_result.show()
                 self.match_label.setText(
-                    "Iteration {0}/{1}: {2}/100".format(
+                    "Iteration {0}/{1}: model self-score {2}/100".format(
                         self.current_iteration, self.max_iterations,
                         self.last_match_score))
                 self.match_progress.setValue(int(self.last_match_score or 0))
@@ -5438,40 +5630,18 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         effective_score = self.last_match_score
         if self.last_match_score and self.last_match_score > 80:
             try:
-                try:
-                    from core.external_validator import ExternalValidator
-                except ImportError as import_error:
-                    ExternalValidator = None
-                    unreal.log_warning(f"[ExternalValidation] Module unavailable: {import_error}")
-
-                validator = ExternalValidator.get_configured() if ExternalValidator is not None else None
-                if validator is not None:
-                    storyboard_path = None
-                    if self.active_panel and 'path' in self.active_panel:
-                        storyboard_path = self.active_panel['path']
-
-                    hero_capture_path = None
-                    if hasattr(unreal, 'Paths') and hasattr(unreal.Paths, 'project_saved_dir'):
-                        screenshot_dir = Path(unreal.Paths.project_saved_dir()) / "Screenshots" / "WindowsEditor"
-                        hero_capture_path = screenshot_dir / "test_hero.png"
-                    else:
-                        unreal.log_warning("[ExternalValidation] unreal.Paths.project_saved_dir unavailable; cannot locate hero capture")
-
-                    if storyboard_path and hero_capture_path is not None:
-                        validation_result = validator.validate(str(storyboard_path), str(hero_capture_path))
-                        external_score = None
-                        if isinstance(validation_result, dict):
-                            external_score = validation_result.get('score')
-
-                        if external_score is not None:
-                            effective_score = min(float(self.last_match_score), float(external_score))
-                            unreal.log(f"[ExternalValidation] self={float(self.last_match_score):.0f} external={float(external_score):.0f} effective={effective_score:.0f}")
-                            if effective_score <= 80:
-                                unreal.log("[ExternalValidation] Conservative score at or below 80 threshold; early stop blocked, iterations continue")
-                        else:
-                            unreal.log_warning("[ExternalValidation] No external score produced; falling back to self-score only")
-                    else:
-                        unreal.log_warning("[ExternalValidation] Storyboard or hero capture path unavailable; skipping external validation")
+                # [ExternalValidation] The external score was already computed
+                # (once per iteration) at the top of this method; only the
+                # conservative min(self, external) early-stop gating stays
+                # behind the > 80 threshold, exactly as before.
+                if external_score is not None:
+                    effective_score = min(float(self.last_match_score), float(external_score))
+                    unreal.log(f"[ExternalValidation] self={float(self.last_match_score):.0f} external={float(external_score):.0f} effective={effective_score:.0f}")
+                    if effective_score <= 80:
+                        unreal.log("[ExternalValidation] Conservative score at or below 80 threshold; early stop blocked, iterations continue")
+                # external_score None: validation off/unavailable/failed
+                # (already logged by _run_external_validation) - self-score
+                # only, unchanged from the pre-validation behavior.
             except Exception as validation_error:
                 unreal.log_warning(f"[ExternalValidation] Skipped due to error: {validation_error}")
                 effective_score = self.last_match_score
@@ -5490,7 +5660,17 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
         # Continue to next iteration only if NOT stopping early and not at max iterations
         if self.auto_iterate and self.current_iteration < self.max_iterations and not should_stop_early:
-            next_delay = 20000  # 20 seconds between iterations
+            # [DemoFlow] Inter-iteration delay configurable via
+            # 'performance.iteration_delay_ms' (default 3000ms, demo-friendly);
+            # falls back to the historical 20000ms if settings are unreadable.
+            next_delay = 20000
+            try:
+                from core.settings_manager import get_setting
+                next_delay = int(get_setting('performance.iteration_delay_ms', 3000) or 3000)
+            except Exception:
+                next_delay = 20000
+            if next_delay < 0:
+                next_delay = 3000
             unreal.log(f"\n CONTINUING TO ITERATION {self.current_iteration + 1}/{self.max_iterations}")
             unreal.log(f"⏳ Next capture will start in {next_delay/1000:.0f} seconds...")
             unreal.log("="*70)
@@ -5720,6 +5900,15 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         except Exception as e:
             unreal.log_warning(f"[IterationProgress] Could not reset progress widget: {e}")
             return
+
+        # [DemoFlow] Scroll the live readout into view when a run starts so
+        # the score sparkline isn't below the fold on small screens.
+        try:
+            panel_scroll = getattr(self, '_panel_scroll', None)
+            if panel_scroll is not None:
+                panel_scroll.ensureWidgetVisible(widget)
+        except Exception as scroll_error:
+            unreal.log_warning(f"[IterationProgress] Could not auto-scroll to progress widget: {scroll_error}")
 
         self._iteration_run_estimate_text = ''
         try:
@@ -6222,6 +6411,9 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             unreal.log(f"Location: {panel_info['location']}")
             unreal.log("="*60)
             # Show what we're generating
+            # [DemoFlow] No modal Ok/Cancel confirm any more - the same
+            # info is already visible in the panel fields; surface it on
+            # the non-modal status path and proceed directly.
             info_text = f"""Generating scene from: {Path(panel_info['path']).name}
 
 Characters: {', '.join(panel_info['characters']) if panel_info['characters'] else 'None'}
@@ -6229,15 +6421,7 @@ Props: {', '.join(panel_info['props']) if panel_info['props'] else 'None'}
 Location: {panel_info['location']}
 Shot Type: {panel_info['shot_type']}"""
 
-            reply = QMessageBox.information(
-                self,
-                "Generate 3D Scene",
-                info_text,
-                QMessageBox.Ok | QMessageBox.Cancel
-            )
-
-            if reply != QMessageBox.Ok:
-                return
+            self._notify_status("Generate 3D Scene", info_text, "info")
 
             # Generate the scene using FIXED SEQUENCER builder with camera cut track
             unreal.log("="*60)
@@ -6295,22 +6479,15 @@ Shot Type: {panel_info['shot_type']}"""
                 unreal.log("=" * 60)
 
                 # Show success message with camera cut track info
-                QMessageBox.information(
-                    self,
+                # [DemoFlow] Non-modal notify/status path instead of a
+                # focus-stealing QMessageBox during the demo.
+                self._notify_status(
                     "Building in Sequencer",
-                    f"Creating Level Sequence with assets!\n\n" +
-                    f" SEQUENCER BUILD:\n" +
-                    f"1. Create Level Sequence \n" +
-                    f"2. Load location: {panel_info.get('location', 'Current')} \n" +
-                    f"3. Open Sequencer window \n" +
-                    f"4. Add characters as spawnables \n" +
-                    f"5. Add camera with {panel_info.get('shot_type', 'medium')} shot \n" +
-                    f"6. Setup camera cut track  \n" +
-                    f"7. Add lighting to sequence \n\n" +
-                    f" Camera Cut Track created!\n" +
-                    f" Press Shift+C in Sequencer to lock viewport to camera\n" +
-                    f" Everything in Sequencer!"
-                )
+                    "Creating Level Sequence: location {0}, {1} shot, camera cut track. "
+                    "Press Shift+C in Sequencer to lock viewport to camera.".format(
+                        panel_info.get('location', 'Current'),
+                        panel_info.get('shot_type', 'medium')),
+                    "info")
 
                 # Store scene data and get camera reference from builder
                 self.last_generated_scene = scene_data
@@ -6607,11 +6784,10 @@ Shot Type: {panel_info['shot_type']}"""
 These elements have been added to your panel.
 You can edit them before generating the scene.{available_info}"""
 
-                    QMessageBox.information(
-                        self,
-                        "Analysis Complete",
-                        results_text
-                    )
+                    # [DemoFlow] Non-modal notify/status path instead of a
+                    # focus-stealing QMessageBox; the detected elements are
+                    # already populated in the panel fields on screen.
+                    self._notify_status("Analysis Complete", results_text, "info")
 
                     unreal.log("Panel analyzed and UI populated successfully")
 

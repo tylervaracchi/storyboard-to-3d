@@ -50,6 +50,9 @@ class _ScoreSparkline(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._points = []  # List[Tuple[int, float]]
+        # [Validation] External-validation scores keyed by iteration number,
+        # drawn as a red series on top of the self-score line.
+        self._external_points = {}  # Dict[int, float]
         self.setMinimumHeight(48)
         self.setMaximumHeight(64)
         try:
@@ -66,9 +69,19 @@ class _ScoreSparkline(QWidget):
             self._points = self._points[-self.MAX_POINTS:]
         self.update()
 
+    def add_external_score(self, score):
+        """[Validation] Attach an external-validation score to the most
+        recent self-score point and repaint. No-op when no self points
+        exist yet (the caller records the self score first)."""
+        if not self._points:
+            return
+        self._external_points[self._points[-1][0]] = score
+        self.update()
+
     def clear_scores(self):
         """Drop all recorded points and repaint empty."""
         self._points = []
+        self._external_points = {}
         self.update()
 
     def paintEvent(self, event):
@@ -123,6 +136,26 @@ class _ScoreSparkline(QWidget):
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(QBrush(line_color))
                 painter.drawEllipse(prev_point, 3, 3)
+
+            # [Validation] External-validation series in red (#FF6B6B),
+            # drawn after (on top of) the self-score line so the divergence
+            # between the model's story and external reality is visible.
+            if self._external_points:
+                ext_color = QColor("#FF6B6B")
+                ext_prev = None
+                ext_dots = []
+                painter.setPen(QPen(ext_color, 1))
+                for i, (iteration, _score) in enumerate(self._points):
+                    if iteration in self._external_points:
+                        ext_point = point_at(i, self._external_points[iteration])
+                        if ext_prev is not None:
+                            painter.drawLine(ext_prev, ext_point)
+                        ext_prev = ext_point
+                        ext_dots.append(ext_point)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(ext_color))
+                for ext_dot in ext_dots:
+                    painter.drawEllipse(ext_dot, 3, 3)
         finally:
             painter.end()
 
@@ -155,10 +188,19 @@ class IterationProgressWidget(QWidget):
         header_row.addWidget(title_label)
         header_row.addStretch()
 
-        self.current_score_label = QLabel("Score: --")
+        self.current_score_label = QLabel("Model self-score: --")
         self.current_score_label.setStyleSheet("color: #CCCCCC; font-size: 12px; font-weight: bold;")
         header_row.addWidget(self.current_score_label)
         layout.addLayout(header_row)
+
+        # [Validation] Self-vs-external banner row. Hidden until
+        # set_validation() is called; cleared again by reset().
+        self.validation_label = QLabel("")
+        self.validation_label.setStyleSheet(
+            "color: #CCCCCC; font-size: 12px; font-weight: bold;")
+        self.validation_label.setWordWrap(True)
+        self.validation_label.setVisible(False)
+        layout.addWidget(self.validation_label)
 
         self.sparkline = _ScoreSparkline(self)
         layout.addWidget(self.sparkline)
@@ -205,7 +247,39 @@ class IterationProgressWidget(QWidget):
             return
 
         self.sparkline.add_score(iteration_value, score_value)
-        self.current_score_label.setText(f"Score: {score_value:.0f}/100 (iter {iteration_value})")
+        self.current_score_label.setText(
+            f"Model self-score: {score_value:.0f}/100 (iter {iteration_value})")
+
+    def set_validation(self, self_score, external_score):
+        """
+        [Validation] Show the model self-score vs external-validation banner
+        and add a red external point to the sparkline. Call AFTER add_score()
+        for the same iteration so the red point aligns with the latest
+        self-score point.
+
+        Args:
+            self_score: Model's self-reported match score (0-100).
+            external_score: External validator's score (0-100).
+        """
+        try:
+            self_value = float(self_score)
+            external_value = float(external_score)
+        except (TypeError, ValueError):
+            return
+
+        delta = external_value - self_value
+        gap = abs(delta)
+        self.validation_label.setText(
+            "Model self-score: {0:.0f} / External validation: {1:.0f} ({2:+.0f})".format(
+                self_value, external_value, delta))
+        if gap > 15:
+            self.validation_label.setStyleSheet(
+                "color: #FF6B6B; font-size: 12px; font-weight: bold;")
+        else:
+            self.validation_label.setStyleSheet(
+                "color: #CCCCCC; font-size: 12px; font-weight: bold;")
+        self.validation_label.setVisible(True)
+        self.sparkline.add_external_score(external_value)
 
     def set_cost_text(self, text):
         """
@@ -220,7 +294,9 @@ class IterationProgressWidget(QWidget):
     def reset(self):
         """Clear recorded scores and readouts, e.g. when starting a new panel."""
         self.sparkline.clear_scores()
-        self.current_score_label.setText("Score: --")
+        self.current_score_label.setText("Model self-score: --")
+        self.validation_label.setText("")
+        self.validation_label.setVisible(False)
         self.cost_label.setText("")
 
     def _on_cancel_clicked(self):

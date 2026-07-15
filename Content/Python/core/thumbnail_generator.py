@@ -51,9 +51,10 @@ try:
 except ImportError:
     RIG_HELPERS_AVAILABLE = False
 
-# Staging area: far from the origin and far below the ground plane so the
-# temporary subject/capture/light never intersect the user's scene.
-STAGING_LOCATION = (1000000.0, 0.0, -100000.0)
+# Staging area: far from the origin and far above the ground plane so the
+# temporary subject/capture/light never intersect the user's scene (and sit
+# above any exponential height fog, which thickens below the ground plane).
+STAGING_LOCATION = (1000000.0, 0.0, 100000.0)
 CAMERA_AZIMUTH_DEG = 40.0
 CAMERA_ELEVATION_DEG = 25.0
 CAMERA_DISTANCE_FACTOR = 2.2
@@ -320,16 +321,16 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
     Both temp actors (and any temp light) are destroyed in a finally block.
 
     NOTE ON LIGHTING: the capture renders with the CURRENT level's
-    lighting. If the level contains no light actors the subject would be
-    black, so when spawn_temp_light is True (default) a temporary
-    DirectionalLight aimed like the camera is spawned for the duration of
-    the capture and destroyed with everything else.
+    lighting, but the staging area is far from any level lights, so when
+    spawn_temp_light is True (default) a temporary DirectionalLight aimed
+    like the camera is always spawned for the duration of the capture and
+    destroyed with everything else.
 
     Args:
         asset_path: Content Browser path (e.g. /Game/Props/SM_Ball).
         output_png: absolute path of the PNG to write.
         size: square render target dimension in pixels.
-        spawn_temp_light: add a temp DirectionalLight when the level is unlit.
+        spawn_temp_light: add a temp DirectionalLight for the capture.
 
     Returns:
         True when the PNG exists on disk afterwards, False otherwise.
@@ -394,8 +395,8 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
             return False
         configure_capture_component(comp, rt)
 
-        if spawn_temp_light and not _level_has_light():
-            _log('Level has no lights; spawning a temporary DirectionalLight')
+        if spawn_temp_light:
+            _log('Spawning a temporary DirectionalLight for the capture')
             light = _spawn_temp_light(cam_rotation)
 
         if hasattr(comp, 'capture_scene'):

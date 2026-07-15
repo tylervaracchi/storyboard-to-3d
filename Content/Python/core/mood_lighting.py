@@ -40,9 +40,9 @@ MOOD_PRESETS = {
         'color': (1.0, 0.98, 0.92), 'sky_intensity_scale': 1.0, 'fog': None,
     },
     'night': {
-        'sun_pitch': -35.0, 'sun_yaw': -60.0, 'intensity': 0.6,
-        'color': (0.55, 0.65, 1.0), 'sky_intensity_scale': 0.15,
-        'fog': {'color': (0.03, 0.05, 0.10), 'density': 0.03},
+        'sun_pitch': -35.0, 'sun_yaw': -60.0, 'intensity': 3.0,
+        'color': (0.55, 0.65, 1.0), 'sky_intensity_scale': 0.5,
+        'fog': {'color': (0.03, 0.05, 0.10), 'density': 0.015},
     },
     'golden_hour': {
         'sun_pitch': -8.0, 'sun_yaw': 60.0, 'intensity': 5.0,
@@ -62,7 +62,7 @@ MOOD_PRESETS = {
     'tense': {
         'sun_pitch': -20.0, 'sun_yaw': 140.0, 'intensity': 2.5,
         'color': (0.80, 0.75, 0.90), 'sky_intensity_scale': 0.2,
-        'fog': {'color': (0.08, 0.06, 0.12), 'density': 0.06},
+        'fog': {'color': (0.08, 0.06, 0.12), 'density': 0.025},
     },
     'warm': {
         'sun_pitch': -35.0, 'sun_yaw': 45.0, 'intensity': 6.0,
@@ -76,7 +76,7 @@ MOOD_PRESETS = {
     'mysterious': {
         'sun_pitch': -15.0, 'sun_yaw': -120.0, 'intensity': 1.5,
         'color': (0.50, 0.60, 0.85), 'sky_intensity_scale': 0.25,
-        'fog': {'color': (0.15, 0.20, 0.30), 'density': 0.09},
+        'fog': {'color': (0.15, 0.20, 0.30), 'density': 0.03},
     },
     'cheerful': {
         'sun_pitch': -60.0, 'sun_yaw': 20.0, 'intensity': 12.0,

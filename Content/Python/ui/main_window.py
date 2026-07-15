@@ -112,7 +112,6 @@ class ModernStoryboardWindow(QMainWindow):
         # Initial load
         self.show_manager.refresh_shows_list()
         self.sync_content_browser()
-        self.setup_periodic_sync()
 
     def init_ui(self):
         """Initialize the modern UI with 6 columns"""
@@ -429,6 +428,32 @@ class ModernStoryboardWindow(QMainWindow):
         settings_action.setToolTip("Open Settings (Ctrl+,)")
         settings_action.triggered.connect(self.open_settings)
         toolbar.addAction(settings_action)
+
+        toolbar.addSeparator()
+
+        # [DemoFlow] Pin the plugin window above the UE editor so clicking
+        # the viewport doesn't bury it during a live demo.
+        self.pin_on_top_action = QAction("Pin on top", self)
+        self.pin_on_top_action.setCheckable(True)
+        self.pin_on_top_action.setToolTip(
+            "Keep this window above the Unreal editor")
+        self.pin_on_top_action.toggled.connect(self._toggle_pin_on_top)
+        toolbar.addAction(self.pin_on_top_action)
+
+    def _toggle_pin_on_top(self, checked):
+        """[DemoFlow] Toggle the always-on-top window flag.
+
+        Changing window flags hides the window, so re-show() afterwards.
+        Never raises.
+        """
+        try:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, bool(checked))
+            self.show()
+        except Exception as e:
+            try:
+                unreal.log_warning(f"[DemoFlow] Pin on top failed: {e}")
+            except Exception:
+                pass
 
     def create_center_column(self):
         """Create center column with panel grid"""
@@ -749,12 +774,6 @@ class ModernStoryboardWindow(QMainWindow):
             unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).sync_browser_to_objects([])
         except Exception as e:
             unreal.log_warning(f"Content browser sync failed: {e}")
-
-    def setup_periodic_sync(self):
-        """Setup periodic content browser sync"""
-        self.sync_timer = QTimer()
-        self.sync_timer.timeout.connect(self.sync_content_browser)
-        self.sync_timer.start(5000)  # Sync every 5 seconds
 
     def on_panel_clicked(self, panel_data):
         """Handle panel click"""

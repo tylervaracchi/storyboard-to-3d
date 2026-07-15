@@ -6,10 +6,10 @@ Camera Moves for StoryboardTo3D
 Maps storyboard shot types to subtle camera moves keyed onto a shot
 sequence's camera binding:
 
-    close  -> slow push-in (forward dolly, ~8 percent of the
+    close  -> slow push-in (forward dolly, ~22 percent of the
               camera-to-subject distance, fallback 60 UE units)
-    medium -> lateral drift (~40 UE units)
-    wide   -> slow pan (~4 degrees yaw), falling back to a gentle
+    medium -> lateral drift (~120 UE units)
+    wide   -> slow pan (~15 degrees yaw), falling back to a gentle
               lateral track when no rotation channel is identifiable
     other  -> no move (Auto/OTS/POV/unknown stay static)
 
@@ -32,10 +32,10 @@ except ImportError:
     UNREAL_AVAILABLE = False
 
 # Move tuning constants
-PUSH_IN_FRACTION = 0.08          # close-up dolly: fraction of camera-to-subject distance
+PUSH_IN_FRACTION = 0.22          # close-up dolly: fraction of camera-to-subject distance
 PUSH_IN_FALLBACK_UNITS = 60.0    # close-up dolly when no subject location is known
-LATERAL_DRIFT_UNITS = 40.0       # medium-shot sideways drift
-PAN_YAW_DEGREES = 4.0            # wide-shot slow pan
+LATERAL_DRIFT_UNITS = 120.0      # medium-shot sideways drift
+PAN_YAW_DEGREES = 15.0           # wide-shot slow pan
 
 
 def _log(message):
