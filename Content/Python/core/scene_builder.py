@@ -524,6 +524,88 @@ class SceneBuilder:
 
         return sequence_data
 
+    # ------------------------------------------------------------------
+    # Location stage anchor (camera_start / stage_center from the library)
+    # ------------------------------------------------------------------
+
+    def _ensure_stage_anchor(self, analysis: Dict[str, Any]) -> None:
+        """Resolve this location's stage anchor once per location.
+
+        Locations added from the Content Browser record the editor camera
+        pose ('camera_start') and a traced ground point in front of it
+        ('stage_center') into their library entry. Building the scene
+        there instead of at world origin keeps characters and camera out
+        of whatever geometry the map happens to have at (0,0,0) - e.g.
+        a cornfield or a fence line. Entries without an anchor keep the
+        legacy world-origin behavior unchanged.
+        """
+        loc_name = str(analysis.get('location') or '').strip()
+        if getattr(self, '_anchor_location', None) == loc_name:
+            return
+        self._anchor_location = loc_name
+        self._stage_center = unreal.Vector(0.0, 0.0, 0.0)
+        self._stage_yaw = 0.0
+        self._camera_start = None
+
+        try:
+            library = self._get_asset_paths_from_library() or {}
+            locations = library.get('locations', {})
+            entry = locations.get(loc_name)
+            if not isinstance(entry, dict):
+                loc_lower = loc_name.lower()
+                for key, info in locations.items():
+                    if isinstance(info, dict) and key.strip().lower() == loc_lower:
+                        entry = info
+                        break
+            if not isinstance(entry, dict):
+                return
+
+            center = entry.get('stage_center')
+            if isinstance(center, dict):
+                self._stage_center = unreal.Vector(
+                    float(center.get('x', 0.0) or 0.0),
+                    float(center.get('y', 0.0) or 0.0),
+                    float(center.get('z', 0.0) or 0.0))
+
+            cam = entry.get('camera_start')
+            if isinstance(cam, dict) and isinstance(cam.get('location'), dict):
+                self._camera_start = cam
+                rot = cam.get('rotation') or {}
+                try:
+                    self._stage_yaw = float(rot.get('yaw', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    self._stage_yaw = 0.0
+
+            if self._camera_start is not None or isinstance(center, dict):
+                unreal.log("[StageAnchor] '{0}': building at stage center "
+                           "({1:.0f}, {2:.0f}, {3:.0f}), yaw {4:.0f}{5}".format(
+                               loc_name, self._stage_center.x,
+                               self._stage_center.y, self._stage_center.z,
+                               self._stage_yaw,
+                               ", camera_start recorded" if self._camera_start else ""))
+            else:
+                unreal.log("[StageAnchor] '{0}' has no stage anchor; building at "
+                           "world origin. Add the location from the Content "
+                           "Browser (with the map open at a clear vantage) to "
+                           "record one.".format(loc_name))
+        except Exception as e:
+            unreal.log_warning(f"[StageAnchor] Could not resolve anchor: {e}")
+
+    def _offset_from_stage(self, offset: unreal.Vector) -> unreal.Vector:
+        """World position for an offset defined stage-relative (offsets
+        assume the camera looks down +X): rotate by the stage yaw and
+        translate to the stage center. With no anchor this is identity."""
+        import math
+        yaw_rad = math.radians(getattr(self, '_stage_yaw', 0.0) or 0.0)
+        cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
+        center = getattr(self, '_stage_center', None)
+        if center is None:
+            center = unreal.Vector(0.0, 0.0, 0.0)
+        return unreal.Vector(
+            center.x + offset.x * cos_y - offset.y * sin_y,
+            center.y + offset.x * sin_y + offset.y * cos_y,
+            center.z + offset.z)
+
     def _spawn_characters(self, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Prepare character spawn configurations.
@@ -550,6 +632,12 @@ class SceneBuilder:
         props_list = analysis.get('props', [])
         num_chars = len(character_names)
 
+        # Build at the location's stage anchor (world origin when none)
+        self._ensure_stage_anchor(analysis)
+        # Default facing: back toward the stage camera so iteration 1
+        # starts with characters looking roughly into the lens
+        default_yaw = (getattr(self, '_stage_yaw', 0.0) + 180.0) % 360.0
+
         unreal.log(f"Positioning {num_chars} character(s) for {location_type} scene")
 
         for i, char_name in enumerate(character_names):
@@ -557,8 +645,9 @@ class SceneBuilder:
                 unreal.log(f"Preparing character config: {char_name}")
 
                 char_path = self._find_asset_path(char_name, asset_paths, 'characters')
-                position = self._calculate_character_position(i, num_chars, location_type, props_list)
-                
+                position = self._offset_from_stage(
+                    self._calculate_character_position(i, num_chars, location_type, props_list))
+
                 unreal.log(f"Position: X={position.x:.0f}, Y={position.y:.0f}, Z={position.z:.0f}")
 
                 if char_path:
@@ -572,7 +661,7 @@ class SceneBuilder:
                         'asset_path': char_path,
                         'name': char_name,
                         'position': position,
-                        'rotation': unreal.Rotator(pitch=0, yaw=0, roll=0),
+                        'rotation': unreal.Rotator(pitch=0, yaw=default_yaw, roll=0),
                         'is_placeholder': False
                     })
                     unreal.log(f"Config created: {char_name}")
@@ -610,13 +699,16 @@ class SceneBuilder:
             return prop_configs
 
         asset_paths = self._get_asset_paths_from_library()
+        self._ensure_stage_anchor(analysis)
 
         for i, prop_name in enumerate(prop_names):
             try:
                 unreal.log(f"Preparing prop config: {prop_name}")
 
                 prop_path = self._find_asset_path(prop_name, asset_paths, 'props')
-                position = unreal.Vector(0, 0, 0)  # AI positioning handles placement
+                # Stage anchor keeps the initial spawn out of blind geometry;
+                # AI positioning handles final placement
+                position = self._offset_from_stage(unreal.Vector(0, 0, 0))
 
                 if prop_path:
                     if not unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).does_asset_exist(prop_path):
@@ -667,12 +759,14 @@ class SceneBuilder:
         elif mood == 'bright':
             base_intensity = 3.0
 
-        # Three-point lighting setup
+        # Three-point lighting rig around the stage anchor (world origin
+        # when the location has none)
+        self._ensure_stage_anchor(analysis)
         light_configs.append({
             'type': 'spawnable',
             'class': unreal.PointLight,
             'name': 'Key Light',
-            'position': unreal.Vector(-300, -200, 400),
+            'position': self._offset_from_stage(unreal.Vector(-300, -200, 400)),
             'intensity': base_intensity * 1000,
             'color': unreal.LinearColor(r=1.0, g=1.0, b=1.0)
         })
@@ -681,7 +775,7 @@ class SceneBuilder:
             'type': 'spawnable',
             'class': unreal.PointLight,
             'name': 'Fill Light',
-            'position': unreal.Vector(-300, 200, 350),
+            'position': self._offset_from_stage(unreal.Vector(-300, 200, 350)),
             'intensity': base_intensity * 500,
             'color': unreal.LinearColor(r=1.0, g=1.0, b=1.0)
         })
@@ -690,7 +784,7 @@ class SceneBuilder:
             'type': 'spawnable',
             'class': unreal.PointLight,
             'name': 'Rim Light',
-            'position': unreal.Vector(400, 0, 300),
+            'position': self._offset_from_stage(unreal.Vector(400, 0, 300)),
             'intensity': base_intensity * 300,
             'color': unreal.LinearColor(r=1.0, g=1.0, b=1.0)
         })
@@ -718,7 +812,6 @@ class SceneBuilder:
         }
 
         distance = distance_map.get(shot_type, 300)
-        camera_pos = unreal.Vector(-distance, 0, 180)
 
         focal_length = 50.0
         if 'close' in shot_type:
@@ -726,11 +819,34 @@ class SceneBuilder:
         elif 'wide' in shot_type:
             focal_length = 24.0
 
+        # Camera placement: the location's recorded camera_start is a
+        # KNOWN-GOOD vantage (it is exactly what the user was looking at
+        # when the location was added), so use it verbatim. Otherwise
+        # fall back to the shot-distance offset behind the stage center.
+        self._ensure_stage_anchor(analysis)
+        camera_start = getattr(self, '_camera_start', None)
+        if isinstance(camera_start, dict):
+            cam_loc = camera_start.get('location') or {}
+            cam_rot = camera_start.get('rotation') or {}
+            camera_pos = unreal.Vector(
+                float(cam_loc.get('x', 0.0) or 0.0),
+                float(cam_loc.get('y', 0.0) or 0.0),
+                float(cam_loc.get('z', 180.0) or 180.0))
+            camera_rotation = unreal.Rotator(
+                pitch=float(cam_rot.get('pitch', 0.0) or 0.0),
+                yaw=float(cam_rot.get('yaw', 0.0) or 0.0),
+                roll=float(cam_rot.get('roll', 0.0) or 0.0))
+            unreal.log("[StageAnchor] Hero camera starting at the location's recorded camera_start")
+        else:
+            camera_pos = self._offset_from_stage(unreal.Vector(-distance, 0, 180))
+            camera_rotation = unreal.Rotator(
+                pitch=0.0, yaw=getattr(self, '_stage_yaw', 0.0) or 0.0, roll=0.0)
+
         camera_config = {
             'type': 'spawnable',
             'class': unreal.CineCameraActor,
             'position': camera_pos,
-            'rotation': unreal.Rotator(0, 0, 0),
+            'rotation': camera_rotation,
             'label': f"Hero_StoryboardCamera_Shot_{shot_type}",
             'shot_type': shot_type,
             'focal_length': focal_length

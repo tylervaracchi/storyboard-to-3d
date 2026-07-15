@@ -5933,12 +5933,31 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 unreal.log_warning(f"[ExternalValidation] Skipped due to error: {validation_error}")
                 effective_score = self.last_match_score
 
-        should_stop_early = (effective_score and effective_score > 80) or oscillation_detected
+        # Stagnation: three identical LOW scores in a row means the AI's
+        # adjustments are not changing what the hero camera sees (typically
+        # bad framing - camera behind scenery, characters inside geometry).
+        # Burning the remaining iterations just repeats the same API cost.
+        stagnation_detected = False
+        try:
+            recent = list(self.iteration_scores[-3:])
+            if len(recent) == 3 and len(set(recent)) == 1 and recent[0] < 40:
+                stagnation_detected = True
+        except Exception:
+            stagnation_detected = False
+
+        should_stop_early = ((effective_score and effective_score > 80)
+                             or oscillation_detected or stagnation_detected)
 
         if should_stop_early:
             if oscillation_detected:
                 unreal.log(f"\n EARLY STOP: Oscillation detected (cannot converge further)")
                 unreal.log(f"Final score: {self.last_match_score}/100")
+            elif stagnation_detected:
+                unreal.log(f"\n EARLY STOP: Score stuck at {self.last_match_score}/100 for 3 iterations")
+                unreal.log("The camera likely cannot see the characters (blocked scenery,")
+                unreal.log("characters inside geometry). Check the location's stage anchor:")
+                unreal.log("open the map at a clear vantage and re-add the location from the")
+                unreal.log("Content Browser to record a new camera/stage position.")
             else:
                 unreal.log(f"\n EARLY STOP: Match score {self.last_match_score}/100 exceeds 80% threshold!")
                 unreal.log("Scene positioning achieved target quality")

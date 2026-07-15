@@ -958,6 +958,114 @@ class AssetLibraryWidget(QWidget):
             return None
         return {0: 'characters', 1: 'props', 2: 'locations'}.get(index)
 
+    def _capture_location_on_add(self, name, asset_path, out_png):
+        """Open a location's map, capture the editor viewport as its
+        thumbnail, record the camera pose plus a traced ground point as
+        the location's stage anchor, then restore the previously open map.
+
+        The recorded 'camera_start' / 'stage_center' are what SceneBuilder
+        uses to build scenes at a known-good vantage instead of world
+        origin (which may be inside scenery).
+
+        Returns {'thumbnail': bool, 'camera_start': dict|None,
+        'stage_center': dict|None}. Never raises.
+        """
+        result = {'thumbnail': False, 'camera_start': None, 'stage_center': None}
+        try:
+            from core.thumbnail_generator import (
+                generate_asset_thumbnail, LOCATION_THUMBNAIL_DEFERRED)
+            wanted = str(asset_path).split('.')[0]
+
+            ues = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+
+            # Remember the currently open map so we can put the user back
+            prev_level = None
+            try:
+                world = ues.get_editor_world()
+                if world:
+                    prev_level = str(world.get_package().get_name())
+            except Exception:
+                prev_level = None
+
+            def _load(path):
+                try:
+                    les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
+                    if les and hasattr(les, 'load_level'):
+                        return bool(les.load_level(path))
+                except Exception:
+                    pass
+                try:
+                    return bool(unreal.EditorLevelLibrary.load_level(path))
+                except Exception as load_err:
+                    unreal.log_warning(f"[LocationAdd] Could not load {path}: {load_err}")
+                    return False
+
+            needs_load = (prev_level or '') != wanted
+            if needs_load:
+                unreal.log(f"[LocationAdd] '{name}': opening map for thumbnail capture...")
+                if not _load(wanted):
+                    return result
+
+            # Viewport capture (generate_asset_thumbnail routes level
+            # assets to the open-level capture path)
+            status = generate_asset_thumbnail(asset_path, str(out_png))
+            result['thumbnail'] = (status is True)
+            if status == LOCATION_THUMBNAIL_DEFERRED:
+                unreal.log_warning(
+                    f"[LocationAdd] Viewport capture unavailable for '{name}' "
+                    "(map placeholder written instead)")
+
+            # Record the editor camera as the location's stage anchor
+            try:
+                info = ues.get_level_viewport_camera_info()
+                if info:
+                    cam_loc, cam_rot = info
+                    result['camera_start'] = {
+                        'location': {'x': float(cam_loc.x), 'y': float(cam_loc.y), 'z': float(cam_loc.z)},
+                        'rotation': {'pitch': float(cam_rot.pitch), 'yaw': float(cam_rot.yaw), 'roll': float(cam_rot.roll)},
+                    }
+                    forward = unreal.MathLibrary.get_forward_vector(cam_rot)
+                    target_x = float(cam_loc.x) + float(forward.x) * 500.0
+                    target_y = float(cam_loc.y) + float(forward.y) * 500.0
+                    target_z = float(cam_loc.z) + float(forward.z) * 500.0
+
+                    ground_z = None
+                    try:
+                        world = ues.get_editor_world()
+                        hit = unreal.SystemLibrary.line_trace_single(
+                            world,
+                            unreal.Vector(target_x, target_y, target_z + 1000.0),
+                            unreal.Vector(target_x, target_y, target_z - 5000.0),
+                            unreal.TraceTypeQuery.TRACE_TYPE_QUERY1,
+                            False, [], unreal.DrawDebugTrace.NONE, True)
+                        if hit:
+                            hit_values = unreal.GameplayStatics.break_hit_result(hit)
+                            ground_z = float(hit_values[4].z)
+                    except Exception as trace_err:
+                        unreal.log(f"[LocationAdd] Ground trace unavailable ({trace_err}); "
+                                   "estimating ground from camera height")
+                    if ground_z is None:
+                        ground_z = float(cam_loc.z) - 160.0
+
+                    result['stage_center'] = {'x': target_x, 'y': target_y, 'z': ground_z}
+                    unreal.log(f"[LocationAdd] '{name}': stage anchor recorded at "
+                               f"({target_x:.0f}, {target_y:.0f}, {ground_z:.0f}) "
+                               "from the current viewport. Scenes for this "
+                               "location will build there.")
+                else:
+                    unreal.log_warning("[LocationAdd] No viewport camera info available; "
+                                       "no stage anchor recorded")
+            except Exception as cam_err:
+                unreal.log_warning(f"[LocationAdd] Could not record the viewport camera: {cam_err}")
+
+            # Put the user back in the map they had open
+            if needs_load and prev_level and not prev_level.startswith('/Temp'):
+                unreal.log(f"[LocationAdd] Restoring previous map: {prev_level}")
+                _load(prev_level)
+        except Exception as e:
+            unreal.log_warning(f"[LocationAdd] Capture flow failed for '{name}': {e}")
+        return result
+
     def add_selected_from_content_browser(self):
         """Add the assets selected in the Content Browser to the library"""
         if not self.current_show:
@@ -992,6 +1100,31 @@ class AssetLibraryWidget(QWidget):
         active_category = self.get_active_category()
         added = []
         skipped = []
+        thumb_dir = Path(self.current_show_path) / "Thumbnails"
+
+        # AI auto-describe everything we add (same cataloger as the Edit
+        # dialog / AI Describe All: one small image call per asset, using
+        # the thumbnail captured below). One shared provider for the
+        # whole selection; unavailable provider just skips describing.
+        describe_asset = None
+        merge_aliases = None
+        describe_provider = None
+        described_count = 0
+        describe_cost = 0.0
+        try:
+            from core.asset_cataloger import (
+                describe_asset as _describe_asset,
+                merge_aliases as _merge_aliases,
+                _create_provider,
+            )
+            describe_provider = _create_provider()
+            if describe_provider is None:
+                unreal.log_warning("Auto-describe skipped: no AI provider configured")
+            else:
+                describe_asset = _describe_asset
+                merge_aliases = _merge_aliases
+        except Exception as e:
+            unreal.log_warning(f"Auto-describe unavailable: {e}")
 
         for asset in selected:
             built = build_entry_from_asset(asset)
@@ -1023,30 +1156,71 @@ class AssetLibraryWidget(QWidget):
             unreal.log(f"Added asset from Content Browser: {name} -> {asset_path} [{category}]")
 
             if category == 'locations':
-                # Levels cannot be staged as actors for a turntable thumbnail;
-                # skip generation instead of logging a guaranteed failure
-                continue
+                # Levels: open the map, capture the viewport as the
+                # thumbnail, record the camera pose + stage anchor for
+                # scene builds, then restore the previously open map.
+                try:
+                    from core.thumbnail_generator import safe_thumbnail_filename
+                    out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
+                    capture = self._capture_location_on_add(name, asset_path, out_png)
+                    entry = self.library.library[category][name]
+                    if capture.get('thumbnail'):
+                        entry['thumbnail'] = {
+                            'type': 'viewport',
+                            'path': str(out_png),
+                        }
+                    if capture.get('camera_start'):
+                        entry['camera_start'] = capture['camera_start']
+                    if capture.get('stage_center'):
+                        entry['stage_center'] = capture['stage_center']
+                except Exception as e:
+                    unreal.log_warning(f"Location capture flow errored for {name}: {e}")
+            else:
+                # Auto-generate a thumbnail; a failure here only logs.
+                # Content Browser thumbnail first (cached/editor-rendered via
+                # the C++ helper), then the turntable capture as fallback.
+                try:
+                    from core.thumbnail_generator import (
+                        generate_asset_thumbnail, safe_thumbnail_filename,
+                        try_export_editor_thumbnail
+                    )
+                    out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
+                    if try_export_editor_thumbnail(asset_path, str(out_png)) \
+                            or generate_asset_thumbnail(asset_path, str(out_png)):
+                        self.library.library[category][name]['thumbnail'] = {
+                            'type': 'content_browser',
+                            'path': str(out_png),
+                        }
+                    else:
+                        unreal.log_warning(f"Thumbnail generation failed for {name}")
+                except Exception as e:
+                    unreal.log_warning(f"Thumbnail generation errored for {name}: {e}")
 
-            # Auto-generate a thumbnail; a failure here only logs.
-            # Content Browser thumbnail first (cached/editor-rendered via
-            # the C++ helper), then the turntable capture as fallback.
-            try:
-                from core.thumbnail_generator import (
-                    generate_asset_thumbnail, safe_thumbnail_filename,
-                    try_export_editor_thumbnail
-                )
-                thumb_dir = Path(self.current_show_path) / "Thumbnails"
-                out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
-                if try_export_editor_thumbnail(asset_path, str(out_png)) \
-                        or generate_asset_thumbnail(asset_path, str(out_png)):
-                    self.library.library[category][name]['thumbnail'] = {
-                        'type': 'content_browser',
-                        'path': str(out_png),
-                    }
-                else:
-                    unreal.log_warning(f"Thumbnail generation failed for {name}")
-            except Exception as e:
-                unreal.log_warning(f"Thumbnail generation errored for {name}: {e}")
+            # AI auto-describe the freshly added entry from its thumbnail
+            # (no extra click needed; failures only log and the asset can
+            # still be described later via Edit or AI Describe All)
+            if describe_asset is not None:
+                try:
+                    entry = self.library.library[category][name]
+                    unreal.log(f"Auto-describing '{name}' with AI...")
+                    described = describe_asset(
+                        name, entry, provider=describe_provider,
+                        thumb_dir=str(thumb_dir))
+                    if isinstance(described, dict):
+                        entry['description'] = described['description']
+                        entry['aliases'] = merge_aliases(
+                            entry.get('aliases'), described.get('aliases'))
+                        if category == 'characters' and described.get('attached_props'):
+                            entry['attached_props'] = described['attached_props']
+                        describe_cost += float(described.get('cost') or 0.0)
+                        described_count += 1
+                        unreal.log(f"Auto-described '{name}': {entry['description'][:80]}")
+                    else:
+                        unreal.log_warning(
+                            f"Auto-describe returned nothing for '{name}' "
+                            "(use Edit or AI Describe All to retry)")
+                except Exception as e:
+                    unreal.log_warning(f"Auto-describe errored for '{name}': {e}")
 
         # Single write for the whole selection (adds + thumbnails)
         if added:
@@ -1058,6 +1232,9 @@ class AssetLibraryWidget(QWidget):
         summary = f"Added {len(added)} asset(s) to this show."
         if added:
             summary += "\n\n" + "\n".join(added[:10])
+        if described_count:
+            summary += (f"\n\nAI described: {described_count} asset(s)"
+                        f" (est. ${describe_cost:.4f})")
         if skipped:
             summary += "\n\nSkipped:\n" + "\n".join(skipped[:10])
         QMessageBox.information(self, "Add from Content Browser", summary)

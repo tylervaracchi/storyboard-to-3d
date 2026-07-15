@@ -823,7 +823,9 @@ class ModernStoryboardWindow(QMainWindow):
     def sync_content_browser(self):
         """Sync with Unreal Content Browser"""
         try:
-            unreal.get_editor_subsystem(unreal.EditorAssetSubsystem).sync_browser_to_objects([])
+            # sync_browser_to_objects lives on EditorAssetLibrary, not the
+            # EditorAssetSubsystem (which has no such method in UE 5.x)
+            unreal.EditorAssetLibrary.sync_browser_to_objects([])
         except Exception as e:
             unreal.log_warning(f"Content browser sync failed: {e}")
 
