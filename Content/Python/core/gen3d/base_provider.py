@@ -76,7 +76,7 @@ class Gen3DProvider(object):
     name = 'base'
     pricing_note = ''
 
-    DEFAULT_QUALITY = 'preview'
+    DEFAULT_QUALITY = 'standard'
     DEFAULT_TIMEOUT_SECONDS = 180
     POLL_INTERVAL_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 30
@@ -360,8 +360,10 @@ class Gen3DProvider(object):
 
     def get_quality(self):
         # type: () -> str
-        """Quality tier from the 'gen3d.quality' setting (lowercased).
-        Defaults to the provider's cheapest tier."""
+        """Quality tier (lowercased): GEN3D_QUALITY env var (optional
+        override), then the 'gen3d.quality' setting (Features tab Quality
+        dropdown), then DEFAULT_QUALITY ('standard' = textured; 'draft'
+        is the cheaper untextured tier)."""
         value = (os.environ.get('GEN3D_QUALITY')
                  or self._get_setting('gen3d.quality', self.DEFAULT_QUALITY))
         return str(value).strip().lower() or self.DEFAULT_QUALITY

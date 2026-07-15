@@ -122,7 +122,7 @@ class GPT4VisionProvider(BaseAIProvider):
 
     def __init__(self, api_key: str = None, model: str = "gpt-4o"):
         super().__init__("GPT-4 Vision")
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or self._resolve_api_key()
         self.model = model
 
         # GPT-5 models use the NEW Responses API
@@ -140,6 +140,26 @@ class GPT4VisionProvider(BaseAIProvider):
 
         # Structured outputs support (GPT-4o and GPT-4-turbo only)
         self.supports_structured_outputs = self._supports_structured_outputs(model)
+
+    @staticmethod
+    def _resolve_api_key():
+        """
+        Resolve the API key from (in order): OPENAI_API_KEY env (optional
+        override), then the Settings dialog key
+        ('ai_settings.openai_api_key' via the plugin settings manager),
+        matching GeminiProvider._resolve_api_key. Guarded so headless
+        (non-editor) use simply returns the env result.
+        """
+        key = os.getenv("OPENAI_API_KEY")
+        if key:
+            return key
+        try:
+            from core.settings_manager import get_settings_manager
+            ai_settings = get_settings_manager().global_settings.get('ai_settings', {})
+            key = ai_settings.get('openai_api_key', '') or None
+        except Exception:
+            key = None
+        return key
 
     def _is_gpt5_model(self, model: str) -> bool:
         """Check if model is a GPT-5 model that requires Responses API"""

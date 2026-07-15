@@ -280,11 +280,14 @@ class AnimationMatcher:
 
     def _get_openai_api_key(self) -> Optional[str]:
         """
-        Resolve the OpenAI API key from the environment or config_manager.
+        Resolve the OpenAI API key.
 
-        Same pattern as core/asset_matcher.py: environment variable
-        first, then the plugin's config_manager (which also loads the
-        ~/.storyboard_to_3d/.env file into the environment).
+        Same pattern as core/asset_matcher.py: OPENAI_API_KEY environment
+        variable (optional override), then the Settings dialog key
+        ('ai_settings.openai_api_key' via core.settings_manager, guarded
+        so headless use falls through), then the plugin's config_manager
+        (which also loads the ~/.storyboard_to_3d/.env file into the
+        environment).
 
         Returns:
             API key string, or None if unavailable.
@@ -294,6 +297,19 @@ class AnimationMatcher:
 
         self._openai_api_key_resolved = True
         api_key = os.environ.get("OPENAI_API_KEY")
+
+        if not api_key:
+            # Settings dialog key (AI tab). settings_manager imports unreal,
+            # so this is editor-only; guarded so headless use falls through
+            # to the config path unchanged.
+            try:
+                from core.settings_manager import get_setting
+                candidate = (get_setting('ai_settings.openai_api_key', '') or
+                             get_setting('ai_settings.api_key', ''))
+                if candidate:
+                    api_key = str(candidate).strip() or None
+            except Exception:
+                api_key = None
 
         if not api_key:
             try:

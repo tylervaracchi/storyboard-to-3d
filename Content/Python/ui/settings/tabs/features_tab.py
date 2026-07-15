@@ -93,7 +93,9 @@ class FeaturesTab(QWidget):
             "When no library asset matches at all, generate the missing character or "
             "prop via a text-to-3D API, import it, and add it to the show library so "
             "it is reused instead of regenerated. Generation can take 1-3 minutes per "
-            "asset. Keys: MESHY_API_KEY / TRIPO_API_KEY.")
+            "asset. Enter the Meshy / Tripo API key in the fields below; the "
+            "MESHY_API_KEY / TRIPO_API_KEY environment variables also work as "
+            "optional overrides.")
         self.gen3d_check.stateChanged.connect(self.on_change)
         matching_layout.addWidget(self.gen3d_check)
 
@@ -130,6 +132,22 @@ class FeaturesTab(QWidget):
         gen3d_mode_row.addStretch()
         matching_layout.addLayout(gen3d_mode_row)
 
+        gen3d_quality_row = QHBoxLayout()
+        gen3d_quality_row.addSpacing(24)
+        gen3d_quality_row.addWidget(QLabel("Quality:"))
+        self.gen3d_quality_combo = QComboBox()
+        self.gen3d_quality_combo.addItem("Standard (textured)", "standard")
+        self.gen3d_quality_combo.addItem("Draft (untextured, cheaper)", "draft")
+        self.gen3d_quality_combo.setToolTip(
+            "Standard (default): textured model (Meshy runs a refine pass, "
+            "Tripo uses its textured defaults). Draft: untextured gray mesh, "
+            "cheaper and faster. The GEN3D_QUALITY environment variable also "
+            "works as an optional override.")
+        self.gen3d_quality_combo.currentIndexChanged.connect(self.on_change)
+        gen3d_quality_row.addWidget(self.gen3d_quality_combo)
+        gen3d_quality_row.addStretch()
+        matching_layout.addLayout(gen3d_quality_row)
+
         gen3d_keys_row = QHBoxLayout()
         gen3d_keys_row.addSpacing(24)
         gen3d_keys_row.addWidget(QLabel("Tripo API key:"))
@@ -160,9 +178,10 @@ class FeaturesTab(QWidget):
             "clip and blocks the scene build while polling. Clips arrive on the "
             "provider's skeleton; retarget them to your characters with UE's IK "
             "Retargeter. Only runs when the Animation picker above is also on. "
-            "Tripo needs TRIPO_API_KEY plus a one-time rig task id "
-            "(genanim.tripo_rig_task_id); DeepMotion needs partner API credentials "
-            "and base URL.")
+            "Tripo needs the Tripo API key above plus the one-time rig task id "
+            "field below; DeepMotion needs the partner client ID / secret and "
+            "base URL fields below. Environment variables (TRIPO_API_KEY, "
+            "TRIPO_RIG_TASK_ID, DEEPMOTION_*) also work as optional overrides.")
         self.genanim_check.stateChanged.connect(self.on_change)
         matching_layout.addWidget(self.genanim_check)
 
@@ -185,6 +204,62 @@ class FeaturesTab(QWidget):
         genanim_row.addWidget(self.genanim_max_spin)
         genanim_row.addStretch()
         matching_layout.addLayout(genanim_row)
+
+        genanim_rig_row = QHBoxLayout()
+        genanim_rig_row.addSpacing(24)
+        genanim_rig_row.addWidget(QLabel("Tripo rig task id:"))
+        self.genanim_rig_id_edit = QLineEdit()
+        self.genanim_rig_id_edit.setPlaceholderText(
+            "one-time animate_rig task id (or set TRIPO_RIG_TASK_ID)")
+        self.genanim_rig_id_edit.setToolTip(
+            "The rig task id from the one-time Tripo animate_rig setup that "
+            "every retargeted clip is generated against (see the generative "
+            "animation tooltip). Required for the Tripo animation provider. "
+            "The TRIPO_RIG_TASK_ID environment variable also works and takes "
+            "precedence.")
+        self.genanim_rig_id_edit.textChanged.connect(self.on_change)
+        genanim_rig_row.addWidget(self.genanim_rig_id_edit)
+        matching_layout.addLayout(genanim_rig_row)
+
+        genanim_dm_row = QHBoxLayout()
+        genanim_dm_row.addSpacing(24)
+        genanim_dm_row.addWidget(QLabel("DeepMotion client ID:"))
+        self.genanim_dm_id_edit = QLineEdit()
+        self.genanim_dm_id_edit.setEchoMode(QLineEdit.Password)
+        self.genanim_dm_id_edit.setPlaceholderText(
+            "partner client id (or set DEEPMOTION_CLIENT_ID)")
+        self.genanim_dm_id_edit.setToolTip(
+            "DeepMotion SayMotion partner client ID. The DEEPMOTION_CLIENT_ID "
+            "environment variable also works and takes precedence.")
+        self.genanim_dm_id_edit.textChanged.connect(self.on_change)
+        genanim_dm_row.addWidget(self.genanim_dm_id_edit)
+        genanim_dm_row.addWidget(QLabel("Client secret:"))
+        self.genanim_dm_secret_edit = QLineEdit()
+        self.genanim_dm_secret_edit.setEchoMode(QLineEdit.Password)
+        self.genanim_dm_secret_edit.setPlaceholderText(
+            "partner client secret (or set DEEPMOTION_CLIENT_SECRET)")
+        self.genanim_dm_secret_edit.setToolTip(
+            "DeepMotion SayMotion partner client secret. The "
+            "DEEPMOTION_CLIENT_SECRET environment variable also works and "
+            "takes precedence.")
+        self.genanim_dm_secret_edit.textChanged.connect(self.on_change)
+        genanim_dm_row.addWidget(self.genanim_dm_secret_edit)
+        matching_layout.addLayout(genanim_dm_row)
+
+        genanim_dm_url_row = QHBoxLayout()
+        genanim_dm_url_row.addSpacing(24)
+        genanim_dm_url_row.addWidget(QLabel("DeepMotion API base URL:"))
+        self.genanim_dm_url_edit = QLineEdit()
+        self.genanim_dm_url_edit.setPlaceholderText(
+            "https://... (issued with partner credentials)")
+        self.genanim_dm_url_edit.setToolTip(
+            "The partner-issued SayMotion API base URL (DeepMotion sends it "
+            "with your credentials; there is no public default). The "
+            "DEEPMOTION_API_BASE environment variable also works and takes "
+            "precedence.")
+        self.genanim_dm_url_edit.textChanged.connect(self.on_change)
+        genanim_dm_url_row.addWidget(self.genanim_dm_url_edit)
+        matching_layout.addLayout(genanim_dm_url_row)
 
         matching_group.setLayout(matching_layout)
         layout.addWidget(matching_group)
@@ -289,6 +364,17 @@ class FeaturesTab(QWidget):
         mode = str(gen3d.get('mode', 'text')).strip().lower()
         mode_index = self.gen3d_mode_combo.findData(mode)
         self.gen3d_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        # 'standard' (textured) is the default so an unconfigured UI user
+        # never gets a gray untextured model; legacy synonyms map onto the
+        # two dropdown tiers.
+        quality = str(gen3d.get('quality', 'standard')).strip().lower()
+        if quality in ('preview', 'fast', 'low'):
+            quality = 'draft'
+        elif quality in ('refine', 'refined', 'textured'):
+            quality = 'standard'
+        quality_index = self.gen3d_quality_combo.findData(quality)
+        self.gen3d_quality_combo.setCurrentIndex(
+            quality_index if quality_index >= 0 else 0)
         self.gen3d_tripo_key_edit.setText(str(gen3d.get('tripo_api_key', '') or ''))
         self.gen3d_meshy_key_edit.setText(str(gen3d.get('meshy_api_key', '') or ''))
 
@@ -298,6 +384,10 @@ class FeaturesTab(QWidget):
             self.genanim_max_spin.setValue(int(genanim.get('max_per_run', 2)))
         except (TypeError, ValueError):
             self.genanim_max_spin.setValue(2)
+        self.genanim_rig_id_edit.setText(str(genanim.get('tripo_rig_task_id', '') or ''))
+        self.genanim_dm_id_edit.setText(str(genanim.get('deepmotion_client_id', '') or ''))
+        self.genanim_dm_secret_edit.setText(str(genanim.get('deepmotion_client_secret', '') or ''))
+        self.genanim_dm_url_edit.setText(str(genanim.get('deepmotion_base_url', '') or ''))
 
         self.optimize_images_check.setChecked(bool(performance.get('optimize_images', True)))
         self.reduced_views_check.setChecked(bool(performance.get('reduced_refinement_views', False)))
@@ -329,18 +419,23 @@ class FeaturesTab(QWidget):
         gen3d['provider'] = self.gen3d_provider_combo.currentText()
         gen3d['max_per_run'] = self.gen3d_max_spin.value()
         gen3d['mode'] = self.gen3d_mode_combo.currentData() or 'text'
+        gen3d['quality'] = self.gen3d_quality_combo.currentData() or 'standard'
         tripo_key = self.gen3d_tripo_key_edit.text().strip()
         gen3d['tripo_api_key'] = tripo_key
         gen3d['meshy_api_key'] = self.gen3d_meshy_key_edit.text().strip()
 
         # Copy-then-overwrite so sibling keys (e.g. genanim.timeout_seconds,
-        # genanim.tripo_rig_task_id) survive the dialog save
+        # genanim.deepmotion_model_id) survive the dialog save
         genanim = dict(self.settings.get('genanim', {}))
         genanim['enabled'] = self.genanim_check.isChecked()
         genanim['provider'] = self.genanim_provider_combo.currentText()
         genanim['max_per_run'] = self.genanim_max_spin.value()
         # One Tripo field serves both consumers (gen3d + genanim)
         genanim['tripo_api_key'] = tripo_key
+        genanim['tripo_rig_task_id'] = self.genanim_rig_id_edit.text().strip()
+        genanim['deepmotion_client_id'] = self.genanim_dm_id_edit.text().strip()
+        genanim['deepmotion_client_secret'] = self.genanim_dm_secret_edit.text().strip()
+        genanim['deepmotion_base_url'] = self.genanim_dm_url_edit.text().strip()
 
         # 'performance' is SHARED with the General tab (thumbnail_size,
         # max_panels_display, cache_ai_results, hardware_acceleration), so

@@ -52,11 +52,26 @@ class ClaudeBatchClient:
     def __init__(self, api_key: str = None, request_timeout: int = 120):
         """
         Args:
-            api_key: Anthropic API key (falls back to ANTHROPIC_API_KEY env var)
+            api_key: Anthropic API key. When omitted, falls back to the
+                ANTHROPIC_API_KEY env var (optional override), then the
+                Settings dialog key ('ai_settings.claude_api_key').
             request_timeout: Per-HTTP-request timeout in seconds
         """
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        self.api_key = (api_key or os.getenv("ANTHROPIC_API_KEY")
+                        or self._settings_api_key())
         self.request_timeout = request_timeout
+
+    @staticmethod
+    def _settings_api_key():
+        """Settings dialog key ('ai_settings.claude_api_key'), guarded so
+        headless (non-editor) use returns None instead of raising."""
+        try:
+            from core.settings_manager import get_settings_manager
+            ai_settings = get_settings_manager().global_settings.get(
+                'ai_settings', {})
+            return ai_settings.get('claude_api_key', '') or None
+        except Exception:
+            return None
 
     def _headers(self) -> Dict[str, str]:
         return {

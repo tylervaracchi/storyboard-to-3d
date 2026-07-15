@@ -121,7 +121,7 @@ class ClaudeProvider(BaseAIProvider):
 
     def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6", use_extended_thinking: bool = True, enable_caching: bool = True, use_structured_outputs: bool = True, use_files_api: bool = False, scoring_model: str = None):
         super().__init__("Claude Sonnet 4.5 (Extended Thinking)")
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        self.api_key = api_key or self._resolve_api_key()
         self.model = model
         self.use_extended_thinking = use_extended_thinking
         self.enable_caching = enable_caching
@@ -157,6 +157,26 @@ class ClaudeProvider(BaseAIProvider):
         self.cache_creation_tokens = 0
         self.cache_read_tokens = 0
         self.total_cache_savings = 0.0
+
+    @staticmethod
+    def _resolve_api_key():
+        """
+        Resolve the API key from (in order): ANTHROPIC_API_KEY env
+        (optional override), then the Settings dialog key
+        ('ai_settings.claude_api_key' via the plugin settings manager),
+        matching GeminiProvider._resolve_api_key. Guarded so headless
+        (non-editor) use simply returns the env result.
+        """
+        key = os.getenv("ANTHROPIC_API_KEY")
+        if key:
+            return key
+        try:
+            from core.settings_manager import get_settings_manager
+            ai_settings = get_settings_manager().global_settings.get('ai_settings', {})
+            key = ai_settings.get('claude_api_key', '') or None
+        except Exception:
+            key = None
+        return key
 
     def analyze_images(self, images: List[str], prompt: str, **kwargs) -> Dict:
         """

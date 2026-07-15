@@ -42,9 +42,12 @@ variable, so every generated FBX lands on one known skeleton. Imported
 clips then remap onto project characters through UE5's standard IK
 Retargeter workflow.
 
-Credentials: DEEPMOTION_CLIENT_ID and DEEPMOTION_CLIENT_SECRET
-environment variables, then the plugin config_manager pattern
-('api.keys.deepmotion_client_id' / 'api.keys.deepmotion_client_secret').
+Credentials: the Settings dialog Features tab fields
+('genanim.deepmotion_client_id' / 'genanim.deepmotion_client_secret').
+DEEPMOTION_CLIENT_ID and DEEPMOTION_CLIENT_SECRET environment variables
+work as optional overrides, and the plugin config_manager pattern
+('api.keys.deepmotion_client_id' / 'api.keys.deepmotion_client_secret')
+remains a final fallback.
 """
 
 import base64
@@ -108,20 +111,24 @@ class DeepMotionProvider(GenAnimProvider):
 
     def get_api_key(self):
         # type: () -> Optional[str]
-        """DEEPMOTION_CLIENT_ID env var, then plugin config
-        ('api.keys.deepmotion_client_id')."""
-        return self._resolve_api_key('DEEPMOTION_CLIENT_ID',
-                                     'deepmotion_client_id')
+        """DEEPMOTION_CLIENT_ID env var (optional override), then the
+        Settings dialog field ('genanim.deepmotion_client_id', Features
+        tab), then plugin config ('api.keys.deepmotion_client_id')."""
+        return self._resolve_api_key(
+            'DEEPMOTION_CLIENT_ID', 'deepmotion_client_id',
+            settings_path='genanim.deepmotion_client_id')
 
     def get_client_secret(self):
         # type: () -> Optional[str]
-        """DEEPMOTION_CLIENT_SECRET env var, then plugin config
-        ('api.keys.deepmotion_client_secret')."""
+        """DEEPMOTION_CLIENT_SECRET env var (optional override), then the
+        Settings dialog field ('genanim.deepmotion_client_secret', Features
+        tab), then plugin config ('api.keys.deepmotion_client_secret')."""
         if self._client_secret_resolved:
             return self._client_secret
         self._client_secret_resolved = True
-        self._client_secret = self._lookup_key('DEEPMOTION_CLIENT_SECRET',
-                                               'deepmotion_client_secret')
+        self._client_secret = self._lookup_key(
+            'DEEPMOTION_CLIENT_SECRET', 'deepmotion_client_secret',
+            settings_path='genanim.deepmotion_client_secret')
         return self._client_secret
 
     def get_base_url(self):

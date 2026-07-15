@@ -52,11 +52,12 @@ Image-to-model (generate_from_image):
   Polling, status mapping, and model download reuse the exact same
   base-provider machinery as text_to_model.
 
-Quality tiers via the 'gen3d.quality' setting:
-  'draft' (default, also accepts 'preview'/'fast'/'low'):
-      untextured model, cheapest and fastest (VERIFY-BEFORE-USE flags).
-  anything else ('standard', 'textured', ...):
+Quality tiers via the 'gen3d.quality' setting (Features tab Quality
+dropdown; GEN3D_QUALITY env var overrides):
+  'standard' (default, also 'textured' or anything not listed below):
       omit the flags; Tripo's defaults produce a textured model.
+  'draft' (also accepts 'preview'/'fast'/'low'):
+      untextured model, cheapest and fastest (VERIFY-BEFORE-USE flags).
 
 API key: TRIPO_API_KEY environment variable, then the plugin
 config_manager pattern (see Gen3DProvider._resolve_api_key).
@@ -88,11 +89,12 @@ class TripoProvider(Gen3DProvider):
     (https://platform.tripo3d.ai/docs)."""
 
     name = 'tripo'
-    pricing_note = ("Tripo3D text_to_model in draft (untextured) mode is the "
-                    "cheapest tier; set gen3d.quality to 'standard' for a "
-                    "textured model. Pricing: https://platform.tripo3d.ai")
+    pricing_note = ("Tripo3D 'standard' quality (the default) produces a "
+                    "textured model; set gen3d.quality to 'draft' for the "
+                    "cheapest untextured tier. "
+                    "Pricing: https://platform.tripo3d.ai")
 
-    DEFAULT_QUALITY = 'draft'
+    DEFAULT_QUALITY = 'standard'
 
     def get_api_key(self):
         # type: () -> Optional[str]

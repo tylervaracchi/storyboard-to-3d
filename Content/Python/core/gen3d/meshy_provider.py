@@ -26,9 +26,12 @@ https://docs.meshy.ai/en/api/text-to-3d (checked 2026-07-14):
   without texture; a "refine" task (body: {"mode": "refine",
   "preview_task_id": "<id>"}) adds textures at extra credit cost.
 
-Quality tiers via the 'gen3d.quality' setting:
-  'preview' (default): preview task only. Cheapest and fastest.
-  'refine':            preview task, then a refine task for textures.
+Quality tiers via the 'gen3d.quality' setting (Features tab Quality
+dropdown; GEN3D_QUALITY env var overrides):
+  'standard' (default, also 'refine'/'refined'/'textured'):
+      preview task, then a refine task for textures.
+  'draft' (also 'preview'/'fast'/'low' or any other value):
+      preview task only, untextured. Cheapest and fastest.
 
 API key: MESHY_API_KEY environment variable, then the plugin
 config_manager pattern (see Gen3DProvider._resolve_api_key).
@@ -53,11 +56,12 @@ class MeshyProvider(Gen3DProvider):
     """Meshy text-to-3D provider (https://docs.meshy.ai/en/api/text-to-3d)."""
 
     name = 'meshy'
-    pricing_note = ("Meshy 'preview' tasks are the cheapest tier (untextured "
-                    "mesh); set gen3d.quality to 'refine' to add textures at "
-                    "extra credit cost. Pricing: https://www.meshy.ai/pricing")
+    pricing_note = ("Meshy 'standard' quality (the default) runs a preview "
+                    "task plus a refine task for textures; set gen3d.quality "
+                    "to 'draft' for the cheapest untextured preview-only "
+                    "tier. Pricing: https://www.meshy.ai/pricing")
 
-    DEFAULT_QUALITY = 'preview'
+    DEFAULT_QUALITY = 'standard'
 
     def get_api_key(self):
         # type: () -> Optional[str]
@@ -138,10 +142,12 @@ class MeshyProvider(Gen3DProvider):
 
     def _finalize(self, task_data):
         # type: (Dict[str, Any]) -> Dict[str, Any]
-        """When gen3d.quality is 'refine', chain a refine task off the
-        completed preview to get a textured model. Any refine failure
-        logs and falls back to the untextured preview result."""
-        if self.get_quality() not in ('refine', 'refined', 'textured'):
+        """When gen3d.quality is 'standard' (the default) or an explicit
+        'refine' synonym, chain a refine task off the completed preview to
+        get a textured model. Any refine failure logs and falls back to
+        the untextured preview result."""
+        if self.get_quality() not in ('standard', 'refine', 'refined',
+                                      'textured'):
             return task_data
 
         preview_task_id = task_data.get('id')

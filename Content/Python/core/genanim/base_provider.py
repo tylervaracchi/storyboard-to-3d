@@ -375,16 +375,23 @@ class GenAnimProvider(object):
             return float(self.DEFAULT_TIMEOUT_SECONDS)
 
     @staticmethod
-    def _lookup_key(env_var, config_key_name, settings_key_name=None):
-        # type: (str, str, Optional[str]) -> Optional[str]
+    def _lookup_key(env_var, config_key_name, settings_key_name=None,
+                    settings_path=None):
+        # type: (str, str, Optional[str], Optional[str]) -> Optional[str]
         """
         Uncached key lookup shared by _resolve_api_key and providers that
         need more than one credential (DeepMotion id + secret):
 
-          1. Environment variable (env_var).
-          2. The plugin's config_manager: constructing it loads
+          1. Environment variable (env_var) - optional override.
+          2. Settings UI key (Features tab) via core.settings_manager.
+          3. The plugin's config_manager: constructing it loads
              ~/.storyboard_to_3d/.env into the environment, so the env var
              is re-checked, then the 'api.keys.<name>' config entry.
+
+        Args:
+            settings_path: Full settings key to read verbatim (e.g.
+                'genanim.deepmotion_client_secret'). When omitted, the key
+                is 'genanim.<settings_key_name or config_key_name>_api_key'.
 
         Returns:
             Key string, or None if unavailable. Never raises.
@@ -402,7 +409,7 @@ class GenAnimProvider(object):
         try:
             from core.settings_manager import get_setting
             candidate = get_setting(
-                "genanim.{}_api_key".format(
+                settings_path or "genanim.{}_api_key".format(
                     settings_key_name or config_key_name), None)
             if candidate:
                 candidate = str(candidate).strip()
@@ -432,22 +439,28 @@ class GenAnimProvider(object):
                 api_key = None
         return api_key
 
-    def _resolve_api_key(self, env_var, config_key_name):
-        # type: (str, str) -> Optional[str]
+    def _resolve_api_key(self, env_var, config_key_name, settings_path=None):
+        # type: (str, str, Optional[str]) -> Optional[str]
         """
         Resolve and cache this provider's primary API key with the same
-        pattern core/gen3d/base_provider.py uses (env var first, then the
-        plugin config). Never raises.
+        pattern core/gen3d/base_provider.py uses (env var override, then
+        the Settings UI key, then the plugin config). Never raises.
+
+        Args:
+            settings_path: Optional full settings key read verbatim
+                (e.g. 'genanim.deepmotion_client_id'); default is the
+                provider-name-keyed 'genanim.<name>_api_key'.
         """
         if self._api_key_resolved:
             return self._api_key
 
         self._api_key_resolved = True
-        # Settings-UI lookup is keyed by provider name (self.name); safe for
-        # DeepMotion (name='deepmotion' has no settings key, so resolution
-        # falls through to env/config exactly as before).
+        # Settings-UI lookup is keyed by provider name (self.name) unless
+        # the caller supplies a verbatim settings_path (DeepMotion's
+        # 'genanim.deepmotion_client_id').
         self._api_key = self._lookup_key(env_var, config_key_name,
-                                         settings_key_name=self.name)
+                                         settings_key_name=self.name,
+                                         settings_path=settings_path)
         return self._api_key
 
     @staticmethod

@@ -181,7 +181,13 @@ class Config:
         return True
 
     def get_api_key(self, provider: Optional[str] = None) -> Optional[str]:
-        """Get API key from environment variables"""
+        """Get an API key.
+
+        Resolution order: environment variable (optional override), then
+        the Settings dialog key ('ai_settings.*' via core.settings_manager,
+        guarded so headless use falls through), then this config file's
+        'api.keys.*' entry.
+        """
         if provider is None:
             provider = self.get("api.provider", "OpenAI GPT-4 Vision")
 
@@ -201,6 +207,29 @@ class Config:
         # Fallback to generic API_KEY
         if not api_key:
             api_key = os.environ.get("API_KEY")
+
+        # Settings dialog keys (AI tab, saved by core.settings_manager as
+        # ai_settings.openai_api_key / claude_api_key / gemini_api_key).
+        # settings_manager imports unreal, so this is editor-only; guarded
+        # so headless use falls through to the config file unchanged.
+        if not api_key:
+            lowered = str(provider).lower()
+            settings_key = None
+            if "gpt" in lowered or "openai" in lowered:
+                settings_key = "openai_api_key"
+            elif "claude" in lowered or "anthropic" in lowered:
+                settings_key = "claude_api_key"
+            elif "gemini" in lowered or "google" in lowered:
+                settings_key = "gemini_api_key"
+            if settings_key:
+                try:
+                    from core.settings_manager import get_setting
+                    candidate = (get_setting(f"ai_settings.{settings_key}", '')
+                                 or get_setting("ai_settings.api_key", ''))
+                    if candidate:
+                        api_key = str(candidate).strip() or None
+                except Exception:
+                    pass
 
         # Try config file (less secure, but convenient for development)
         if not api_key:
