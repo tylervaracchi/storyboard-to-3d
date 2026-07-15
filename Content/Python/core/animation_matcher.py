@@ -22,14 +22,17 @@ Feature is opt-in: SceneBuilder only uses this when the
 'scene.auto_animation' setting is truthy (default off). Nothing here
 raises to callers; every miss returns None/False with a logged reason.
 
-Optionally (also off by default) performs semantic matching via OpenAI
+Optionally (also off by default) performs semantic matching via text
 embeddings, mirroring core/asset_matcher.py: when the
-'asset_library.semantic_matching' setting is truthy AND an OpenAI API
-key is available, each animation's 'key. description. aliases' text is
-embedded (cached to ~/.storyboard_to_3d/anim_embedding_cache.json) and
-the query action text is cosine-matched at >= 0.5. The tier runs
-between the alias containment stage and the difflib fuzzy stage; every
-failure inside falls through to the fuzzy stage unchanged.
+'asset_library.semantic_matching' setting is truthy AND an embeddings
+backend is available (OpenAI, Gemini, or local Ollama - see
+utils/embeddings.py; Anthropic/Claude has no embeddings API), each
+animation's 'key. description. aliases' text is embedded (cached to
+~/.storyboard_to_3d/anim_embedding_cache.json, namespaced per
+backend+model) and the query action text is cosine-matched at >= 0.5.
+The tier runs between the alias containment stage and the difflib
+fuzzy stage; every failure inside falls through to the fuzzy stage
+unchanged.
 
 Optionally (also off by default) calls a generative text-to-animation
 provider (Tripo animate_retarget or DeepMotion SayMotion, see
@@ -43,7 +46,6 @@ that path logs and returns None exactly as the plain miss does today.
 import hashlib
 import json
 import math
-import os
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -56,6 +58,13 @@ except ImportError:
     # matching logic). Editor-dependent features are skipped.
     unreal = None
 
+# Shared multi-provider embeddings backend (OpenAI / Gemini / Ollama).
+# Guarded so this module still imports if utils/ is not on sys.path.
+try:
+    from utils.embeddings import get_embedding_backend
+except ImportError:
+    get_embedding_backend = None
+
 
 FUZZY_THRESHOLD = 0.6
 # core/animation_matcher.py -> Content/Python/core; repo root is 3 levels up
@@ -67,10 +76,8 @@ GENANIM_DEFAULT_MAX_PER_RUN = 2
 
 # Optional semantic (embedding) tier, mirroring core/asset_matcher.py.
 # Active only when 'asset_library.semantic_matching' is truthy and an
-# OpenAI API key exists; otherwise the tier is a no-op.
-ANIM_EMBEDDING_MODEL = "text-embedding-3-small"
-ANIM_EMBEDDING_ENDPOINT = "https://api.openai.com/v1/embeddings"
-ANIM_EMBEDDING_TIMEOUT_SECONDS = 15
+# embeddings backend (OpenAI/Gemini/Ollama, see utils/embeddings.py) is
+# available; otherwise the tier is a no-op.
 ANIM_SEMANTIC_THRESHOLD = 0.5
 ANIM_EMBEDDING_BATCH_SIZE = 100
 ANIM_QUERY_EMBEDDING_CACHE_MAX = 128
@@ -121,8 +128,9 @@ class AnimationMatcher:
         self._anim_semantic_index_size: int = -1
         self._anim_embedding_cache: Dict[str, List[float]] = {}
         self._anim_query_embedding_cache: Dict[str, List[float]] = {}
-        self._openai_api_key: Optional[str] = None
-        self._openai_api_key_resolved: bool = False
+        self._embedding_backend: Optional[Any] = None
+        self._embedding_backend_resolved: bool = False
+        self._no_backend_logged: bool = False
         self._load_library()
 
     def _show_library_path(self) -> Optional[Path]:
@@ -278,67 +286,42 @@ class AnimationMatcher:
     # Semantic (embedding) tier (optional; mirrors core/asset_matcher.py)
     # ------------------------------------------------------------------
 
-    def _get_openai_api_key(self) -> Optional[str]:
+    def _get_embedding_backend(self) -> Optional[Any]:
         """
-        Resolve the OpenAI API key.
-
-        Same pattern as core/asset_matcher.py: OPENAI_API_KEY environment
-        variable (optional override), then the Settings dialog key
-        ('ai_settings.openai_api_key' via core.settings_manager, guarded
-        so headless use falls through), then the plugin's config_manager
-        (which also loads the ~/.storyboard_to_3d/.env file into the
-        environment).
+        Resolve the shared embeddings backend (utils/embeddings.py) once
+        per matcher instance: OpenAI, Gemini, or local Ollama per the
+        'asset_library.embedding_provider' setting ('auto' default).
 
         Returns:
-            API key string, or None if unavailable.
+            Backend object with embed_texts()/namespace, or None when no
+            embeddings provider is available.
         """
-        if self._openai_api_key_resolved:
-            return self._openai_api_key
+        if self._embedding_backend_resolved:
+            return self._embedding_backend
 
-        self._openai_api_key_resolved = True
-        api_key = os.environ.get("OPENAI_API_KEY")
-
-        if not api_key:
-            # Settings dialog key (AI tab). settings_manager imports unreal,
-            # so this is editor-only; guarded so headless use falls through
-            # to the config path unchanged.
+        self._embedding_backend_resolved = True
+        if get_embedding_backend is None:
+            self._embedding_backend = None
+        else:
             try:
-                from core.settings_manager import get_setting
-                candidate = (get_setting('ai_settings.openai_api_key', '') or
-                             get_setting('ai_settings.api_key', ''))
-                if candidate:
-                    api_key = str(candidate).strip() or None
-            except Exception:
-                api_key = None
-
-        if not api_key:
-            try:
-                from config.config_manager import get_api_key
-                api_key = get_api_key("OpenAI GPT-4 Vision")
-            except ImportError:
-                try:
-                    from config_manager import get_api_key
-                    api_key = get_api_key("OpenAI GPT-4 Vision")
-                except ImportError:
-                    api_key = None
+                self._embedding_backend = get_embedding_backend()
             except Exception as e:
-                _log_warning("Could not resolve OpenAI API key via "
-                             "config_manager: {0}".format(e))
-                api_key = None
-
-        self._openai_api_key = api_key
-        return api_key
+                _log_warning("Embedding backend resolution failed: "
+                             "{0}".format(e))
+                self._embedding_backend = None
+        return self._embedding_backend
 
     def _is_semantic_matching_enabled(self) -> bool:
         """
         Check whether the embedding tier should be active.
 
         Requires the 'asset_library.semantic_matching' setting to be
-        truthy AND an OpenAI API key to be available (the same switch
-        core/asset_matcher.py uses, so one toggle governs both).
+        truthy AND an embeddings backend (OpenAI, Gemini, or local
+        Ollama) to be available (the same switch core/asset_matcher.py
+        uses, so one toggle governs both).
 
         Returns:
-            True only when both the setting and the API key are present.
+            True only when both the setting and a backend are present.
         """
         enabled = None
         try:
@@ -374,16 +357,19 @@ class AnimationMatcher:
         if not enabled:
             return False
 
-        if not self._get_openai_api_key():
-            _log("Semantic animation matching is enabled but no OpenAI API "
-                 "key was found; skipping the embedding tier")
+        if self._get_embedding_backend() is None:
+            if not self._no_backend_logged:
+                self._no_backend_logged = True
+                _log("Semantic matching: no embeddings provider available "
+                     "(OpenAI/Gemini/Ollama) - using fuzzy matching")
             return False
 
         return True
 
     def _get_embeddings(self, texts: List[str]) -> Optional[List[List[float]]]:
         """
-        Request embedding vectors for a list of texts from the OpenAI API.
+        Request embedding vectors via the shared backend
+        (utils/embeddings.py: OpenAI, Gemini, or local Ollama).
 
         Args:
             texts: List of strings to embed.
@@ -395,51 +381,28 @@ class AnimationMatcher:
         if not texts:
             return []
 
-        api_key = self._get_openai_api_key()
-        if not api_key:
-            _log_warning("No OpenAI API key available for embedding request")
+        backend = self._get_embedding_backend()
+        if backend is None:
+            _log_warning("No embeddings backend available for embedding "
+                         "request")
             return None
 
-        try:
-            import requests
-        except ImportError:
-            _log_warning("The 'requests' package is unavailable; semantic "
-                         "animation matching disabled")
-            return None
-
-        try:
-            response = requests.post(
-                ANIM_EMBEDDING_ENDPOINT,
-                headers={
-                    "Authorization": "Bearer {0}".format(api_key),
-                    "Content-Type": "application/json"
-                },
-                json={"model": ANIM_EMBEDDING_MODEL, "input": texts},
-                timeout=ANIM_EMBEDDING_TIMEOUT_SECONDS
-            )
-
-            if response.status_code != 200:
-                _log_warning("Embedding request failed with HTTP {0}: "
-                             "{1}".format(response.status_code,
-                                          response.text[:200]))
-                return None
-
-            data = response.json().get("data", [])
-            if len(data) != len(texts):
-                _log_warning("Embedding response count mismatch: expected "
-                             "{0}, got {1}".format(len(texts), len(data)))
-                return None
-
-            ordered = sorted(data, key=lambda item: item.get("index", 0))
-            return [item["embedding"] for item in ordered]
-        except Exception as e:
-            _log_warning("Embedding request failed: {0}".format(e))
-            return None
+        return backend.embed_texts(texts)
 
     @staticmethod
     def _hash_text(text: str) -> str:
         """Return a stable hash key for an embedding text."""
         return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    def _cache_key(self, text: str) -> str:
+        """
+        Cache key for an embedding text, namespaced per backend+model
+        ('provider:model:sha256') so vectors from different embedding
+        spaces are never compared after a provider switch.
+        """
+        backend = self._get_embedding_backend()
+        namespace = getattr(backend, 'namespace', 'unknown')
+        return "{0}:{1}".format(namespace, self._hash_text(text))
 
     @staticmethod
     def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
@@ -526,7 +489,7 @@ class AnimationMatcher:
         missing: List[Tuple[str, str]] = []
         seen_hashes = set()
         for _key, _asset_path, embed_text in entries:
-            text_hash = self._hash_text(embed_text)
+            text_hash = self._cache_key(embed_text)
             if (text_hash not in self._anim_embedding_cache
                     and text_hash not in seen_hashes):
                 missing.append((text_hash, embed_text))
@@ -547,7 +510,7 @@ class AnimationMatcher:
             self._save_anim_embedding_cache()
 
         for key, asset_path, embed_text in entries:
-            vector = self._anim_embedding_cache.get(self._hash_text(embed_text))
+            vector = self._anim_embedding_cache.get(self._cache_key(embed_text))
             if vector:
                 self._anim_semantic_index.append((key, asset_path, vector))
 
@@ -556,8 +519,11 @@ class AnimationMatcher:
 
     def _get_query_embedding(self, query: str) -> Optional[List[float]]:
         """Get the embedding for a query string, with a small cache."""
-        if query in self._anim_query_embedding_cache:
-            return self._anim_query_embedding_cache[query]
+        # Namespaced per backend+model so a provider switch cannot serve
+        # vectors from a different embedding space
+        cache_key = self._cache_key(query)
+        if cache_key in self._anim_query_embedding_cache:
+            return self._anim_query_embedding_cache[cache_key]
 
         vectors = self._get_embeddings([query])
         if not vectors:
@@ -568,7 +534,7 @@ class AnimationMatcher:
             # Drop the oldest entry (insertion order) to bound memory use
             self._anim_query_embedding_cache.pop(
                 next(iter(self._anim_query_embedding_cache)))
-        self._anim_query_embedding_cache[query] = vector
+        self._anim_query_embedding_cache[cache_key] = vector
         return vector
 
     def _semantic_match(self, action_text: str) -> Optional[str]:

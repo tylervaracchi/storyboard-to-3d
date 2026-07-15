@@ -8,11 +8,13 @@ Matches object names from storyboard analysis to Unreal Engine assets.
 Prioritizes show-specific asset libraries, then falls back to general project
 assets and basic shapes.
 
-Optionally performs semantic matching via OpenAI embeddings so that related
+Optionally performs semantic matching via text embeddings so that related
 terms (e.g. 'canine' or 'pup') can find a 'dog' asset. Semantic matching is
 disabled by default; it activates only when the 'semantic_matching' setting
-is truthy AND an OpenAI API key is available. On any failure it falls back
-to the existing fuzzy matching, so out-of-the-box behavior is unchanged.
+is truthy AND an embeddings backend is available (OpenAI, Gemini, or local
+Ollama - see utils/embeddings.py; Anthropic/Claude has no embeddings API).
+On any failure it falls back to the existing fuzzy matching, so
+out-of-the-box behavior is unchanged.
 
 Optionally (also off by default) calls a generative text-to-3D provider
 (Meshy or Tripo3D, see core/gen3d) when every matching tier has failed,
@@ -36,11 +38,16 @@ except ImportError:
     # semantic matching logic). Editor-dependent features are skipped.
     unreal = None
 
+# Shared multi-provider embeddings backend (OpenAI / Gemini / Ollama).
+# Guarded so this module still imports if utils/ is not on sys.path.
+try:
+    from utils.embeddings import get_embedding_backend
+except ImportError:
+    get_embedding_backend = None
 
-# Semantic matching configuration
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_ENDPOINT = "https://api.openai.com/v1/embeddings"
-EMBEDDING_TIMEOUT_SECONDS = 15
+
+# Semantic matching configuration (model/endpoint/timeout now live in
+# utils/embeddings.py, shared across all embedding consumers)
 SEMANTIC_MATCH_THRESHOLD = 0.55
 EMBEDDING_BATCH_SIZE = 100
 QUERY_EMBEDDING_CACHE_MAX = 128
@@ -89,7 +96,8 @@ class AssetMatcher:
     The matching priority order is:
         1. Show-specific asset library (exact match, aliases, description)
         2. General project asset cache (exact match)
-        3. Semantic matching via OpenAI embeddings (optional, off by default)
+        3. Semantic matching via text embeddings (optional, off by default;
+           OpenAI, Gemini, or local Ollama via utils/embeddings.py)
         4. Fuzzy matching in general cache
         5. Generative text-to-3D (optional, off by default; see core/gen3d)
         6. Fallback to basic shapes
@@ -121,8 +129,8 @@ class AssetMatcher:
         self._semantic_enabled: bool = False
         self._semantic_index: List[Tuple[str, str, List[float]]] = []
         self._query_embedding_cache: Dict[str, List[float]] = {}
-        self._openai_api_key: Optional[str] = None
-        self._openai_api_key_resolved: bool = False
+        self._embedding_backend: Optional[Any] = None
+        self._embedding_backend_resolved: bool = False
 
         # Generative text-to-3D: per-matcher-instance attempt counter,
         # enforced against the 'gen3d.max_per_run' setting.
@@ -374,61 +382,37 @@ class AssetMatcher:
     # SEMANTIC (EMBEDDING) MATCHING
     # ========================================
 
-    def _get_openai_api_key(self) -> Optional[str]:
+    def _get_embedding_backend(self) -> Optional[Any]:
         """
-        Resolve the OpenAI API key.
-
-        Order: OPENAI_API_KEY environment variable (optional override),
-        then the Settings dialog key ('ai_settings.openai_api_key' via
-        core.settings_manager, guarded so headless use falls through),
-        then the plugin's config_manager (which also loads the
-        ~/.storyboard_to_3d/.env file into the environment).
+        Resolve the shared embeddings backend (utils/embeddings.py) once
+        per matcher instance: OpenAI, Gemini, or local Ollama per the
+        'asset_library.embedding_provider' setting ('auto' default).
 
         Returns:
-            API key string, or None if unavailable.
+            Backend object with embed_texts()/namespace, or None when no
+            embeddings provider is available.
         """
-        if self._openai_api_key_resolved:
-            return self._openai_api_key
+        if self._embedding_backend_resolved:
+            return self._embedding_backend
 
-        self._openai_api_key_resolved = True
-        api_key = os.environ.get("OPENAI_API_KEY")
-
-        if not api_key:
-            # Settings dialog key (AI tab). settings_manager imports unreal,
-            # so this is editor-only; guarded so headless use falls through
-            # to the config path unchanged.
+        self._embedding_backend_resolved = True
+        if get_embedding_backend is None:
+            self._embedding_backend = None
+        else:
             try:
-                from core.settings_manager import get_setting
-                candidate = (get_setting('ai_settings.openai_api_key', '') or
-                             get_setting('ai_settings.api_key', ''))
-                if candidate:
-                    api_key = str(candidate).strip() or None
-            except Exception:
-                api_key = None
-
-        if not api_key:
-            try:
-                from config.config_manager import get_api_key
-                api_key = get_api_key("OpenAI GPT-4 Vision")
-            except ImportError:
-                try:
-                    from config_manager import get_api_key
-                    api_key = get_api_key("OpenAI GPT-4 Vision")
-                except ImportError:
-                    api_key = None
+                self._embedding_backend = get_embedding_backend()
             except Exception as e:
-                _log_warning(f"Could not resolve OpenAI API key via config_manager: {e}")
-                api_key = None
-
-        self._openai_api_key = api_key
-        return api_key
+                _log_warning(f"Embedding backend resolution failed: {e}")
+                self._embedding_backend = None
+        return self._embedding_backend
 
     def _is_semantic_matching_enabled(self) -> bool:
         """
         Check whether semantic matching should be active.
 
-        Requires the 'semantic_matching' setting to be truthy AND an OpenAI
-        API key to be available. The Features tab persists the toggle via
+        Requires the 'semantic_matching' setting to be truthy AND an
+        embeddings backend (OpenAI, Gemini, or local Ollama) to be
+        available. The Features tab persists the toggle via
         core.settings_manager under 'asset_library.semantic_matching', so
         that store is read first; when it carries no value, the legacy
         config_manager lookup (checked under 'asset_library.semantic_matching'
@@ -436,7 +420,7 @@ class AssetMatcher:
         unchanged.
 
         Returns:
-            True only when both the setting and the API key are present.
+            True only when both the setting and a backend are present.
         """
         enabled = None
         try:
@@ -471,16 +455,17 @@ class AssetMatcher:
         if not enabled:
             return False
 
-        if not self._get_openai_api_key():
-            _log("Semantic matching is enabled but no OpenAI API key was found; "
-                 "falling back to fuzzy matching only")
+        if self._get_embedding_backend() is None:
+            _log("Semantic matching: no embeddings provider available "
+                 "(OpenAI/Gemini/Ollama) - using fuzzy matching")
             return False
 
         return True
 
     def _get_embeddings(self, texts: List[str]) -> Optional[List[List[float]]]:
         """
-        Request embedding vectors for a list of texts from the OpenAI API.
+        Request embedding vectors via the shared backend
+        (utils/embeddings.py: OpenAI, Gemini, or local Ollama).
 
         Args:
             texts: List of strings to embed.
@@ -492,49 +477,27 @@ class AssetMatcher:
         if not texts:
             return []
 
-        api_key = self._get_openai_api_key()
-        if not api_key:
-            _log_warning("No OpenAI API key available for embedding request")
+        backend = self._get_embedding_backend()
+        if backend is None:
+            _log_warning("No embeddings backend available for embedding request")
             return None
 
-        try:
-            import requests
-        except ImportError:
-            _log_warning("The 'requests' package is unavailable; semantic matching disabled")
-            return None
-
-        try:
-            response = requests.post(
-                EMBEDDING_ENDPOINT,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={"model": EMBEDDING_MODEL, "input": texts},
-                timeout=EMBEDDING_TIMEOUT_SECONDS
-            )
-
-            if response.status_code != 200:
-                _log_warning(f"Embedding request failed with HTTP {response.status_code}: "
-                             f"{response.text[:200]}")
-                return None
-
-            data = response.json().get("data", [])
-            if len(data) != len(texts):
-                _log_warning(f"Embedding response count mismatch: expected {len(texts)}, "
-                             f"got {len(data)}")
-                return None
-
-            ordered = sorted(data, key=lambda item: item.get("index", 0))
-            return [item["embedding"] for item in ordered]
-        except Exception as e:
-            _log_warning(f"Embedding request failed: {e}")
-            return None
+        return backend.embed_texts(texts)
 
     @staticmethod
     def _hash_text(text: str) -> str:
         """Return a stable hash key for an embedding text."""
         return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    def _cache_key(self, text: str) -> str:
+        """
+        Cache key for an embedding text, namespaced per backend+model
+        ('provider:model:sha256') so vectors from different embedding
+        spaces are never compared after a provider switch.
+        """
+        backend = self._get_embedding_backend()
+        namespace = getattr(backend, 'namespace', 'unknown')
+        return f"{namespace}:{self._hash_text(text)}"
 
     def _load_embedding_cache(self) -> Dict[str, List[float]]:
         """
@@ -617,7 +580,7 @@ class AssetMatcher:
         missing: List[Tuple[str, str]] = []
         seen_hashes = set()
         for _label, _asset_path, embed_text in entries:
-            text_hash = self._hash_text(embed_text)
+            text_hash = self._cache_key(embed_text)
             if text_hash not in self.embedding_cache and text_hash not in seen_hashes:
                 missing.append((text_hash, embed_text))
                 seen_hashes.add(text_hash)
@@ -635,7 +598,7 @@ class AssetMatcher:
             self._save_embedding_cache()
 
         for label, asset_path, embed_text in entries:
-            vector = self.embedding_cache.get(self._hash_text(embed_text))
+            vector = self.embedding_cache.get(self._cache_key(embed_text))
             if vector:
                 self._semantic_index.append((label, asset_path, vector))
 
@@ -679,8 +642,11 @@ class AssetMatcher:
         Returns:
             Embedding vector or None on failure.
         """
-        if query in self._query_embedding_cache:
-            return self._query_embedding_cache[query]
+        # Namespaced per backend+model so a provider switch cannot serve
+        # vectors from a different embedding space
+        cache_key = self._cache_key(query)
+        if cache_key in self._query_embedding_cache:
+            return self._query_embedding_cache[cache_key]
 
         vectors = self._get_embeddings([query])
         if not vectors:
@@ -690,7 +656,7 @@ class AssetMatcher:
         if len(self._query_embedding_cache) >= QUERY_EMBEDDING_CACHE_MAX:
             # Drop the oldest entry (insertion order) to bound memory use
             self._query_embedding_cache.pop(next(iter(self._query_embedding_cache)))
-        self._query_embedding_cache[query] = vector
+        self._query_embedding_cache[cache_key] = vector
         return vector
 
     def _semantic_match(self, object_name: str) -> Optional[Any]:

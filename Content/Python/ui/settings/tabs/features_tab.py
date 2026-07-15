@@ -81,12 +81,33 @@ class FeaturesTab(QWidget):
         matching_group = QGroupBox("Asset Matching && Generation")
         matching_layout = QVBoxLayout()
 
-        self.semantic_matching_check = QCheckBox("Semantic asset matching (embeddings; needs OpenAI key)")
+        self.semantic_matching_check = QCheckBox(
+            "Semantic asset matching (embeddings via OpenAI, Gemini, or local Ollama)")
         self.semantic_matching_check.setToolTip(
             "Matches described objects to library assets by meaning ('canine' finds "
-            "the dog) using OpenAI embeddings. Falls back to fuzzy matching on any failure.")
+            "the dog) using text embeddings from OpenAI, Gemini, or a local Ollama "
+            "server. Claude/Anthropic offers no embeddings API, so Claude-only "
+            "setups fall back to fuzzy matching. Falls back to fuzzy matching on "
+            "any failure.")
         self.semantic_matching_check.stateChanged.connect(self.on_change)
         matching_layout.addWidget(self.semantic_matching_check)
+
+        embed_row = QHBoxLayout()
+        embed_row.addSpacing(24)
+        embed_row.addWidget(QLabel("Embeddings:"))
+        self.embedding_provider_combo = QComboBox()
+        self.embedding_provider_combo.addItems(["auto", "openai", "gemini", "ollama"])
+        self.embedding_provider_combo.setToolTip(
+            "Which embeddings provider powers semantic matching. auto (default): "
+            "first available in order OpenAI -> Gemini -> Ollama. openai: "
+            "text-embedding-3-small (needs OpenAI key). gemini: gemini-embedding-001 "
+            "(needs Gemini key). ollama: local server from the AI tab's LLaVA/Ollama "
+            "URL with the nomic-embed-text model (ollama pull nomic-embed-text). "
+            "When the chosen provider is unavailable, matching falls back to fuzzy.")
+        self.embedding_provider_combo.currentTextChanged.connect(self.on_change)
+        embed_row.addWidget(self.embedding_provider_combo)
+        embed_row.addStretch()
+        matching_layout.addLayout(embed_row)
 
         self.gen3d_check = QCheckBox("Generative 3D fallback (create missing assets; needs Meshy or Tripo key)")
         self.gen3d_check.setToolTip(
@@ -355,6 +376,10 @@ class FeaturesTab(QWidget):
         self.camera_moves_check.setChecked(bool(sequence.get('camera_moves', True)))
 
         self.semantic_matching_check.setChecked(bool(asset_library.get('semantic_matching', False)))
+        provider = str(asset_library.get('embedding_provider', 'auto') or 'auto').strip().lower()
+        if provider not in ('auto', 'openai', 'gemini', 'ollama'):
+            provider = 'auto'
+        self.embedding_provider_combo.setCurrentText(provider)
         self.gen3d_check.setChecked(bool(gen3d.get('enabled', False)))
         self.gen3d_provider_combo.setCurrentText(str(gen3d.get('provider', 'meshy')))
         try:
@@ -413,6 +438,7 @@ class FeaturesTab(QWidget):
 
         asset_library = dict(self.settings.get('asset_library', {}))
         asset_library['semantic_matching'] = self.semantic_matching_check.isChecked()
+        asset_library['embedding_provider'] = self.embedding_provider_combo.currentText()
 
         gen3d = dict(self.settings.get('gen3d', {}))
         gen3d['enabled'] = self.gen3d_check.isChecked()
