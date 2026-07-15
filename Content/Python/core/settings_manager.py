@@ -176,7 +176,12 @@ class SettingsManager:
                 'use_hdri': False,
                 'hdri_path': '',
                 'enable_shadows': True,
-                'shadow_quality': 'medium'
+                'shadow_quality': 'medium',
+                # Zero-cost local extras: on by default. Paid/keyed features
+                # (gen3d, genanim, asset_library.semantic_matching) stay off
+                # by default. Features tab load defaults must match exactly.
+                'apply_mood_lighting': True,
+                'auto_animation': True
             },
 
             # Sequence Settings
@@ -188,7 +193,9 @@ class SettingsManager:
                 'quality': 'high',
                 'enable_audio': False,
                 'master_sequence_name': 'Master_Sequence',
-                'auto_create_camera_cuts': True
+                'auto_create_camera_cuts': True,
+                # Zero-cost local extra: on by default (see 'scene' note).
+                'camera_moves': True
             },
 
             # Asset Library Settings

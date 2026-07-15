@@ -247,8 +247,10 @@ class FeaturesTab(QWidget):
         layout.addWidget(cost_group)
 
         note = QLabel(
-            "All features are off by default except image transport optimization. "
-            "External validation lives on the General tab. Defaults here always match "
+            "Zero-cost local features (mood lighting, animation picker, camera "
+            "moves) and image transport optimization are on by default; features "
+            "that cost money or need API keys are off by default. External "
+            "validation lives on the General tab. Defaults here always match "
             "the plugin's in-code defaults.")
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -271,9 +273,11 @@ class FeaturesTab(QWidget):
         performance = self.settings.get('performance', {})
         cost = self.settings.get('cost', {})
 
-        self.mood_lighting_check.setChecked(bool(scene.get('apply_mood_lighting', False)))
-        self.auto_animation_check.setChecked(bool(scene.get('auto_animation', False)))
-        self.camera_moves_check.setChecked(bool(sequence.get('camera_moves', False)))
+        # Zero-cost local extras default ON, matching
+        # settings_manager.get_default_global_settings()
+        self.mood_lighting_check.setChecked(bool(scene.get('apply_mood_lighting', True)))
+        self.auto_animation_check.setChecked(bool(scene.get('auto_animation', True)))
+        self.camera_moves_check.setChecked(bool(sequence.get('camera_moves', True)))
 
         self.semantic_matching_check.setChecked(bool(asset_library.get('semantic_matching', False)))
         self.gen3d_check.setChecked(bool(gen3d.get('enabled', False)))

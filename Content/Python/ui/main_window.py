@@ -216,6 +216,9 @@ class ModernStoryboardWindow(QMainWindow):
         if hasattr(self, 'active_panel_widget'):
             self.active_panel_widget.clear_panel()
 
+        # [Guidance] Show "No episodes yet" hint if this show is empty
+        self.update_empty_state_hint()
+
     def update_active_panel_context(self):
         """Update active panel widget with show context after asset library loads"""
         if hasattr(self, 'active_panel_widget') and hasattr(self, 'asset_library'):
@@ -325,6 +328,10 @@ class ModernStoryboardWindow(QMainWindow):
         else:
             self.panels = []
             self.panel_grid.set_panels([])
+
+        # [Guidance] Show "No panels yet" hint if this episode is empty
+        # (also covers import/delete flows, which reload through here)
+        self.update_empty_state_hint()
 
     def create_menu_bar(self):
         """Create menu bar"""
@@ -490,6 +497,26 @@ class ModernStoryboardWindow(QMainWindow):
         self.welcome_panel = self.create_welcome_panel()
         panels_layout.addWidget(self.welcome_panel)
 
+        # [Guidance] Inline empty-state hint (same inline pattern as the
+        # welcome panel): shown where the panel grid would be when a show
+        # exists but has no episodes, or the episode has no panels yet.
+        # Owned by update_empty_state_hint().
+        self.empty_state_hint = QLabel("")
+        self.empty_state_hint.setObjectName("emptyStateHint")
+        self.empty_state_hint.setWordWrap(True)
+        self.empty_state_hint.setAlignment(Qt.AlignCenter)
+        self.empty_state_hint.setStyleSheet(
+            "QLabel#emptyStateHint {"
+            " color: #B0B0B0;"
+            " font-size: 13px;"
+            " background-color: #161616;"
+            " border: 1px solid #2A2A2A;"
+            " border-radius: 8px;"
+            " margin: 10px;"
+            " padding: 20px; }")
+        self.empty_state_hint.setVisible(False)
+        panels_layout.addWidget(self.empty_state_hint)
+
         # Panel grid
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -593,6 +620,42 @@ class ModernStoryboardWindow(QMainWindow):
             unreal.log_warning(f"Welcome panel: could not check shows: {e}")
             has_shows = True
         self.welcome_panel.setVisible(not has_shows)
+        self.update_empty_state_hint()
+
+    def update_empty_state_hint(self):
+        """[Guidance] Show an inline hint where the panel grid would be when
+        a selected show has no episodes, or the selected episode has no
+        panels. Hidden otherwise (including while the welcome panel shows).
+        Display only; never raises.
+        """
+        try:
+            hint = getattr(self, 'empty_state_hint', None)
+            if hint is None:
+                return
+            text = None
+            welcome_showing = (hasattr(self, 'welcome_panel')
+                               and self.welcome_panel.isVisible())
+            if self.current_show and not welcome_showing:
+                if not self.current_episode:
+                    episodes = []
+                    try:
+                        episodes = self.episodes_manager.get_show_episodes(
+                            self.current_show)
+                    except Exception:
+                        episodes = []
+                    if not episodes:
+                        text = ("No episodes yet - create one with "
+                                "File > New Episode (Ctrl+Shift+N)")
+                elif not self.panels:
+                    text = ("No panels yet - click Import Panels above "
+                            "to add storyboard images")
+            if text:
+                hint.setText(text)
+                hint.setVisible(True)
+            else:
+                hint.setVisible(False)
+        except Exception:
+            pass
 
     def welcome_create_show(self):
         """Welcome panel action: create the first show"""

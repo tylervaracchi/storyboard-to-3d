@@ -585,6 +585,25 @@ class ActivePanelWidget(QWidget):
         header = self.create_section_header("ACTIVE PANEL")
         layout.addWidget(header)
 
+        # [Guidance] Always-visible next-step banner. Text is owned entirely
+        # by update_guidance() (state derived from existing attributes);
+        # second line shows the "AI saw: ..." summary once a panel has
+        # analysis data. Display only - never drives workflow state.
+        self.guidance_banner = QLabel("Select a storyboard panel to begin")
+        self.guidance_banner.setObjectName("guidanceBanner")
+        self.guidance_banner.setWordWrap(True)
+        self.guidance_banner.setStyleSheet(
+            "QLabel#guidanceBanner {"
+            " background-color: #1E3A5F;"
+            " color: #FFFFFF;"
+            " border: 1px solid #3B6EA5;"
+            " border-radius: 4px;"
+            " margin: 6px 8px 2px 8px;"
+            " padding: 8px 10px;"
+            " font-size: 12px;"
+            " font-weight: bold; }")
+        layout.addWidget(self.guidance_banner)
+
         # Scrollable content
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1029,6 +1048,85 @@ class ActivePanelWidget(QWidget):
         # can auto-scroll the live progress readout into view.
         self._panel_scroll = scroll
 
+        # [Guidance] Initialize the banner from current (empty) state
+        self.update_guidance()
+
+    def update_guidance(self):
+        """[Guidance] Refresh the next-step banner from existing state.
+
+        Pure display: derives the workflow stage from attributes that
+        already exist (active_panel dict, last_generated_scene,
+        capture_workflow_active, current_iteration/max_iterations,
+        iteration_scores/iteration_details) and never raises.
+        """
+        try:
+            banner = getattr(self, 'guidance_banner', None)
+            if banner is None:
+                return
+            panel = self.active_panel
+            if not panel:
+                text = "Select a storyboard panel to begin"
+            elif not (panel.get('analysis') or panel.get('characters')):
+                text = "Step 1: Click ANALYZE to have the AI read this panel"
+            elif getattr(self, 'capture_workflow_active', False):
+                text = "Running - iteration {0} of {1}".format(
+                    self.current_iteration, self.max_iterations)
+            elif not self.last_generated_scene and not panel.get('sequence_path'):
+                text = ("Step 2: Click GENERATE to build the scene "
+                        "(or RUN PANEL to do everything)")
+            elif self.iteration_scores or self.iteration_details:
+                text = ("Done - review the scene in the viewport, "
+                        "or pick the next panel")
+            else:
+                text = ("Step 3: Click CAPTURE to start AI refinement - "
+                        "watch the self-score vs external validation")
+            # Second line: what the AI saw (once analysis data exists)
+            if panel and (panel.get('analysis') or panel.get('characters')):
+                summary = self._guidance_ai_summary(panel)
+                if summary:
+                    text += "\n" + summary
+            banner.setText(text)
+        except Exception:
+            pass
+
+    def _guidance_ai_summary(self, panel):
+        """[Guidance] Compact one-line 'AI saw: ...' summary from the panel
+        dict (characters, props, location, shot type, mood). Display only;
+        returns '' and never raises on malformed data.
+        """
+        try:
+            analysis = panel.get('analysis') or {}
+
+            def names(items, limit=3):
+                shown = ", ".join(str(i) for i in items[:limit])
+                if len(items) > limit:
+                    shown += ", ..."
+                return shown
+
+            chars = [c for c in (panel.get('characters') or analysis.get('characters') or []) if c]
+            props = [p for p in (panel.get('props') or analysis.get('props') or []) if p]
+            parts = ["{0} character{1}{2}".format(
+                len(chars), "" if len(chars) == 1 else "s",
+                " ({0})".format(names(chars)) if chars else "")]
+            parts.append("{0} prop{1}{2}".format(
+                len(props), "" if len(props) == 1 else "s",
+                " ({0})".format(names(props)) if props else ""))
+            location = panel.get('location') or analysis.get('location') or analysis.get('location_type')
+            if location and location not in ('Auto-detect', 'Location Unknown'):
+                parts.append(str(location))
+            shot_type = panel.get('shot_type') or analysis.get('shot_type')
+            if shot_type and shot_type != 'Auto':
+                parts.append("{0} shot".format(shot_type))
+            mood = analysis.get('mood')
+            if mood:
+                parts.append("{0} mood".format(mood))
+            line = "AI saw: " + ", ".join(parts)
+            if len(line) > 160:
+                line = line[:157] + "..."
+            return line
+        except Exception:
+            return ""
+
     def create_section_header(self, text):
         """Create section header"""
         header = QWidget()
@@ -1112,6 +1210,9 @@ class ActivePanelWidget(QWidget):
 
         # Re-enable auto-save after panel is loaded
         self._loading_panel = False
+
+        # [Guidance] Refresh the next-step banner for this panel
+        self.update_guidance()
 
     def update_analysis_ui(self, analysis):
         """Update UI with analysis results"""
@@ -1293,6 +1394,8 @@ class ActivePanelWidget(QWidget):
         self.shot_type_combo.setCurrentIndex(0)
         self.location_combo.setCurrentIndex(0)
         self.panel_duration_spin.setValue(3.0)
+        # [Guidance] Back to the no-panel prompt
+        self.update_guidance()
 
     def get_panel_info(self):
         """Get panel info for generation"""
@@ -1745,6 +1848,8 @@ class ActivePanelWidget(QWidget):
                 self.iteration_progress_widget.set_cost_text(f"Aborted: {reason}")
         except Exception:
             pass
+        # [Guidance] Leave the "Running..." banner state after an abort
+        self.update_guidance()
         if getattr(self, 'batch_capture_mode', False):
             # Record the failure and move on so the batch queue keeps advancing
             self.batch_capture_results.append({
@@ -1976,6 +2081,9 @@ class ActivePanelWidget(QWidget):
         # [IterationProgress] Reset the live progress readout and show the
         # pre-run cost estimate. Display only; never blocks the workflow.
         self._iteration_progress_start_run()
+
+        # [Guidance] Banner: "Running - iteration 1 of M"
+        self.update_guidance()
 
         # Initialize metrics tracker for thesis evaluation (fully automatic!)
         if METRICS_AVAILABLE:
@@ -5776,6 +5884,9 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
             # Schedule next iteration
             self.current_iteration += 1
+            # [Guidance] Banner: "Running - iteration N of M" for the
+            # upcoming iteration
+            self.update_guidance()
             QTimer.singleShot(next_delay, self._start_next_iteration)
             return  # Don't show final summary yet
 
@@ -5925,6 +6036,9 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         self.auto_iterate = False
         self.capture_workflow_active = False
         self.current_iteration = 0
+
+        # [Guidance] Run complete: banner shows the "Done - review..." state
+        self.update_guidance()
 
     # [AdaptiveViews] Views kept during reduced refinement iterations. Hero is
     # mandatory (scoring and external validation read test_hero.png); 'top'
@@ -6649,6 +6763,9 @@ Shot Type: {panel_info['shot_type']}"""
                 # camera is a spawnable owned by the sequence, not a level
                 # actor to fetch), so scheduling it only misled readers.
 
+                # [Guidance] Generate complete: banner advances to Step 3
+                self.update_guidance()
+
             else:
                 QMessageBox.warning(self, "Generation Failed", "Failed to start generation")
 
@@ -6913,6 +7030,10 @@ Shot Type: {panel_info['shot_type']}"""
                     parent = parent.parent()
                 if parent and hasattr(parent, 'save_panel_metadata'):
                     parent.save_panel_metadata(self.active_panel)
+
+                # [Guidance] Analyze complete: banner advances to Step 2 and
+                # shows the "AI saw: ..." summary line
+                self.update_guidance()
 
                 # Show results dialog with validation info
                 validation_notes = result.get('validation_notes', {})

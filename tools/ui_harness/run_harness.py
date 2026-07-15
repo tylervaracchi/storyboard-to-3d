@@ -269,6 +269,16 @@ def main():
     window.show()
     wait(app, 300)
 
+    # ---- Guidance banner: exists and shows the no-panel prompt -------------
+    step("guidance-banner-initial")
+    banner = getattr(window.active_panel_widget, "guidance_banner", None)
+    if banner is None:
+        record("assertion", "guidance_banner",
+               "ActivePanelWidget has no guidance_banner attribute")
+    elif "Select a storyboard panel to begin" not in banner.text():
+        record("assertion", "guidance_banner",
+               f"Expected no-panel guidance text, got {banner.text()!r}")
+
     # ---- Welcome panel: visible while no shows exist ----------------------
     step("welcome-panel-initial")
     if not window.welcome_panel.isVisible():
@@ -331,6 +341,15 @@ def main():
                    "(falling back to direct selection)")
             window.on_panel_clicked(window.panels[0])
             wait(app)
+
+    # ---- Guidance banner: unanalyzed selected panel shows Step 1 -----------
+    step("guidance-banner-step1")
+    banner = getattr(window.active_panel_widget, "guidance_banner", None)
+    if banner is not None and window.active_panel is not None:
+        if "Step 1" not in banner.text():
+            record("assertion", "guidance_banner",
+                   "Expected 'Step 1' guidance after selecting an unanalyzed "
+                   f"panel, got {banner.text()!r}")
 
     # ---- Type into fields and verify auto-save -----------------------------
     step("field-auto-save")
