@@ -339,6 +339,14 @@ class ActivePanelWidget(QWidget):
         self.batch_capture_results = []  # Results for each panel
         self._batch_generate_active = False  # True while batch generate loop runs
 
+        # [RunButtons] RUN ALL: when True, _process_next_batch_panel generates
+        # each panel's scene right before its capture (reuses the existing
+        # batch capture queue). RUN PANEL: _run_panel_pending guards the short
+        # settle gap between generate finishing and the deferred capture start
+        # (included in _workflow_busy so nothing else can start in that gap).
+        self.batch_run_generate = False
+        self._run_panel_pending = False
+
         # [SeamFix] Consecutive AI-call failures during the refinement loop.
         # After 2 in a row the run stops instead of burning hours of
         # iterations that produce nothing (bad key / network / rate limit).
@@ -858,6 +866,30 @@ class ActivePanelWidget(QWidget):
         """)
         scroll_layout.addWidget(generate_btn)
 
+        # [RunButtons] RUN PANEL button - full single-panel pipeline
+        # (GENERATE, then the CAPTURE/iteration workflow automatically).
+        run_panel_btn = QPushButton(" RUN PANEL")
+        run_panel_btn.setObjectName("runPanelButton")
+        run_panel_btn.clicked.connect(self.run_full_panel)
+        run_panel_btn.setToolTip(
+            "Run the full single-panel pipeline: GENERATE the 3D scene, then "
+            "automatically start the CAPTURE/iteration workflow.\n"
+            "Identical to clicking GENERATE and then CAPTURE. If generation "
+            "fails, the capture step is skipped.")
+        run_panel_btn.setStyleSheet("""
+            QPushButton#runPanelButton {
+                background-color: #0D9488;
+                color: #FFFFFF;
+                font-weight: bold;
+                padding: 12px;
+                font-size: 14px;
+            }
+            QPushButton#runPanelButton:hover {
+                background-color: #0F766E;
+            }
+        """)
+        scroll_layout.addWidget(run_panel_btn)
+
         # BATCH GENERATE button
         batch_generate_btn = QPushButton(" BATCH GENERATE")
         batch_generate_btn.setObjectName("batchGenerateButton")
@@ -913,6 +945,31 @@ class ActivePanelWidget(QWidget):
             }
         """)
         scroll_layout.addWidget(batch_capture_btn)
+
+        # [RunButtons] RUN ALL button - generate + capture for every
+        # analyzed panel in the episode (reuses the batch capture queue).
+        run_all_btn = QPushButton(" RUN ALL")
+        run_all_btn.setObjectName("runAllButton")
+        run_all_btn.clicked.connect(self.run_all_panels)
+        run_all_btn.setToolTip(
+            "Run the full pipeline for every analyzed panel in the episode: "
+            "generate the 3D scene, then run the capture/iteration workflow, "
+            "one panel at a time.\n"
+            "Panels that fail generation are recorded and skipped. May take "
+            "hours and incur significant AI API costs.")
+        run_all_btn.setStyleSheet("""
+            QPushButton#runAllButton {
+                background-color: #DB2777;
+                color: #FFFFFF;
+                font-weight: bold;
+                padding: 10px;
+                font-size: 13px;
+            }
+            QPushButton#runAllButton:hover {
+                background-color: #BE185D;
+            }
+        """)
+        scroll_layout.addWidget(run_all_btn)
 
         # Test result widget
         self.comparison_result = QWidget()
@@ -1626,7 +1683,8 @@ class ActivePanelWidget(QWidget):
         """
         if (getattr(self, 'capture_workflow_active', False) or
                 getattr(self, 'batch_capture_mode', False) or
-                getattr(self, '_batch_generate_active', False)):
+                getattr(self, '_batch_generate_active', False) or
+                getattr(self, '_run_panel_pending', False)):
             unreal.log_warning(
                 f"{action_name} ignored - a capture/generate workflow is already running")
             try:
@@ -6586,6 +6644,66 @@ Shot Type: {panel_info['shot_type']}"""
             )
             unreal.log_error(f"Generation error: {e}")
 
+    def apply_analysis_to_panel(self, panel, result):
+        """Map an analyzer result dict onto a panel dict's persisted fields.
+
+        [AnalyzeAll] Shared by the single-panel ANALYZE button and the main
+        window's Analyze All so both produce identical per-panel state.
+        Data-only: never touches UI widgets.
+
+        Returns (characters, props, location, shot_type, location_elements).
+        """
+        # Handle different result formats (SmartAnalyzer vs PanelAnalyzer)
+        characters = result.get('characters', [])
+        props = result.get('props', [])
+        location_elements = result.get('location_elements', [])
+
+        # If no characters but has num_characters, use default from library
+        if not characters and result.get('num_characters', 0) > 0:
+            if self.asset_library and 'characters' in self.asset_library:
+                available_chars = list(self.asset_library['characters'].keys())
+                # Add first character from library
+                characters = [available_chars[0]] if available_chars else []
+                unreal.log(f"[ANALYZE] Using default character from library: {characters}")
+
+        # If props not found, try 'objects' key (PanelAnalyzer format)
+        if not props:
+            props = result.get('objects', [])
+
+        # Skip generic placeholders
+        characters = [c for c in characters if c and c != 'generic_prop']
+        props = [p for p in props if p and p != 'generic_prop']
+
+        # Location - try multiple keys
+        location = result.get('location', result.get('location_type', 'Auto-detect'))
+
+        # Normalize shot type names
+        shot_type = result.get('shot_type', 'Auto') or 'Auto'
+        shot_type_map = {
+            'close': 'Close-up',
+            'medium': 'Medium',
+            'wide': 'Wide',
+            'extreme_close': 'ECU',
+            'extreme_wide': 'Wide',
+            'ots': 'OTS',
+            'over_shoulder': 'OTS',
+            'pov': 'POV'
+        }
+        shot_type = shot_type_map.get(shot_type.lower(), shot_type.title())
+
+        if panel is not None:
+            panel['analysis'] = result
+            panel['characters'] = characters
+            panel['props'] = props
+            if location and location not in ('Auto-detect', 'Location Unknown'):
+                panel['location'] = location
+            if shot_type and shot_type != 'Auto':
+                panel['shot_type'] = shot_type
+            if location_elements:
+                panel['location_elements'] = location_elements
+
+        return characters, props, location, shot_type, location_elements
+
     def analyze_panel_with_ai(self):
         """Analyze storyboard panel with AI and populate UI fields"""
         unreal.log("\n" + "="*70)
@@ -6694,27 +6812,13 @@ Shot Type: {panel_info['shot_type']}"""
                 self.characters_list.clear()
                 self.props_list.clear()
 
-                # Handle different result formats (SmartAnalyzer vs PanelAnalyzer)
-                characters = result.get('characters', [])
-                props = result.get('props', [])
-                location_elements = result.get('location_elements', [])
+                # [AnalyzeAll] Map result -> persisted panel fields via the
+                # shared helper (same code path Analyze All uses) so batch
+                # and single analyzes produce identical panel state
+                characters, props, location, shot_type, location_elements = \
+                    self.apply_analysis_to_panel(self.active_panel, result)
 
-                # If no characters but has num_characters, use default from library
-                if not characters and result.get('num_characters', 0) > 0:
-                    if self.asset_library and 'characters' in self.asset_library:
-                        available_chars = list(self.asset_library['characters'].keys())
-                        # Add first character from library
-                        characters = [available_chars[0]] if available_chars else []
-                        unreal.log(f"[ANALYZE] Using default character from library: {characters}")
-
-                # If props not found, try 'objects' key (PanelAnalyzer format)
-                if not props:
-                    props = result.get('objects', [])
-
-                # Store location elements in panel data (NOT as props)
                 if location_elements:
-                    if self.active_panel:
-                        self.active_panel['location_elements'] = location_elements
                     unreal.log(f"[ANALYZE] Location elements (static scenery): {location_elements}")
 
                 unreal.log(f"[ANALYZE] Characters to add: {characters}")
@@ -6732,8 +6836,7 @@ Shot Type: {panel_info['shot_type']}"""
                         self.props_list.addItem(prop)
                         unreal.log(f"[ANALYZE] Added prop: {prop}")
 
-                # Set location - try multiple keys
-                location = result.get('location', result.get('location_type', 'Auto-detect'))
+                # Set location (mapped by apply_analysis_to_panel)
                 if location:
                     unreal.log(f"[ANALYZE] Setting location: {location}")
                     index = self.location_combo.findText(location)
@@ -6745,21 +6848,7 @@ Shot Type: {panel_info['shot_type']}"""
                             self.location_combo.addItem(location)
                             self.location_combo.setCurrentText(location)
 
-                # Set shot type
-                shot_type = result.get('shot_type', 'Auto')
-                # Normalize shot type names
-                shot_type_map = {
-                    'close': 'Close-up',
-                    'medium': 'Medium',
-                    'wide': 'Wide',
-                    'extreme_close': 'ECU',
-                    'extreme_wide': 'Wide',
-                    'ots': 'OTS',
-                    'over_shoulder': 'OTS',
-                    'pov': 'POV'
-                }
-                shot_type = shot_type_map.get(shot_type.lower(), shot_type.title())
-
+                # Set shot type (normalized by apply_analysis_to_panel)
                 unreal.log(f"[ANALYZE] Setting shot type: {shot_type}")
                 index = self.shot_type_combo.findText(shot_type)
                 if index >= 0:
@@ -7717,6 +7806,9 @@ You can edit them before generating the scene.{available_info}"""
             return
 
         # Setup batch mode
+        # [RunButtons] Plain BATCH CAPTURE never regenerates scenes - make
+        # sure a stale RUN ALL flag can't leak into this run.
+        self.batch_run_generate = False
         self.batch_capture_mode = True
         self.batch_capture_queue = list(generated_panels)  # Copy list
         self.batch_capture_results = []
@@ -7894,6 +7986,26 @@ You can edit them before generating the scene.{available_info}"""
             # Give UI time to update
             QApplication.processEvents()
 
+            # [RunButtons] RUN ALL mode: generate this panel's scene first,
+            # then capture - the per-panel equivalent of GENERATE -> CAPTURE.
+            # Generation is synchronous on the game thread; the short sleep
+            # mirrors BATCH GENERATE's inter-panel settle pause.
+            if getattr(self, 'batch_run_generate', False):
+                unreal.log("RUN ALL: generating scene before capture...")
+                generated = False
+                try:
+                    generated = self._generate_scene_internal(panel)
+                except Exception as gen_err:
+                    unreal.log_error(f"RUN ALL: generation raised: {gen_err}")
+                    generated = False
+                if not generated:
+                    # Same abort helper the capture chain uses: records the
+                    # failure and advances/finalizes the batch queue.
+                    self._abort_capture_run("Scene generation failed (RUN ALL)")
+                    return
+                time.sleep(0.5)
+                QApplication.processEvents()
+
             # Start positioning workflow for this panel
             # When it completes, _finalize_metrics will check batch_capture_mode
             # and call _process_next_batch_panel again
@@ -7991,6 +8103,150 @@ You can edit them before generating the scene.{available_info}"""
         self.batch_capture_mode = False
         self.batch_capture_queue = []
         self.batch_capture_results = []
+        self.batch_run_generate = False  # [RunButtons] RUN ALL flag off with the batch
+
+    def run_full_panel(self):
+        """[RunButtons] RUN PANEL: full single-panel pipeline.
+
+        Executes GENERATE and then the CAPTURE/iteration workflow exactly as
+        if the user clicked the two buttons in order, reusing the existing
+        handlers (generate_scene_from_panel, then test_positioning_phase3).
+        Generation is synchronous on the game thread; the capture start is
+        deferred with QTimer.singleShot so it runs after the post-generate
+        camera fetch (generate schedules _get_camera_from_builder at 3000ms).
+        _run_panel_pending keeps _workflow_busy blocking during that gap.
+        """
+        if self._workflow_busy("RUN PANEL"):
+            return
+        if not self.active_panel:
+            QMessageBox.warning(self, "No Panel", "Please select a panel first")
+            return
+
+        unreal.log("\n" + "="*70)
+        unreal.log("RUN PANEL - GENERATE + CAPTURE PIPELINE")
+        unreal.log("="*70)
+
+        # Clear so success is detectable: generate_scene_from_panel sets
+        # last_generated_scene only when build_scene returns a scene.
+        self.last_generated_scene = None
+        self.generate_scene_from_panel()
+
+        if self.last_generated_scene is None:
+            # Generation failed or was blocked; its own handler already
+            # surfaced the error. Stop - do not start the capture.
+            self._notify_status(
+                "Run Panel",
+                "Scene generation did not complete - capture skipped.",
+                "warning")
+            unreal.log_warning("RUN PANEL: generation failed - capture skipped")
+            return
+
+        # Block other run buttons during the settle gap; cleared right
+        # before the capture starts (capture then owns the busy state).
+        self._run_panel_pending = True
+        self._notify_status(
+            "Run Panel",
+            "Scene generated - capture workflow starts automatically in a few seconds...",
+            "info")
+        QTimer.singleShot(3500, self._run_panel_start_capture)
+
+    def _run_panel_start_capture(self):
+        """[RunButtons] Deferred second half of RUN PANEL: start CAPTURE."""
+        self._run_panel_pending = False
+        if not self.active_panel:
+            unreal.log_warning("RUN PANEL: no active panel at capture start - skipped")
+            return
+        unreal.log("RUN PANEL: starting capture workflow...")
+        # Manual-path call: runs the same guard + per-panel state reset as a
+        # real CAPTURE click.
+        self.test_positioning_phase3()
+
+    def run_all_panels(self):
+        """[RunButtons] RUN ALL: generate + capture every analyzed panel.
+
+        Reuses the existing batch capture machinery (queue, per-panel reset,
+        advance/finalize helpers). batch_run_generate makes
+        _process_next_batch_panel call _generate_scene_internal for each
+        panel right before its capture; failures go through
+        _abort_capture_run, which records them and advances the queue.
+        """
+        if self._workflow_busy("RUN ALL"):
+            return
+
+        unreal.log("\n" + "="*70)
+        unreal.log("RUN ALL - GENERATE + CAPTURE FOR ALL PANELS")
+        unreal.log("="*70)
+
+        # Walk up the widget tree to find the MainWindow (same pattern as
+        # the other batch entry points)
+        main_window = None
+        widget = self
+        max_depth = 10
+        depth = 0
+        while widget and depth < max_depth:
+            widget = widget.parent()
+            if widget and hasattr(widget, 'panels'):
+                main_window = widget
+                break
+            depth += 1
+
+        if not main_window or not hasattr(main_window, 'panels'):
+            QMessageBox.warning(
+                self,
+                "Cannot Access Panels",
+                "Could not find main window with panels.\n\nPlease restart the plugin."
+            )
+            unreal.log("ERROR: Could not find MainWindow in widget tree")
+            return
+
+        if not main_window.panels:
+            QMessageBox.information(
+                self,
+                "No Panels",
+                "No panels loaded in current episode.\n\nPlease select an episode with panels."
+            )
+            unreal.log("No panels in main_window.panels")
+            return
+
+        # Generation builds from the panel's analysis, so mirror BATCH
+        # GENERATE's filter: analyzed panels only.
+        analyzed_panels = [p for p in main_window.panels if p.get('analysis') is not None]
+        if not analyzed_panels:
+            QMessageBox.information(
+                self,
+                "No Analyzed Panels",
+                "No panels have been analyzed yet.\n\n" +
+                "Please analyze panels first using the 'Analyze All Panels' option."
+            )
+            unreal.log("No analyzed panels found")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Run All Confirmation",
+            f"Generate + capture for {len(analyzed_panels)} analyzed panels?\n\n" +
+            f"Each panel will be generated, then run iterative positioning\n" +
+            f"until score >80 or max iterations, ONE AT A TIME (sequential).\n\n" +
+            f" This may take several hours and incur significant AI API costs!",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            unreal.log("RUN ALL cancelled by user")
+            return
+
+        # Setup batch mode with the generate-first flag
+        self.batch_run_generate = True
+        self.batch_capture_mode = True
+        self.batch_capture_queue = list(analyzed_panels)  # Copy list
+        self.batch_capture_results = []
+
+        unreal.log(f"\n RUN ALL MODE ENABLED (generate + capture per panel)")
+        unreal.log(f"Total panels in queue: {len(self.batch_capture_queue)}")
+        unreal.log(f"Max iterations: {self.max_iterations}")
+        unreal.log("="*70 + "\n")
+
+        # Start processing first panel
+        self._process_next_batch_panel()
 
     def _update_multi_model_csv(self, summary: Dict[str, Any]):
         """

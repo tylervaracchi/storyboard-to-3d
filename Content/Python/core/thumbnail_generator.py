@@ -62,6 +62,12 @@ MIN_BOUNDS_RADIUS = 25.0
 DEFAULT_THUMBNAIL_SIZE = 256
 LIBRARY_CATEGORIES = ('characters', 'props', 'locations')
 
+# Distinct truthy status returned by generate_asset_thumbnail for location
+# (level/World) entries whose level is not the one currently open in the
+# editor: a map-glyph placeholder PNG is written instead of a real capture,
+# and callers must count the entry as skipped/deferred, never as failed.
+LOCATION_THUMBNAIL_DEFERRED = 'location_thumbnail_deferred'
+
 
 def _log(msg):
     if unreal is not None:
@@ -354,6 +360,225 @@ def _spawn_temp_light(camera_rotation):
         return None
 
 
+def _asset_is_world(asset_path):
+    """True when the Content Browser entry is a level (UWorld) asset.
+
+    Uses AssetData from the asset registry so the map package is never
+    loaded just to find out what class it is. Never raises."""
+    try:
+        eal = getattr(unreal, 'EditorAssetLibrary', None)
+        if eal is None or not hasattr(eal, 'find_asset_data'):
+            return False
+        data = eal.find_asset_data(str(asset_path))
+        if data is None:
+            return False
+        for prop in ('asset_class_path', 'asset_class'):
+            try:
+                value = data.get_editor_property(prop)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            name = str(getattr(value, 'asset_name', value))
+            if name and name != 'None':
+                return name == 'World'
+    except Exception as e:
+        _log('World-asset check failed for {0}: {1}'.format(asset_path, e))
+    return False
+
+
+def _current_level_package_path():
+    """Package path (e.g. /Game/Maps/Foo) of the level currently open in
+    the editor, or ''. Never raises."""
+    world = None
+    if RIG_HELPERS_AVAILABLE:
+        try:
+            world = get_editor_world()
+        except Exception:
+            world = None
+    if world is None:
+        try:
+            if hasattr(unreal, 'get_editor_subsystem') and \
+                    hasattr(unreal, 'UnrealEditorSubsystem'):
+                sub = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+                if sub is not None and hasattr(sub, 'get_editor_world'):
+                    world = sub.get_editor_world()
+        except Exception:
+            world = None
+    if world is None:
+        return ''
+    try:
+        return str(world.get_path_name()).split('.')[0]
+    except Exception:
+        return ''
+
+
+def _get_viewport_camera_info():
+    """(location, rotation) of the active level viewport camera, or
+    (None, None). Read-only: the user's viewport is never moved."""
+    for source in ('subsystem', 'library'):
+        try:
+            if source == 'subsystem':
+                if not (hasattr(unreal, 'get_editor_subsystem') and
+                        hasattr(unreal, 'UnrealEditorSubsystem')):
+                    continue
+                owner = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            else:
+                owner = getattr(unreal, 'EditorLevelLibrary', None)
+            if owner is None or not hasattr(owner, 'get_level_viewport_camera_info'):
+                continue
+            info = owner.get_level_viewport_camera_info()
+            if info:
+                return info[0], info[1]
+        except Exception as e:
+            _log('Viewport camera lookup failed ({0}): {1}'.format(source, e))
+    return None, None
+
+
+def _capture_loaded_level_thumbnail(output_png, size):
+    """Capture the currently open level from the editor viewport camera
+    with a temporary SceneCapture2D (least invasive in-editor capture:
+    the viewport camera is read, never moved, and the capture actor is
+    destroyed in the finally block). True when a valid PNG was written."""
+    capture = None
+    try:
+        if not RIG_HELPERS_AVAILABLE or get_editor_world() is None:
+            return False
+        cam_location, cam_rotation = _get_viewport_camera_info()
+        if cam_location is None or cam_rotation is None:
+            return False
+        capture = spawn_capture_actor(cam_location, cam_rotation)
+        if capture is None:
+            return False
+        comp = get_capture_component(capture)
+        if comp is None:
+            return False
+        rt = _make_ldr_render_target(max(int(size), 16))
+        if rt is None:
+            return False
+        configure_capture_component(comp, rt)
+        if hasattr(comp, 'capture_scene'):
+            comp.capture_scene()
+        export_fn, export_info = resolve_export_function()
+        if export_fn is None:
+            return False
+        out = Path(output_png)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.exists():
+            try:
+                out.unlink()
+            except OSError:
+                pass
+        export_fn(get_editor_world(), rt, str(out.parent), out.name)
+        if is_valid_png(out):
+            return True
+        if out.exists():
+            # Non-PNG bytes (float render target exports EXR): remove
+            try:
+                out.unlink()
+            except OSError:
+                pass
+        return False
+    except Exception as e:
+        _log('Loaded-level viewport capture failed: {0}'.format(e))
+        return False
+    finally:
+        _destroy_actor(capture)
+
+
+def write_location_placeholder(output_png, location_name, size=DEFAULT_THUMBNAIL_SIZE):
+    """Write an intentional map-glyph placeholder PNG for a location whose
+    real thumbnail is deferred until its level is opened in the editor.
+    Returns True when a valid PNG exists at output_png afterwards."""
+    try:
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            _log('PIL unavailable; cannot write a location placeholder PNG')
+            return False
+        size = max(int(size), 64)
+        img = Image.new('RGB', (size, size), (30, 34, 42))
+        draw = ImageDraw.Draw(img)
+        # Stylized folded map: three panels with slanted top/bottom edges
+        left, right = size // 8, size - size // 8
+        top, bottom = size // 4, size - int(size * 0.3)
+        third = (right - left) // 3
+        off = size // 16
+        xs = (left, left + third, left + 2 * third, right)
+        top_ys = (top + off, top, top + off, top)
+        bot_ys = (bottom, bottom - off, bottom, bottom - off)
+        outline = list(zip(xs, top_ys)) + list(zip(reversed(xs), reversed(bot_ys)))
+        draw.polygon(outline, fill=(52, 62, 82), outline=(120, 140, 180))
+        for i in (1, 2):
+            draw.line([(xs[i], top_ys[i]), (xs[i], bot_ys[i])],
+                      fill=(120, 140, 180), width=1)
+
+        def _font(px):
+            try:
+                from PIL import ImageFont
+            except ImportError:
+                return None
+            for family in ('arialbd.ttf', 'arial.ttf', 'segoeui.ttf'):
+                try:
+                    return ImageFont.truetype(family, px)
+                except Exception:
+                    continue
+            try:
+                return ImageFont.load_default()
+            except Exception:
+                return None
+
+        def _centered(text, cy, font, fill):
+            try:
+                bbox = draw.textbbox((0, 0), text, font=font)
+                w = bbox[2] - bbox[0]
+                h = bbox[3] - bbox[1]
+                draw.text((size / 2.0 - w / 2.0 - bbox[0], cy - h / 2.0 - bbox[1]),
+                          text, font=font, fill=fill)
+            except Exception:
+                draw.text((size // 3, int(cy)), text, fill=fill)
+
+        _centered('MAP', (top + bottom) / 2.0, _font(size // 5), (225, 230, 240))
+        label = str(location_name or 'Location')
+        if len(label) > 22:
+            label = label[:19] + '...'
+        _centered(label, bottom + (size - bottom) / 2.0,
+                  _font(max(size // 12, 10)), (170, 185, 210))
+
+        out = Path(output_png)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img.save(str(out), 'PNG')
+        return is_valid_png(out)
+    except Exception as e:
+        _warn('Could not write location placeholder {0}: {1}'.format(output_png, e))
+        return False
+
+
+def _generate_location_thumbnail(asset_path, output_png, size):
+    """By-design thumbnail handling for location (level/World) entries.
+
+    Levels cannot be spawned as staged actors, so instead: when the level
+    is the one currently open in the editor, capture it from the editor
+    viewport camera; otherwise write a map-glyph placeholder and return
+    LOCATION_THUMBNAIL_DEFERRED so callers count the entry as skipped
+    (deferred), never as failed. Exactly one info log line, no warnings."""
+    wanted = str(asset_path).split('.')[0]
+    loaded = _current_level_package_path()
+    if wanted and loaded and wanted == loaded:
+        if _capture_loaded_level_thumbnail(output_png, size):
+            _log('Captured viewport thumbnail for loaded level {0}'.format(asset_path))
+            return True
+        reason = 'level is open but the viewport capture was unavailable'
+    else:
+        reason = 'level is not currently open in the editor'
+    location_name = wanted.rstrip('/').split('/')[-1]
+    write_location_placeholder(output_png, location_name, size=size)
+    _log('Location {0}: thumbnail deferred ({1}); map placeholder written. '
+         'Open the level and regenerate to capture a real thumbnail.'.format(
+             asset_path, reason))
+    return LOCATION_THUMBNAIL_DEFERRED
+
+
 def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE,
                              spawn_temp_light=True):
     """Render a single asset to a square PNG thumbnail.
@@ -376,8 +601,12 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
         spawn_temp_light: add a temp DirectionalLight for the capture.
 
     Returns:
-        True when the PNG exists on disk afterwards, False otherwise.
-        Never raises; failures are logged with a reason.
+        True when a real thumbnail PNG exists on disk afterwards.
+        LOCATION_THUMBNAIL_DEFERRED (a truthy string) for location/level
+        assets whose level is not open in the editor: a map-glyph
+        placeholder PNG is written to output_png instead and callers
+        should count the entry as skipped/deferred, not failed.
+        False otherwise. Never raises; failures are logged with a reason.
     """
     subject = None
     capture = None
@@ -397,6 +626,12 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
                                        min_size=max(int(size), 16)):
             return True
 
+        # Levels (World assets) can never be staged as spawned actors, so
+        # they get by-design handling: viewport capture when the level is
+        # the one currently open, otherwise a deferred map placeholder.
+        if _asset_is_world(asset_path):
+            return _generate_location_thumbnail(asset_path, output_png, size)
+
         if not RIG_HELPERS_AVAILABLE:
             _error('ai_vision.scene_capture_rig helpers unavailable; cannot capture')
             return False
@@ -413,8 +648,8 @@ def generate_asset_thumbnail(asset_path, output_png, size=DEFAULT_THUMBNAIL_SIZE
             return False
         world_cls = getattr(unreal, 'World', None)
         if world_cls is not None and isinstance(asset, world_cls):
-            _warn('Level assets cannot be spawned for a thumbnail: {0}'.format(asset_path))
-            return False
+            # Safety net when the asset-registry class check missed it
+            return _generate_location_thumbnail(asset_path, output_png, size)
 
         staging = unreal.Vector(*STAGING_LOCATION)
         subject = _spawn_asset_actor(asset, staging)
@@ -512,7 +747,9 @@ def generate_library_thumbnails(show_name, overwrite=False, progress_cb=None,
 
     Returns:
         dict with lists 'generated', 'skipped', 'failed' (entry names) and
-        'thumb_dir' (str or None). Never raises.
+        'thumb_dir' (str or None). Locations whose level is not open in
+        the editor count as skipped (deferred, with a map placeholder),
+        never as failed. Never raises.
     """
     result = {'generated': [], 'skipped': [], 'failed': [], 'thumb_dir': None}
     try:
@@ -542,12 +779,12 @@ def generate_library_thumbnails(show_name, overwrite=False, progress_cb=None,
             cat = library.get(category)
             if isinstance(cat, dict):
                 for name, data in cat.items():
-                    entries.append((name, data))
+                    entries.append((category, name, data))
         total = len(entries)
         cancelled = False
         dirty = False
 
-        for index, (name, data) in enumerate(entries):
+        for index, (category, name, data) in enumerate(entries):
             if not cancelled and progress_cb is not None:
                 try:
                     if progress_cb(index, total, name) is False:
@@ -579,20 +816,36 @@ def generate_library_thumbnails(show_name, overwrite=False, progress_cb=None,
             # from the old float-render-target bug count as broken and are
             # regenerated even without overwrite
             existing_ok = bool(existing_path) and is_valid_png(str(existing_path))
+            # Deferred location placeholders always retry: the level may be
+            # open now, letting a viewport capture replace the map glyph
+            is_location = (category == 'locations')
+            deferred_retry = is_location and thumb_info.get('type') == 'placeholder'
 
             out_png = thumb_dir / (safe_thumbnail_filename(name) + '.png')
-            if not overwrite:
+            if not overwrite and not deferred_retry:
                 if existing_ok:
                     result['skipped'].append(name)
                     continue
-                if is_valid_png(out_png):
-                    # PNG already on disk but JSON pointer missing/stale: repair it
+                if not is_location and is_valid_png(out_png):
+                    # PNG already on disk but JSON pointer missing/stale: repair
+                    # it (locations skip this: the PNG on disk could be a
+                    # deferred map placeholder, not a real capture)
                     data['thumbnail'] = {'type': 'content_browser', 'path': str(out_png)}
                     dirty = True
                     result['skipped'].append(name)
                     continue
 
-            if generate_asset_thumbnail(asset_path, str(out_png), size=size):
+            status = generate_asset_thumbnail(asset_path, str(out_png), size=size)
+            if status == LOCATION_THUMBNAIL_DEFERRED:
+                # Skipped-with-reason (logged once by the generator); point
+                # the entry at the map placeholder so the grid shows intent
+                if is_valid_png(out_png):
+                    new_thumb = {'type': 'placeholder', 'path': str(out_png)}
+                    if data.get('thumbnail') != new_thumb:
+                        data['thumbnail'] = new_thumb
+                        dirty = True
+                result['skipped'].append(name)
+            elif status:
                 data['thumbnail'] = {'type': 'content_browser', 'path': str(out_png)}
                 dirty = True
                 result['generated'].append(name)

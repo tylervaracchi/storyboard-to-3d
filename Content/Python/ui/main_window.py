@@ -1453,6 +1453,22 @@ class ModernStoryboardWindow(QMainWindow):
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
 
+        # [AnalyzeAll] Use the same analyzer and result mapping as the
+        # single-panel ANALYZE button so batch produces identical per-panel
+        # state (characters/props/location/shot_type populate on selection)
+        widget = getattr(self, 'active_panel_widget', None)
+        analyzer = None
+        try:
+            from ui.widgets.active_panel_widget import SmartStoryboardAnalyzer
+            if SmartStoryboardAnalyzer is not None:
+                analyzer = SmartStoryboardAnalyzer()
+                unreal.log("[AnalyzeAll] Using SmartStoryboardAnalyzer")
+        except Exception as e:
+            unreal.log_warning(f"[AnalyzeAll] SmartStoryboardAnalyzer not available: {e}")
+        if analyzer is None:
+            analyzer = self.analyzer
+            unreal.log("[AnalyzeAll] Using fallback PanelAnalyzer")
+
         analyzed = 0
         failures = []
         cancelled = False
@@ -1465,11 +1481,18 @@ class ModernStoryboardWindow(QMainWindow):
                 cancelled = True
                 break
             try:
-                analysis = self.analyzer.analyze_panel(
+                analysis = analyzer.analyze_panel(
                     panel['path'],
-                    show_name=self.current_show
+                    self.current_show
                 )
-                panel['analysis'] = analysis
+                if not analysis:
+                    raise ValueError("analyzer returned no result")
+                if widget is not None:
+                    # Writes analysis + characters/props/location/shot_type
+                    # into the panel dict (same helper the ANALYZE button uses)
+                    widget.apply_analysis_to_panel(panel, analysis)
+                else:
+                    panel['analysis'] = analysis
                 analyzed += 1
             except Exception as e:
                 unreal.log_error(f"Failed to analyze {panel['name']}: {e}")
@@ -1490,10 +1513,19 @@ class ModernStoryboardWindow(QMainWindow):
                     if panel.get('analysis') is not None:
                         entry = panel_metadata.get(panel['name'], {})
                         entry['analysis'] = panel['analysis']
-                        entry.setdefault('characters', panel.get('characters', []))
-                        entry.setdefault('props', panel.get('props', []))
-                        entry.setdefault('location', panel.get('location', ''))
-                        entry.setdefault('shot_type', panel.get('shot_type', ''))
+                        # [AnalyzeAll] Write (not setdefault) the mapped
+                        # fields so fresh results replace stale entries,
+                        # filtering defaults like save_panel_metadata does
+                        entry['characters'] = panel.get('characters', [])
+                        entry['props'] = panel.get('props', [])
+                        location = panel.get('location', '')
+                        if location in ('Auto-detect', 'Auto'):
+                            location = ''
+                        entry['location'] = location
+                        shot_type = panel.get('shot_type', '')
+                        if shot_type == 'Auto':
+                            shot_type = ''
+                        entry['shot_type'] = shot_type
                         panel_metadata[panel['name']] = entry
                 with open(metadata_file, 'w') as f:
                     json.dump(panel_metadata, f, indent=2)
@@ -1505,6 +1537,16 @@ class ModernStoryboardWindow(QMainWindow):
 
         # Refresh grid indicators (analyzed checkmarks) once at the end
         self.panel_grid.set_panels(self.panels)
+
+        # [AnalyzeAll] Refresh the currently active panel's fields live so
+        # its characters/props/location/shot_type populate at completion
+        if widget is not None and self.active_panel is not None:
+            for panel in self.panels:
+                if panel.get('name') == self.active_panel.get('name'):
+                    if panel.get('analysis') is not None:
+                        self.active_panel = panel
+                        widget.set_panel(panel)
+                    break
 
         unreal.log(f"Analyzed {analyzed}/{len(self.panels)} panels")
         summary = "Analyzed {0} of {1} panels".format(analyzed, len(self.panels))
@@ -1519,7 +1561,9 @@ class ModernStoryboardWindow(QMainWindow):
                 summary + "\n\nFailures:\n" + shown,
                 "warning")
         else:
-            QMessageBox.information(self, "Analysis Complete", summary)
+            # [AnalyzeAll] Non-modal completion notice (status bar + log),
+            # matching the DemoFlow style of the single-panel ANALYZE path
+            self.notify_user("Analysis Complete", summary, "info")
 
     def analyze_active_panel(self):
         """Analyze active panel with show context"""

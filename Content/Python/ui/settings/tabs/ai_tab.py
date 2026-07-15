@@ -727,6 +727,22 @@ class AISettingsTab(QWidget):
                 models.append(name)
         return models
 
+    def _restore_model_selection(self, combo, saved):
+        """Select the saved model, inserting it if the list does not have it.
+
+        setCurrentText on a non-editable QComboBox is a silent no-op when the
+        text is not in the item list (e.g. a model picked after "Refresh
+        Models" that is absent from the built-in fallback list), so the saved
+        model would silently revert on reopen. Same fix as ollama_tab.
+        """
+        if not saved:
+            return
+        combo.blockSignals(True)
+        if combo.findText(saved) < 0:
+            combo.insertItem(0, saved)
+        combo.setCurrentText(saved)
+        combo.blockSignals(False)
+
     def load_settings(self):
         """Load settings into UI"""
         ai_settings = self.settings.get('ai_settings', {})
@@ -742,18 +758,21 @@ class AISettingsTab(QWidget):
 
         # OpenAI (SEPARATE KEY) - Default to gpt-4o (proven model)
         self.openai_api_key_edit.setText(ai_settings.get('openai_api_key', ''))
-        self.openai_model_combo.setCurrentText(ai_settings.get('openai_model', 'gpt-4o'))
+        self._restore_model_selection(self.openai_model_combo,
+                                      ai_settings.get('openai_model', 'gpt-4o'))
 
         # Claude (SEPARATE KEY) - Default to Sonnet 4.5 with extended thinking
         self.claude_api_key_edit.setText(ai_settings.get('claude_api_key', ''))
-        self.claude_model_combo.setCurrentText(ai_settings.get('claude_model', 'claude-sonnet-4-6'))
+        self._restore_model_selection(self.claude_model_combo,
+                                      ai_settings.get('claude_model', 'claude-sonnet-4-6'))
 
         # Gemini (SEPARATE KEY) - Default to gemini-2.5-flash (fast + low cost)
         self.gemini_api_key_edit.setText(ai_settings.get('gemini_api_key', ''))
-        self.gemini_model_combo.setCurrentText(ai_settings.get('gemini_model', 'gemini-2.5-flash'))
+        self._restore_model_selection(self.gemini_model_combo,
+                                      ai_settings.get('gemini_model', 'gemini-2.5-flash'))
 
-        # Model settings
-        temp = int(ai_settings.get('temperature', 0.7) * 100)
+        # Model settings (round, not truncate: 0.29 * 100 == 28.999...)
+        temp = int(round(ai_settings.get('temperature', 0.7) * 100))
         self.temperature_slider.setValue(temp)
         self.max_tokens_spin.setValue(ai_settings.get('max_tokens', 4000))
 

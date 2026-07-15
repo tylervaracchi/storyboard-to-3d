@@ -43,6 +43,7 @@ from core.thumbnail_generator import (
     safe_thumbnail_filename,
     is_valid_png,
     LIBRARY_CATEGORIES,
+    LOCATION_THUMBNAIL_DEFERRED,
 )
 from core.json_extractor import parse_llm_json
 
@@ -239,8 +240,16 @@ def merge_aliases(existing, new):
 
 def _ensure_thumbnail(entry_name, entry, thumb_dir):
     """Return a usable thumbnail path for the entry, generating one when
-    missing/broken. Updates entry['thumbnail'] in place on generation."""
-    existing = _existing_thumbnail_path(entry)
+    missing/broken. Updates entry['thumbnail'] in place on generation.
+
+    Returns LOCATION_THUMBNAIL_DEFERRED (truthy sentinel) for location
+    entries whose level is not open in the editor: those are skipped with
+    a single info line, never counted as failed."""
+    thumb = entry.get('thumbnail')
+    deferred_placeholder = isinstance(thumb, dict) and thumb.get('type') == 'placeholder'
+    # A deferred location placeholder (map glyph) is not a describable
+    # image: retry generation instead of sending the glyph to the provider
+    existing = None if deferred_placeholder else _existing_thumbnail_path(entry)
     if existing:
         return existing
 
@@ -256,7 +265,12 @@ def _ensure_thumbnail(entry_name, entry, thumb_dir):
     out_png = directory / (safe_thumbnail_filename(entry_name) + '.png')
 
     # One render via the headless-verified generator; never raises
-    if generate_asset_thumbnail(asset_path, str(out_png)):
+    status = generate_asset_thumbnail(asset_path, str(out_png))
+    if status == LOCATION_THUMBNAIL_DEFERRED:
+        _log('{0}: location thumbnail deferred (level not open in the '
+             'editor); skipping AI description'.format(entry_name))
+        return LOCATION_THUMBNAIL_DEFERRED
+    if status:
         entry['thumbnail'] = {'type': 'content_browser', 'path': str(out_png)}
         return str(out_png)
     _warn('{0}: thumbnail generation failed (see log above)'.format(entry_name))
@@ -287,7 +301,10 @@ def describe_asset(entry_name, entry, provider=None, thumb_dir=None):
 
     Returns:
         {'description': str, 'aliases': [str, ...], 'category_guess': str,
-         'cost': float} on success, or None on any failure. Never raises.
+         'cost': float} on success, LOCATION_THUMBNAIL_DEFERRED (truthy
+        sentinel) when the entry is a location whose level is not open in
+        the editor (skip, not a failure), or None on any failure.
+        Never raises.
     """
     try:
         if not isinstance(entry, dict):
@@ -295,6 +312,8 @@ def describe_asset(entry_name, entry, provider=None, thumb_dir=None):
             return None
 
         thumb_path = _ensure_thumbnail(entry_name, entry, thumb_dir)
+        if thumb_path == LOCATION_THUMBNAIL_DEFERRED:
+            return LOCATION_THUMBNAIL_DEFERRED
         if not thumb_path:
             return None
 
@@ -444,6 +463,11 @@ def catalog_library(show_name, overwrite=False, progress_cb=None):
 
             described = describe_asset(name, data, provider=provider,
                                        thumb_dir=thumb_dir)
+            if described == LOCATION_THUMBNAIL_DEFERRED:
+                # Location whose level is not open: skipped-with-reason
+                # (single info line already logged by _ensure_thumbnail)
+                result['skipped'].append(name)
+                continue
             if described is None:
                 result['failed'].append(name)
                 continue

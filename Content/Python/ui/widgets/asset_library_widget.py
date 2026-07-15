@@ -897,11 +897,31 @@ class AssetLibraryWidget(QWidget):
 
         try:
             from core.thumbnail_generator import (
-                generate_asset_thumbnail, safe_thumbnail_filename
+                generate_asset_thumbnail, safe_thumbnail_filename,
+                LOCATION_THUMBNAIL_DEFERRED
             )
             thumb_dir = Path(self.current_show_path) / "Thumbnails"
             out_png = thumb_dir / (safe_thumbnail_filename(name) + ".png")
-            if generate_asset_thumbnail(asset_path, str(out_png)):
+            status = generate_asset_thumbnail(asset_path, str(out_png))
+            if status == LOCATION_THUMBNAIL_DEFERRED:
+                # Location whose level is not open: a map placeholder PNG
+                # was written. Keep type 'placeholder' (NOT 'manual') so a
+                # later run can replace it with a real viewport capture.
+                if out_png.exists():
+                    self.library.library[category][name]['thumbnail'] = {
+                        'type': 'placeholder',
+                        'path': str(out_png),
+                    }
+                    self.library.save_library()
+                    self.refresh_library()
+                    self.library_updated.emit()
+                QMessageBox.information(
+                    self, "Location Thumbnail Deferred",
+                    f"'{name}' is a level that is not currently open in the "
+                    "editor, so a map placeholder was saved instead.\n\n"
+                    "Open that level and capture again to get a real "
+                    "viewport thumbnail.")
+            elif status:
                 self.library.library[category][name]['thumbnail'] = {
                     'type': 'manual',
                     'path': str(out_png),
