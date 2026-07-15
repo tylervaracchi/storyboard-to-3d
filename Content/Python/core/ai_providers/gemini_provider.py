@@ -341,7 +341,17 @@ class GeminiProvider(BaseAIProvider):
             images = images[:self.max_images]
 
         max_tokens = kwargs.get('max_tokens', 1024)
+        # Gemini 2.5+/3 think by default and thoughts count against
+        # maxOutputTokens, so small caller budgets (200-1024) get eaten by
+        # thinking before the answer. Floor the budget (a cap, not a target -
+        # short answers still cost the same).
+        if max_tokens < 2048:
+            unreal.log(f"[Gemini] Raising max_tokens {max_tokens} -> 2048 (thinking counts against maxOutputTokens)")
+            max_tokens = 2048
         temperature = kwargs.get('temperature', None)
+        if temperature is not None and temperature < 1.0 and str(self.model).lower().startswith('gemini-3'):
+            unreal.log_warning(f"[Gemini] temperature {temperature} discouraged on {self.model}; using 1.0")
+            temperature = 1.0
         system_prompt = kwargs.get('system', None)
         json_schema = kwargs.get('json_schema', None)
         use_structured_outputs = kwargs.get('use_structured_outputs', True)
@@ -438,7 +448,9 @@ class GeminiProvider(BaseAIProvider):
 
             response_text = ""
             for part in candidates[0].get('content', {}).get('parts', []):
-                if isinstance(part, dict) and 'text' in part:
+                # Skip chain-of-thought parts ({'thought': true}) so reasoning
+                # text can never be joined into the answer.
+                if isinstance(part, dict) and 'text' in part and not part.get('thought'):
                     response_text += part['text']
 
             # Token usage + cost. Output pricing includes thinking tokens
@@ -465,7 +477,23 @@ class GeminiProvider(BaseAIProvider):
             unreal.log(f"[Gemini] Cost: ${cost:.4f}")
 
             finish_reason = candidates[0].get('finishReason', '')
-            if finish_reason and finish_reason not in ('STOP', 'MAX_TOKENS'):
+            if finish_reason == 'MAX_TOKENS' and not response_text.strip():
+                # Thinking consumed the whole budget - fail closed with the
+                # real cause instead of success=True with an empty response.
+                error_msg = (f"Gemini hit MAX_TOKENS with no answer text (thought_tokens={thought_tokens}, "
+                             f"max_output_tokens={max_tokens}); thinking consumed the whole budget - raise max_tokens")
+                unreal.log_warning(f"[Gemini] {error_msg}")
+                return {
+                    'response': '',
+                    'confidence': 0.0,
+                    'cost': cost,  # real spend occurred; do not report 0.0 like other error paths
+                    'time': elapsed,
+                    'success': False,
+                    'error': error_msg,
+                    'tokens': {'input': prompt_tokens, 'thinking': thought_tokens,
+                               'output': output_tokens, 'total': total_tokens}
+                }
+            elif finish_reason and finish_reason not in ('STOP', 'MAX_TOKENS'):
                 unreal.log_warning(f"[Gemini] Unusual finishReason: {finish_reason}")
 
             return {

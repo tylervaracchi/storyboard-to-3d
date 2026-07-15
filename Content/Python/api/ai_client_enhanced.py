@@ -299,7 +299,11 @@ class EnhancedAIClient:
             config = get_config()
             self.timeout = config.get("api.timeout", 30)
             self.max_retries = config.get("api.max_retries", 3)
-            self.max_tokens = config.get("api.max_tokens", 2000)  # Increased for complete responses
+            # Config DEFAULTS pin api.max_tokens=500 and load_config deep-
+            # merges, so the .get() fallback never fires - floor it here.
+            # 500 cannot fit the multi-field confidence-scored JSON, and
+            # adaptive-thinking Claude models burn it all on reasoning.
+            self.max_tokens = max(int(config.get("api.max_tokens", 2000) or 2000), 2000)
         else:
             self.timeout = 30
             self.max_retries = 3
@@ -1094,6 +1098,13 @@ Example: {"shot_type": {"value": "medium", "confidence": 0.95}}"""
             "type": "text",
             "text": prompt
         })
+
+        # Adaptive-thinking models (fable/mythos/sonnet-5+) spend reasoning
+        # tokens INSIDE max_tokens, so small budgets produce thinking-only
+        # responses with no text block. Floor the budget for those models.
+        model_l = (self.model or '').lower()
+        if any(m in model_l for m in ('fable', 'mythos', 'sonnet-5', 'opus-5', 'haiku-5', 'claude-5')):
+            max_tokens = max(max_tokens, 8192)
 
         return {
             "model": self.model,

@@ -4626,7 +4626,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                 unreal.log(f"Model: {payload['model']}")
                 unreal.log(f"Content items: {len(content)}")
                 unreal.log(f"Temperature: {temperature}")
-                unreal.log(f"Max tokens: {payload['max_tokens']}")
+                unreal.log(f"Max tokens: {payload['max_completion_tokens']}")
 
                 #  RESEARCH: Add structured outputs for 100% schema adherence (vs <40% baseline)
                 # FIXED: Using Union[Type, None] + additionalProperties: False for OpenAI strict mode
@@ -4849,6 +4849,8 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     if not result_text:
                         unreal.log_error(f"Empty response from Ollama")
                         unreal.log_error(f"Response keys: {list(data.keys())}")
+                        # keep iteration_costs 1:1 with AI calls (invariant below)
+                        self.iteration_costs.append(0.0)
                         return None
                     unreal.log(f"Response received from Ollama in {elapsed:.1f}s")
                 elif is_gemini:
@@ -4857,12 +4859,18 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
                     try:
                         gemini_candidates = data.get('candidates') or []
                         gemini_parts = (gemini_candidates[0].get('content') or {}).get('parts') or []
-                        result_text = ''.join(p.get('text', '') for p in gemini_parts if isinstance(p, dict))
+                        # skip {'thought': true} chain-of-thought parts
+                        result_text = ''.join(p.get('text', '') for p in gemini_parts if isinstance(p, dict) and not p.get('thought'))
                     except Exception as gemini_parse_err:
                         unreal.log_error(f"Failed to parse Gemini response: {gemini_parse_err}")
                     if not result_text:
                         unreal.log_error(f"Empty response from Gemini")
-                        unreal.log_error(f"Response keys: {list(data.keys())}")
+                        gemini_cands = data.get('candidates') or []
+                        unreal.log_error(
+                            f"finishReason: {gemini_cands[0].get('finishReason') if gemini_cands else 'n/a'}, "
+                            f"blockReason: {data.get('promptFeedback', {}).get('blockReason', 'n/a')}")
+                        # keep iteration_costs 1:1 with AI calls (invariant below)
+                        self.iteration_costs.append(0.0)
                         return None
                     unreal.log(f"Response received from Gemini in {elapsed:.1f}s")
                 else:

@@ -115,9 +115,29 @@ class ClaudeProvider(BaseAIProvider):
     # Default cheap model for per-iteration re-scoring (see score_images)
     DEFAULT_SCORING_MODEL = "claude-haiku-4-5"
 
+    # Pricing per 1M tokens: (input, output, cache write, cache read).
+    # First marker found in the model id wins; sonnet rates are the fallback.
+    # fable/mythos must precede opus/sonnet since ids never contain both.
+    MODEL_PRICING = (
+        ("fable", (10.00, 50.00, 12.50, 1.00)),
+        ("mythos", (10.00, 50.00, 12.50, 1.00)),
+        ("opus", (5.00, 25.00, 6.25, 0.50)),
+        ("haiku", (1.00, 5.00, 1.25, 0.10)),
+        ("sonnet", (3.00, 15.00, 3.75, 0.30)),
+    )
+
     # Pricing for the default scoring model (claude-haiku-4-5), per 1M tokens:
     # (input, output, cache write, cache read)
     HAIKU_PRICING = (1.00, 5.00, 1.25, 0.10)
+
+    @classmethod
+    def _pricing_for_model(cls, model):
+        """(input, output, cache write, cache read) per-1M rates for a model id."""
+        model_l = (model or "").lower()
+        for marker, rates in cls.MODEL_PRICING:
+            if marker in model_l:
+                return rates
+        return (3.00, 15.00, 3.75, 0.30)  # sonnet fallback
 
     def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6", use_extended_thinking: bool = True, enable_caching: bool = True, use_structured_outputs: bool = True, use_files_api: bool = False, scoring_model: str = None):
         super().__init__("Claude Sonnet 4.5 (Extended Thinking)")
@@ -140,15 +160,13 @@ class ClaudeProvider(BaseAIProvider):
         self.base_url = "https://api.anthropic.com/v1/messages"
         self.max_images = 20  # Claude can handle up to 20 images (100 via API!)
 
-        # Pricing (as of 2025 - Claude Sonnet 4.5)
-        # Extended thinking adds reasoning token costs
-        self.cost_per_1m_input_tokens = 3.00
-        self.cost_per_1m_output_tokens = 15.00
+        # Pricing selected per model family (opus $5/$25, fable/mythos $10/$50,
+        # haiku $1/$5, sonnet $3/$15) so multi-model cost metrics stay honest.
+        (self.cost_per_1m_input_tokens,
+         self.cost_per_1m_output_tokens,
+         self.cost_per_1m_cache_write_tokens,
+         self.cost_per_1m_cache_read_tokens) = self._pricing_for_model(self.model)
         self.avg_tokens_per_image = 1600  # Estimated based on research
-
-        # Prompt caching pricing (90% discount on cached content!)
-        self.cost_per_1m_cache_write_tokens = 3.75  # Slightly more to write cache
-        self.cost_per_1m_cache_read_tokens = 0.30   # 90% discount on reads!
 
         # Extended thinking settings
         self.thinking_budget_tokens = 10000  # Budget for reasoning (can be adjusted)
@@ -164,6 +182,15 @@ class ClaudeProvider(BaseAIProvider):
     # built in / adaptive). Matched as substrings of the model id.
     SAMPLING_REMOVED_MARKERS = (
         "opus-4-7", "opus-4-8", "opus-4-9",
+        "sonnet-5", "opus-5", "haiku-5",
+        "fable", "mythos", "claude-5",
+    )
+
+    # Models that reason adaptively even when the thinking param is omitted
+    # (fable/mythos: always-on; sonnet-5/claude-5 family: on by default).
+    # Reasoning tokens count INSIDE max_tokens on these, so they need output
+    # headroom even when use_extended_thinking is False (e.g. score_images).
+    ADAPTIVE_DEFAULT_MARKERS = (
         "sonnet-5", "opus-5", "haiku-5",
         "fable", "mythos", "claude-5",
     )
@@ -258,8 +285,13 @@ class ClaudeProvider(BaseAIProvider):
 
         # CRITICAL: When extended thinking is enabled, max_tokens must be GREATER than thinking_budget_tokens
         # Extended thinking uses budget_tokens for reasoning, then max_tokens for the actual response
-        # So max_tokens must leave room for output AFTER the thinking budget is consumed
-        if self.use_extended_thinking:
+        # So max_tokens must leave room for output AFTER the thinking budget is consumed.
+        # Adaptive-default models (fable/mythos/sonnet-5+) reason inside max_tokens
+        # even with the flag off, so they get the same floor unconditionally.
+        model_l = (self.model or '').lower()
+        needs_headroom = self.use_extended_thinking or any(
+            m in model_l for m in self.ADAPTIVE_DEFAULT_MARKERS)
+        if needs_headroom:
             min_required = self.thinking_budget_tokens + 4096  # Budget + reasonable output space
             if max_tokens < min_required:
                 max_tokens = min_required
@@ -342,7 +374,12 @@ class ClaudeProvider(BaseAIProvider):
                     }
                     unreal.log(f"[Claude] Extended thinking enabled (budget: {self.thinking_budget_tokens} tokens)")
                 else:
-                    unreal.log(f"[Claude] {self.model} reasons adaptively by default; legacy thinking param omitted")
+                    # Opus 4.7/4.8 do NOT reason unless adaptive thinking is
+                    # requested explicitly; fable/mythos/sonnet-5 accept the
+                    # param too (always-on / default-on there). The 400-retry
+                    # below strips it for any model that rejects it.
+                    request_body["thinking"] = {"type": "adaptive"}
+                    unreal.log(f"[Claude] Adaptive thinking requested for {self.model} (legacy budget_tokens omitted)")
 
             # Add system prompt if provided with optional cache control
             # BEST PRACTICE: Cache system prompt (static shot rules, composition guidelines)
@@ -476,12 +513,12 @@ class ClaudeProvider(BaseAIProvider):
                 self.total_cache_savings += cache_savings
                 unreal.log(f"[Claude] Cache HIT: {cache_read_input_tokens} tokens (saved ${cache_savings:.4f})")
 
-            # Calculate actual cost with caching pricing
-            # Regular input tokens (not cached)
-            regular_input_tokens = input_tokens - cache_read_input_tokens
-
-            # Thinking tokens are charged at input token rate
-            total_input_tokens = input_tokens + thinking_tokens
+            # Calculate actual cost with caching pricing.
+            # Anthropic's usage fields are disjoint and additive: input_tokens
+            # is ALREADY only the uncached remainder (cache_read/cache_creation
+            # are separate fields) - subtracting cache_read again double-counts
+            # the discount and goes negative on cache-heavy iterations.
+            regular_input_tokens = input_tokens
 
             # Cost calculation with cache pricing
             cost = 0.0
@@ -522,9 +559,30 @@ class ClaudeProvider(BaseAIProvider):
                     response_text += block.get('text', '')
 
             if not response_text:
-                # Fallback: try to get first content block text (old behavior)
-                if content_blocks and isinstance(content_blocks[0], dict):
-                    response_text = content_blocks[0].get('text', '')
+                # No text block at all: reasoning consumed max_tokens, a
+                # refusal (HTTP 200, empty content), or an unknown shape.
+                # An empty response is never a usable analysis, so fail
+                # closed instead of returning success=True with ''.
+                stop_reason = result.get('stop_reason')
+                unreal.log_warning(
+                    f"[Claude] No text block in response "
+                    f"(stop_reason={stop_reason}, {len(content_blocks)} content blocks, model={self.model})")
+                if stop_reason == 'max_tokens':
+                    error_msg = (f"Reasoning consumed max_tokens ({max_tokens}) before any text was "
+                                 f"produced - increase max_tokens (adaptive-thinking models count "
+                                 f"reasoning tokens inside max_tokens)")
+                elif stop_reason == 'refusal':
+                    error_msg = "Request declined by safety classifiers (stop_reason=refusal)"
+                else:
+                    error_msg = f"Claude returned no text content (stop_reason={stop_reason})"
+                return {
+                    'response': '',
+                    'confidence': 0.0,
+                    'cost': cost,     # real spend: reasoning tokens are billed on
+                    'time': elapsed,  # max_tokens exhaustion (already in total_cost)
+                    'success': False,
+                    'error': error_msg
+                }
 
             return {
                 'response': response_text,
@@ -710,11 +768,10 @@ class ClaudeProvider(BaseAIProvider):
 
         self.model = self.scoring_model
         self.use_extended_thinking = False
-        if 'haiku' in self.scoring_model:
-            (self.cost_per_1m_input_tokens,
-             self.cost_per_1m_output_tokens,
-             self.cost_per_1m_cache_write_tokens,
-             self.cost_per_1m_cache_read_tokens) = self.HAIKU_PRICING
+        (self.cost_per_1m_input_tokens,
+         self.cost_per_1m_output_tokens,
+         self.cost_per_1m_cache_write_tokens,
+         self.cost_per_1m_cache_read_tokens) = self._pricing_for_model(self.scoring_model)
 
         unreal.log(f"[Claude] Re-scoring with {self.scoring_model} (extended thinking off)")
 

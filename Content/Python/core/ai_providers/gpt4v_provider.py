@@ -167,10 +167,11 @@ class GPT4VisionProvider(BaseAIProvider):
         return any(model.startswith(prefix) for prefix in gpt5_prefixes)
 
     def _supports_structured_outputs(self, model: str) -> bool:
-        """Check if model supports structured outputs (GPT-4o and GPT-4-turbo only)"""
-        # Structured outputs only available for GPT-4o and GPT-4-turbo
+        """Check if model supports structured outputs (Chat Completions response_format)"""
+        # Structured outputs on the Chat Completions branch: gpt-4o, gpt-4.1,
+        # and gpt-4-turbo all accept response_format json_schema.
         # NOT available for GPT-5/o-series (they use different API)
-        supported_prefixes = ['gpt-4o', 'gpt-4-turbo']
+        supported_prefixes = ['gpt-4o', 'gpt-4.1', 'gpt-4-turbo']
         return any(model.startswith(prefix) for prefix in supported_prefixes)
 
     def get_positioning_schema(self) -> Dict:
@@ -300,6 +301,17 @@ class GPT4VisionProvider(BaseAIProvider):
         max_tokens = kwargs.get('max_tokens', 1000)
         temperature = kwargs.get('temperature', 0.7)
 
+        # Reasoning models count reasoning tokens INSIDE max_output_tokens, so
+        # small caller budgets (200-2000, sized for the visible answer) get
+        # eaten by reasoning before any text is produced. Clamp up-front.
+        if self.is_gpt5 and max_tokens < 8192:
+            unreal.log(f"[GPT-4V] Raising max_tokens {max_tokens} -> 8192 for {self.model} (reasoning counts inside max_output_tokens)")
+            max_tokens = 8192
+
+        # Reasoning calls deliver no bytes until generation completes, so the
+        # read timeout must cover the full run (pro-class models take minutes).
+        request_timeout = kwargs.get('timeout', 600 if self.is_gpt5 else 120)
+
         # Structured outputs configuration (GPT-4o/GPT-4-turbo only).
         # Opt-in: only force a response_format when the caller supplied a
         # schema (or explicitly asked). Previously this defaulted to True on
@@ -329,10 +341,11 @@ class GPT4VisionProvider(BaseAIProvider):
 
                 # Different format for GPT-5 vs GPT-4
                 if self.is_gpt5:
-                    # Responses API format
+                    # Responses API format (detail is accepted here too)
                     image_contents.append({
                         "type": "input_image",
-                        "image_url": f"data:{media_type};base64,{b64}"
+                        "image_url": f"data:{media_type};base64,{b64}",
+                        "detail": detail
                     })
                 else:
                     # Chat Completions API format
@@ -367,10 +380,16 @@ class GPT4VisionProvider(BaseAIProvider):
                             {"type": "input_text", "text": prompt}  #  input_text for GPT-5
                         ] + image_contents
                     }],
-                    "max_output_tokens": max_tokens,
-                    "reasoning": {"effort": reasoning_effort},  # high for pro, medium for others
-                    "text": {"verbosity": "medium"}  # low/medium/high
+                    "max_output_tokens": max_tokens
                 }
+                # gpt-5-chat-* are the non-reasoning chat variants: they 400
+                # on the reasoning param. text.verbosity is gpt-5-family only
+                # (o3*/o4* reject it as unsupported).
+                is_chat_variant = '-chat' in self.model.lower()
+                if not is_chat_variant:
+                    request_json["reasoning"] = {"effort": reasoning_effort}  # high for pro, medium for others
+                if self.model.lower().startswith('gpt-5') and not is_chat_variant:
+                    request_json["text"] = {"verbosity": "medium"}  # low/medium/high
                 # Note: GPT-5 doesn't support temperature parameter
                 # Responses API branch does not map schemas yet - warn instead
                 # of silently dropping the caller's schema
@@ -420,7 +439,8 @@ class GPT4VisionProvider(BaseAIProvider):
                     schema_name = schema.get('json_schema', {}).get('name', 'custom')
                     unreal.log(f"[GPT-4V] Using JSON schema: {schema_name}")
 
-            # Call OpenAI API
+            # Call OpenAI API. Connect/read tuple: dead connections still
+            # fail fast while long reasoning runs get the full read window.
             response = _get_http_session().post(
                 self.base_url,
                 headers={
@@ -428,11 +448,45 @@ class GPT4VisionProvider(BaseAIProvider):
                     "Content-Type": "application/json"
                 },
                 json=request_json,
-                timeout=60
+                timeout=(10, request_timeout)
             )
 
             response.raise_for_status()
             result = response.json()
+
+            # The Responses API can return a non-terminal status (queued /
+            # in_progress, common for pro-class models). Poll bounded so the
+            # parse below always sees terminal JSON.
+            if self.is_gpt5:
+                status = result.get('status')
+                resp_id = result.get('id')
+                poll_deadline = time.time() + 120
+                while status in ('in_progress', 'queued') and resp_id and time.time() < poll_deadline:
+                    time.sleep(2)
+                    poll = _get_http_session().get(
+                        f"https://api.openai.com/v1/responses/{resp_id}",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        timeout=30
+                    )
+                    poll.raise_for_status()
+                    result = poll.json()
+                    status = result.get('status')
+                if status in ('in_progress', 'queued'):
+                    return {
+                        'response': '',
+                        'confidence': 0.0,
+                        'cost': 0.0,
+                        'time': time.time() - start_time,
+                        'success': False,
+                        'error': f"OpenAI response {resp_id} still {status} after poll timeout"
+                    }
+                if status == 'incomplete':
+                    reason = (result.get('incomplete_details') or {}).get('reason', 'unknown')
+                    unreal.log_warning(
+                        f"[GPT-4V] Response incomplete ({reason}) - reasoning likely consumed "
+                        f"max_output_tokens={max_tokens}; raise max_tokens")
+                    # An incomplete response can still carry partial text, so
+                    # fall through to the normal parse.
 
             elapsed = time.time() - start_time
 
@@ -483,22 +537,31 @@ class GPT4VisionProvider(BaseAIProvider):
                     if 'output' in result:
                         unreal.log_warning(f"[GPT-4V] Output type: {type(result['output'])}")
 
-                #  Handle GPT-5 usage format
+                #  Handle GPT-5 usage format. Reasoning tokens live under
+                #  output_tokens_details and are ALREADY included in
+                #  output_tokens (billed at the output rate).
                 usage = result.get('usage', {})
                 input_tokens = usage.get('input_tokens', 0)
                 output_tokens = usage.get('output_tokens', 0)
-                reasoning_tokens = usage.get('reasoning_tokens', 0)  # GPT-5 specific
+                reasoning_tokens = (usage.get('output_tokens_details') or {}).get('reasoning_tokens', 0)
             else:
-                # Chat Completions API format
-                response_text = result['choices'][0]['message']['content']
+                # Chat Completions API format. content is null on structured-
+                # output refusals / filtered responses - never index it raw.
+                choice = (result.get('choices') or [{}])[0]
+                message = choice.get('message') or {}
+                response_text = message.get('content') or ''
+                if not response_text:
+                    unreal.log_warning(
+                        f"[GPT-4V] Empty content (finish_reason={choice.get('finish_reason')}, "
+                        f"refusal={message.get('refusal')})")
                 usage = result.get('usage', {})
                 input_tokens = usage.get('prompt_tokens', 0)
                 output_tokens = usage.get('completion_tokens', 0)
                 reasoning_tokens = 0
 
-            # Calculate cost (reasoning tokens counted as input)
-            total_input_tokens = input_tokens + reasoning_tokens
-            cost = (total_input_tokens / 1_000_000 * self.cost_per_1m_input_tokens +
+            # Calculate cost. Reasoning tokens are already inside
+            # output_tokens - adding them to input would double-count.
+            cost = (input_tokens / 1_000_000 * self.cost_per_1m_input_tokens +
                    output_tokens / 1_000_000 * self.cost_per_1m_output_tokens)
 
             # Update statistics
@@ -508,10 +571,40 @@ class GPT4VisionProvider(BaseAIProvider):
 
             unreal.log(f"[GPT-4V] Analysis complete in {elapsed:.1f}s")
             if reasoning_tokens > 0:
-                unreal.log(f"[GPT-4V] Tokens: {input_tokens} input, {reasoning_tokens} reasoning, {output_tokens} output")
+                unreal.log(f"[GPT-4V] Tokens: {input_tokens} input, {output_tokens} output ({reasoning_tokens} of them reasoning)")
             else:
                 unreal.log(f"[GPT-4V] Tokens: {input_tokens} input, {output_tokens} output")
             unreal.log(f"[GPT-4V] Cost: ${cost:.4f}")
+
+            token_report = {
+                'input': input_tokens,
+                'reasoning': reasoning_tokens,
+                'output': output_tokens,
+                'total': input_tokens + output_tokens  # reasoning already inside output
+            }
+
+            if not response_text:
+                # An empty response is never a usable analysis - fail closed
+                # with the real cause so callers stop debugging the wrong end.
+                if self.is_gpt5:
+                    error_msg = (f"Empty response from {self.model} "
+                                 f"(status={result.get('status')}, "
+                                 f"incomplete_reason={(result.get('incomplete_details') or {}).get('reason')})")
+                else:
+                    _choice0 = (result.get('choices') or [{}])[0]
+                    error_msg = (f"Empty response from {self.model} "
+                                 f"(finish_reason={_choice0.get('finish_reason')}, "
+                                 f"refusal={(_choice0.get('message') or {}).get('refusal')})")
+                unreal.log_warning(f"[GPT-4V] {error_msg}")
+                return {
+                    'response': '',
+                    'confidence': 0.0,
+                    'cost': cost,     # tokens were billed even without text
+                    'time': elapsed,
+                    'success': False,
+                    'error': error_msg,
+                    'tokens': token_report
+                }
 
             return {
                 'response': response_text,
@@ -520,12 +613,7 @@ class GPT4VisionProvider(BaseAIProvider):
                 'time': elapsed,
                 'success': True,
                 'error': '',
-                'tokens': {
-                    'input': input_tokens,
-                    'reasoning': reasoning_tokens,
-                    'output': output_tokens,
-                    'total': input_tokens + reasoning_tokens + output_tokens
-                }
+                'tokens': token_report
             }
 
         except requests.exceptions.Timeout:
@@ -535,7 +623,7 @@ class GPT4VisionProvider(BaseAIProvider):
                 'cost': 0.0,
                 'time': time.time() - start_time,
                 'success': False,
-                'error': 'OpenAI request timed out after 60s'
+                'error': f'OpenAI request timed out after {request_timeout}s'
             }
         except requests.exceptions.HTTPError as e:
             error_msg = f"OpenAI API error: {e}"

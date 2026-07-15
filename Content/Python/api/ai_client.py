@@ -403,7 +403,9 @@ class AIClient:
             # Simple test request
             print(f"[test_connection] Testing with endpoint: {self.endpoint}")
             print(f"[test_connection] Model: {self.model}")
-            response = self._make_request("Say 'OK' if you can read this.", max_tokens=50)
+            # 1024 not 50: adaptive-thinking models (fable-5/sonnet-5) burn
+            # small budgets on reasoning and would fail a valid connection
+            response = self._make_request("Say 'OK' if you can read this.", max_tokens=1024)
             print(f"[test_connection] Response: {response}")
             print(f"[test_connection] Response is None: {response is None}")
 
@@ -712,7 +714,9 @@ class AIClient:
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/jpeg",
+                    # Sniff magic bytes: a hardcoded image/jpeg 400s on PNG
+                    # panels (Anthropic validates declared type vs bytes)
+                    "media_type": _media_type_from_base64(image_base64),
                     "data": image_base64
                 }
             })
@@ -721,6 +725,13 @@ class AIClient:
             "type": "text",
             "text": prompt
         })
+
+        # Adaptive-thinking models (fable/mythos/sonnet-5+) spend reasoning
+        # tokens INSIDE max_tokens, so small budgets produce thinking-only
+        # responses with no text block. Floor the budget for those models.
+        model_l = (self.model or '').lower()
+        if any(m in model_l for m in ('fable', 'mythos', 'sonnet-5', 'opus-5', 'haiku-5', 'claude-5')):
+            max_tokens = max(max_tokens, 8192)
 
         return {
             "model": self.model,
@@ -757,7 +768,10 @@ class AIClient:
                 "role": "user",
                 "parts": parts
             }],
-            "generationConfig": {"max_output_tokens": max_tokens}
+            # Gemini 2.5+ thinks by default and thoughts count against
+            # maxOutputTokens - floor so the answer survives the budget
+            # (Gemini-only floor; other providers keep their budgets)
+            "generationConfig": {"max_output_tokens": max(max_tokens, 2048)}
         }
 
     def _build_ollama_payload(self, prompt: str, image_base64: Optional[str],
@@ -857,7 +871,17 @@ class AIClient:
                     print(f"[_parse_response] Gemini returned no candidates (blockReason: {block_reason})")
                     return None
                 parts = candidates[0].get('content', {}).get('parts', [])
-                return ''.join(part.get('text', '') for part in parts if isinstance(part, dict))
+                # Exclude {'thought': true} chain-of-thought parts
+                text = ''.join(part.get('text', '') for part in parts
+                               if isinstance(part, dict) and not part.get('thought'))
+                if text:
+                    return text
+                # Empty join: thinking usually consumed the token budget
+                finish_reason = candidates[0].get('finishReason', 'unknown')
+                print(f"[_parse_response] Gemini returned no answer text "
+                      f"(finishReason: {finish_reason}"
+                      f"{' - thinking consumed max_output_tokens; raise max_tokens' if finish_reason == 'MAX_TOKENS' else ''})")
+                return None
             elif "content" in response_data:  # Claude
                 # Content is a LIST of blocks. Models with adaptive
                 # thinking (Fable 5, Sonnet 5) put a 'thinking' block
