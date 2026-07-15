@@ -337,7 +337,27 @@ class SceneAdjuster:
                 channels[1].add_key(frame, new_y)
                 channels[2].add_key(frame, new_z)
 
-                unreal.log(f"Set position keyframes at frame 0")
+                # The AI is told "ONE adjustment per actor", so a 'move' very
+                # often carries the facing rotation too (e.g. Farmer yaw=160).
+                # Apply it when any component is non-zero; an all-zero rotation
+                # in a move is schema filler, not a request to reset facing
+                # (a deliberate reset arrives as type='rotate', applied below
+                # unconditionally).
+                rot = adjustment.get('rotation') or {}
+                try:
+                    move_roll = float(rot.get('roll', 0.0) or 0.0)
+                    move_pitch = float(rot.get('pitch', 0.0) or 0.0)
+                    move_yaw = float(rot.get('yaw', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    move_roll = move_pitch = move_yaw = 0.0
+                if abs(move_roll) > 0.01 or abs(move_pitch) > 0.01 or abs(move_yaw) > 0.01:
+                    # Channel order is Roll, Pitch, Yaw (see 'rotate' branch)
+                    channels[3].add_key(frame, move_roll)
+                    channels[4].add_key(frame, move_pitch)
+                    channels[5].add_key(frame, move_yaw)
+                    unreal.log("Set position + rotation keyframes at frame 0")
+                else:
+                    unreal.log(f"Set position keyframes at frame 0")
                 unreal.LevelSequenceEditorBlueprintLibrary.refresh_current_level_sequence()
                 return True
 

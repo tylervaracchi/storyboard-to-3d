@@ -3153,10 +3153,27 @@ class ActivePanelWidget(QWidget):
                 self._finish_capture_sequence()
                 return
 
-            # Build scene context with the transforms extracted above
+            # Build scene context with the transforms extracted above.
+            # Attached props (e.g. a scythe baked into the Farmer's mesh) were
+            # never spawned as standalone actors, so they must not be offered
+            # to the AI as adjustable scope either - the AI would score the
+            # "missing" prop and emit adjustments for an actor with no binding.
+            context_characters = [self.characters_list.item(i).text() for i in range(self.characters_list.count())]
+            context_props = [self.props_list.item(i).text() for i in range(self.props_list.count())]
+            try:
+                from core.scene_builder import filter_attached_props
+                library = self.asset_library if isinstance(getattr(self, 'asset_library', None), dict) else None
+                filtered_props = filter_attached_props(context_props, context_characters, library)
+                if len(filtered_props) != len(context_props):
+                    excluded = [p for p in context_props if p not in filtered_props]
+                    unreal.log(f"Excluded attached prop(s) from AI evaluation scope: {excluded}")
+                context_props = filtered_props
+            except Exception as filter_err:
+                unreal.log_warning(f"Attached-prop scope filter failed (using full prop list): {filter_err}")
+
             scene_context = {
-                'characters': [self.characters_list.item(i).text() for i in range(self.characters_list.count())],
-                'props': [self.props_list.item(i).text() for i in range(self.props_list.count())],
+                'characters': context_characters,
+                'props': context_props,
                 'location_elements': self.active_panel.get('location_elements', []) if self.active_panel else [],
                 'location': self.location_combo.currentText(),
                 'shot_type': self.shot_type_combo.currentText(),
@@ -5119,22 +5136,46 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
             binding_names = [str(b.get_display_name()) for b in bindings]
             unreal.log(f"Found {len(binding_names)} bindings in sequence: {binding_names}")
 
-            # Check if all actors mentioned in adjustments have bindings
+            # Check if all actors mentioned in adjustments have bindings.
+            # A missing CHARACTER means the spawn pipeline genuinely failed
+            # and iterating would waste API cost -> stays fatal. A missing
+            # prop or AI-invented name (e.g. an attached prop that rides its
+            # character's mesh) is not a pipeline failure -> drop just that
+            # adjustment and keep iterating.
+            character_names = set()
+            try:
+                for ci in range(self.characters_list.count()):
+                    character_names.add(self.characters_list.item(ci).text().strip().lower())
+            except Exception:
+                pass
+
             missing_bindings = []
+            dropped_actors = []
+            kept_adjustments = []
             for adj in adjustments:
-                actor_name = adj.get('actor', 'Unknown')
+                actor_name = str(adj.get('actor', 'Unknown'))
                 # Check if actor name appears in any binding (case-insensitive partial match)
-                if not any(actor_name.lower() in b.lower() for b in binding_names):
+                if any(actor_name.lower() in b.lower() for b in binding_names):
+                    kept_adjustments.append(adj)
+                elif actor_name.strip().lower() in character_names:
                     missing_bindings.append(actor_name)
+                else:
+                    dropped_actors.append(actor_name)
+
+            if dropped_actors:
+                unreal.log_warning(f"Dropping {len(dropped_actors)} adjustment(s) for non-character actors with no sequence binding: {dropped_actors}")
+                unreal.log_warning("(attached props and scenery are not standalone actors - continuing iterations)")
+                adjustments = kept_adjustments
+                analysis['adjustments'] = kept_adjustments
 
             if missing_bindings:
-                unreal.log_error(f"FATAL: {len(missing_bindings)} actors NOT in sequence bindings!")
+                unreal.log_error(f"FATAL: {len(missing_bindings)} characters NOT in sequence bindings!")
                 for actor in missing_bindings:
                     unreal.log_error(f"- '{actor}' cannot be adjusted (not spawned in sequence)")
                 unreal.log_error("Adjustments will fail silently!")
                 unreal.log_error("Solution: Regenerate scene or check actor names")
             else:
-                unreal.log(f"All {len(adjustments)} actors have sequence bindings")
+                unreal.log(f"All {len(adjustments)} adjustment target(s) have sequence bindings")
 
             unreal.log("="*70 + "\n")
 
