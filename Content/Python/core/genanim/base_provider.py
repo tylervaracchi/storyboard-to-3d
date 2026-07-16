@@ -99,14 +99,17 @@ class GenAnimProvider(object):
     # Public API
     # ------------------------------------------------------------------
 
-    def generate(self, action_text):
-        # type: (str) -> Dict[str, Any]
+    def generate(self, action_text, **kwargs):
+        # type: (str, **Any) -> Dict[str, Any]
         """
         Run a full text-to-animation generation: create task, poll to
         completion, download the resulting clip file to a temp file.
 
         Args:
             action_text: Free-form action text ("running", "waves hello").
+            **kwargs: Provider-specific options, passed to _create_task
+                (e.g. Tripo's 'rig_task_id' to retarget onto a SPECIFIC
+                character's own rig).
 
         Returns:
             {'status': 'succeeded', 'file_path': str, 'provider': str} or
@@ -123,7 +126,7 @@ class GenAnimProvider(object):
 
             _log("[GenAnim] Creating {} text-to-animation task for action: "
                  "{}".format(self.name, str(action_text)[:120]))
-            task_id = self._create_task(str(action_text))
+            task_id = self._create_task(str(action_text), **kwargs)
             if not task_id:
                 raise GenAnimError("Provider returned no task id")
 
@@ -168,10 +171,12 @@ class GenAnimProvider(object):
     # Hooks for subclasses
     # ------------------------------------------------------------------
 
-    def _create_task(self, action_text):
-        # type: (str) -> str
+    def _create_task(self, action_text, **kwargs):
+        # type: (str, **Any) -> str
         """Create a generation task; return the vendor task id.
-        Raise GenAnimError on failure."""
+        Providers may honor extra kwargs (e.g. 'rig_task_id') and must
+        ignore ones they do not understand. Raise GenAnimError on
+        failure."""
         raise NotImplementedError
 
     def _fetch_task(self, task_id):

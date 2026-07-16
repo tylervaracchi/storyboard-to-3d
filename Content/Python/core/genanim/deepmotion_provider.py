@@ -216,9 +216,10 @@ class DeepMotionProvider(GenAnimProvider):
     # GenAnimProvider hooks
     # ------------------------------------------------------------------
 
-    def _create_task(self, action_text):
-        # type: (str) -> str
-        """POST /job/v1/process/text2motion; returns the request id (rid)."""
+    def _create_task(self, action_text, **kwargs):
+        # type: (str, **Any) -> str
+        """POST /job/v1/process/text2motion; returns the request id (rid).
+        Extra kwargs (e.g. Tripo's rig_task_id) are ignored here."""
         session = self._ensure_session()
         base = self.get_base_url()
 

@@ -680,7 +680,24 @@ class AnimationMatcher:
                              e, GENANIM_DEFAULT_MAX_PER_RUN))
             return GENANIM_DEFAULT_MAX_PER_RUN
 
-    def _generative_animation(self, action_text: str) -> Optional[str]:
+    def generate_animation_for_character(self, action_text: str,
+                                         rig_task_id: Optional[str] = None,
+                                         skeleton_path: Optional[str] = None) -> Optional[str]:
+        """
+        AI-generate a clip for ONE SPECIFIC character: retarget a preset
+        onto the character's own rig (rig_task_id from the gen3d auto-rig
+        chain) and import the result onto its existing skeleton, so the
+        clip is directly playable and passes the scene builder's
+        skeleton-compatibility guard. Same budget/manifest/registration
+        machinery as the generic tier-5 fallback. Never raises.
+        """
+        return self._generative_animation(action_text,
+                                          rig_task_id=rig_task_id,
+                                          skeleton_path=skeleton_path)
+
+    def _generative_animation(self, action_text: str,
+                              rig_task_id: Optional[str] = None,
+                              skeleton_path: Optional[str] = None) -> Optional[str]:
         """
         Generate an animation clip for unmatched action text via
         core/genanim.
@@ -695,6 +712,11 @@ class AnimationMatcher:
 
         Args:
             action_text: The action text that failed all match tiers.
+            rig_task_id: Optional vendor rig id of the character's OWN
+                rig (Tripo animate_rig); the clip comes back as that
+                character performing the motion.
+            skeleton_path: Optional existing Skeleton asset path; FBX
+                clips import animation-only onto it.
 
         Returns:
             Imported asset path, or None. Never raises; every failure
@@ -718,17 +740,22 @@ class AnimationMatcher:
 
         provider_name = getattr(provider, 'name', 'unknown')
 
-        # (a) Reuse a previously generated clip when possible.
+        # (a) Reuse a previously generated clip when possible. Per-rig
+        # generations are cached under a rig-scoped key so one
+        # character's clip is never handed to another.
+        manifest_key = action_text
+        if rig_task_id:
+            manifest_key = "{0}::rig={1}".format(action_text, rig_task_id)
         cached_path = None
         try:
             from core.genanim import manifest as genanim_manifest
-            cached_path = genanim_manifest.lookup(action_text)
+            cached_path = genanim_manifest.lookup(manifest_key)
         except Exception as e:
             _log_warning("[GenAnim] Manifest lookup failed: {0}".format(e))
 
         if cached_path:
             _log("[GenAnim] Reusing previously generated animation for "
-                 "'{0}': {1}".format(action_text, cached_path))
+                 "'{0}': {1}".format(manifest_key, cached_path))
             self._register_generated_animation(action_text, cached_path,
                                                provider_name)
             return cached_path
@@ -745,7 +772,13 @@ class AnimationMatcher:
         # (c) Generate, import, register, record.
         self._genanim_generation_count += 1
         try:
-            result = provider.generate(action_text)
+            if rig_task_id:
+                _log("[GenAnim] Retargeting onto the character's own rig "
+                     "({0})".format(rig_task_id))
+                result = provider.generate(action_text,
+                                           rig_task_id=rig_task_id)
+            else:
+                result = provider.generate(action_text)
         except Exception as e:
             # provider.generate() should never raise; belt and braces.
             _log_warning("[GenAnim] Generation failed for '{0}': "
@@ -767,7 +800,8 @@ class AnimationMatcher:
                                                sanitize_asset_name)
             asset_name = sanitize_asset_name(action_text)[:60]
             asset_path = import_generated_animation(result['file_path'],
-                                                    asset_name)
+                                                    asset_name,
+                                                    skeleton_path=skeleton_path)
         except Exception as e:
             _log_warning("[GenAnim] Import failed for '{0}': {1}".format(
                 action_text, e))
@@ -783,7 +817,7 @@ class AnimationMatcher:
 
         try:
             from core.genanim import manifest as genanim_manifest
-            genanim_manifest.record(action_text, asset_path, provider_name)
+            genanim_manifest.record(manifest_key, asset_path, provider_name)
         except Exception as e:
             _log_warning("[GenAnim] Failed to record manifest entry: "
                          "{0}".format(e))

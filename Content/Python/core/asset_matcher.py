@@ -138,6 +138,10 @@ class AssetMatcher:
         # Entities whose cached STATIC generation was already retried with
         # rigging this run (a rig-refusing model must not loop costs).
         self._rig_retry_attempted: set = set()
+        # entity name (lower) -> vendor rig task id from the auto-rig
+        # chain; callers persist it so per-character animation retargeting
+        # (genanim) can drive this exact character later.
+        self.last_rig_task_ids: Dict[str, str] = {}
 
         if show_name:
             self.load_show_library(show_name)
@@ -1030,6 +1034,11 @@ class AssetMatcher:
                     and rig_result.get('file_path')):
                 model_file = rig_result['file_path']
                 prefer_skeletal = True
+                if rig_result.get('rig_task_id'):
+                    # Remember the rig id so callers can persist it: it
+                    # lets genanim retarget clips onto THIS character.
+                    self.last_rig_task_ids[object_name] = str(
+                        rig_result['rig_task_id'])
                 _log(f"[Gen3D] Rigged model ready for '{object_name}' "
                      f"(rig task: {rig_result.get('rig_task_id')})")
             else:

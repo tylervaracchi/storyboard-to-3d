@@ -108,7 +108,14 @@ TRIPO_PRESET_KEYWORDS = (
     ('preset:turn', ('turn', 'turns', 'turning', 'spin', 'spins',
                      'spinning', 'pivot', 'pivots', 'pivoting')),
     ('preset:idle', ('idle', 'stand', 'stands', 'standing', 'wait',
-                     'waits', 'waiting', 'still', 'stationary')),
+                     'waits', 'waiting', 'still', 'stationary',
+                     # Nearest-preset mappings: Tripo has no float/hover
+                     # motion, but a gentle idle beats a frozen bind pose
+                     # for ghosts and other floaters.
+                     'float', 'floats', 'floating', 'hover', 'hovers',
+                     'hovering', 'drift', 'drifts', 'drifting', 'glide',
+                     'glides', 'gliding', 'bob', 'bobbing', 'fly',
+                     'flies', 'flying', 'looms', 'looming')),
 )
 
 
@@ -139,6 +146,30 @@ class TripoAnimProvider(GenAnimProvider):
     (https://platform.tripo3d.ai/docs/animation)."""
 
     name = 'tripo'
+    # Retarget body-shape toggle (VERIFY-BEFORE-USE ambiguity): the
+    # official docs show a SINGULAR 'animation' field, the tripo-js-sdk
+    # a plural 'animations' list. False = singular (primary).
+    _retarget_body_alt = False
+
+    def generate(self, action_text, **kwargs):
+        # type: (str, **Any) -> Dict[str, Any]
+        """Run the base generation; when the vendor task itself fails
+        (accepted but errored server-side), retry ONCE with the
+        alternate retarget body shape. Failed Tripo tasks are not
+        charged, so the retry costs nothing extra on failure."""
+        result = GenAnimProvider.generate(self, action_text, **kwargs)
+        if (isinstance(result, dict) and result.get('status') == 'failed'
+                and not self._retarget_body_alt
+                and 'failed' in str(result.get('error', '')).lower()):
+            _log_warning("[GenAnim] Tripo retarget failed with the primary "
+                         "body shape; retrying once with the alternate "
+                         "'animations' list form")
+            self._retarget_body_alt = True
+            try:
+                result = GenAnimProvider.generate(self, action_text, **kwargs)
+            finally:
+                self._retarget_body_alt = False
+        return result
     pricing_note = ("Tripo3D animate_retarget costs 10 credits (about $0.10) "
                     "per clip on a one-time rigged proxy character (rig: 25 "
                     "credits). Preset library only, not prompt-driven. "
@@ -165,17 +196,11 @@ class TripoAnimProvider(GenAnimProvider):
 
     def is_available(self):
         # type: () -> bool
-        """Requires both the API key and a rig task id to retarget onto."""
-        if not self.get_api_key():
-            return False
-        if not self.get_rig_task_id():
-            _log_warning("[GenAnim] Tripo API key found but no rig task id "
-                         "(set TRIPO_RIG_TASK_ID or the "
-                         "'genanim.tripo_rig_task_id' setting after the "
-                         "one-time animate_rig setup); Tripo animation "
-                         "generation disabled")
-            return False
-        return True
+        """Requires the API key. A rig task id is needed per call - either
+        the character's own rig id (from the gen3d auto-rig chain, passed
+        as a kwarg) or the global 'genanim.tripo_rig_task_id' setting;
+        calls without either fail honestly at task creation."""
+        return bool(self.get_api_key())
 
     # ------------------------------------------------------------------
     # GenAnimProvider hooks
@@ -188,10 +213,15 @@ class TripoAnimProvider(GenAnimProvider):
             'Content-Type': 'application/json'
         }
 
-    def _create_task(self, action_text):
-        # type: (str) -> str
+    def _create_task(self, action_text, **kwargs):
+        # type: (str, **Any) -> str
         """Map the action text to a preset and create an animate_retarget
-        task; returns the task id."""
+        task; returns the task id.
+
+        kwargs['rig_task_id'] retargets onto a SPECIFIC character's own
+        rig (produced by the gen3d auto-rig chain) so the clip comes back
+        as that character performing the preset; without it the global
+        pre-provisioned proxy rig from settings is used."""
         preset = map_action_to_preset(action_text)
         if not preset:
             raise GenAnimError(
@@ -199,25 +229,32 @@ class TripoAnimProvider(GenAnimProvider):
                 "locomotion/combat basics only)".format(
                     str(action_text)[:80]))
 
-        rig_task_id = self.get_rig_task_id()
+        rig_task_id = kwargs.get('rig_task_id') or self.get_rig_task_id()
         if not rig_task_id:
             raise GenAnimError(
-                "No Tripo rig task id configured (TRIPO_RIG_TASK_ID or "
-                "'genanim.tripo_rig_task_id')")
+                "No Tripo rig task id available (no per-character rig id "
+                "and no TRIPO_RIG_TASK_ID / 'genanim.tripo_rig_task_id')")
 
         _log("[GenAnim] Tripo mapped action '{}' to {}".format(
             str(action_text)[:80], preset))
 
-        # VERIFY-BEFORE-USE: body shape cross-checked against the official
-        # tripo-js-sdk (fetched 2026-07-14); the JS-rendered docs page
-        # could not be machine-read to confirm it verbatim.
+        # VERIFY-BEFORE-USE ambiguity between the official docs (singular
+        # 'animation') and the tripo-js-sdk (plural 'animations' list);
+        # generate() retries once with the alternate form when the task
+        # itself fails server-side.
         body = {
             'type': 'animate_retarget',
             'original_model_task_id': rig_task_id,
-            'animations': [preset],
             'out_format': 'fbx',
-            'bake_animation': True
+            'bake_animation': True,
+            # Clips import ANIMATION-ONLY onto the character's existing
+            # skeleton; shipping the mesh again just slows the download
+            'export_with_geometry': False
         }
+        if self._retarget_body_alt:
+            body['animations'] = [preset]
+        else:
+            body['animation'] = preset
 
         data = self._request_json(
             'POST', TRIPO_API_BASE, headers=self._headers(), json_body=body)

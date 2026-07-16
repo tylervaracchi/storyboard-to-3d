@@ -82,14 +82,20 @@ def sanitize_asset_name(name):
     return cleaned
 
 
-def import_generated_animation(file_path, asset_name):
-    # type: (str, str) -> Optional[str]
+def import_generated_animation(file_path, asset_name, skeleton_path=None):
+    # type: (str, str, Optional[str]) -> Optional[str]
     """
     Import a generated animation file into the project.
 
     Args:
         file_path: Local path to the downloaded clip (.fbx, .glb, .gltf).
         asset_name: Desired asset name (sanitized automatically).
+        skeleton_path: Optional existing Skeleton asset path. When set,
+            FBX clips import ANIMATION-ONLY onto that skeleton, so the
+            resulting AnimSequence is directly playable on the character
+            (and passes the scene builder's skeleton-compatibility
+            guard). Without it the import creates its own mesh+skeleton
+            and the clip needs IK retargeting.
 
     Returns:
         The imported AnimSequence asset object path (e.g.
@@ -136,8 +142,23 @@ def import_generated_animation(file_path, asset_name):
         except Exception:
             pass  # older engines may lack the property; re-import prompts
 
+        target_skeleton = None
+        if skeleton_path:
+            try:
+                api = _get_editor_asset_api()
+                target_skeleton = api.load_asset(str(skeleton_path)) if api else None
+                if target_skeleton is None:
+                    _log_warning("[GenAnim] Target skeleton not found: {}; "
+                                 "importing standalone".format(skeleton_path))
+            except Exception as e:
+                _log_warning("[GenAnim] Could not load target skeleton "
+                             "({}); importing standalone".format(e))
+                target_skeleton = None
+
         if extension == '.fbx':
-            options = _build_fbx_skeletal_anim_options()
+            options = (_build_fbx_anim_only_options(target_skeleton)
+                       if target_skeleton is not None
+                       else _build_fbx_skeletal_anim_options())
             if options is not None:
                 try:
                     task.options = options
@@ -200,6 +221,46 @@ def import_generated_animation(file_path, asset_name):
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+def _build_fbx_anim_only_options(target_skeleton):
+    """
+    Build hasattr-guarded FbxImportUI options for an ANIMATION-ONLY
+    import onto an existing Skeleton asset (the standard 'import
+    animation onto skeleton' flow). Returns None when unavailable.
+    """
+    if not hasattr(unreal, 'FbxImportUI'):
+        _log_warning("[GenAnim] unreal.FbxImportUI unavailable; importing "
+                     "FBX with engine defaults")
+        return None
+    try:
+        options = unreal.FbxImportUI()
+        for prop, value in (
+                ('import_mesh', False),
+                ('import_as_skeletal', True),
+                ('import_animations', True),
+                ('import_materials', False),
+                ('import_textures', False),
+                ('create_physics_asset', False),
+                ('skeleton', target_skeleton),
+                ('automated_import_should_detect_type', False)):
+            try:
+                options.set_editor_property(prop, value)
+            except Exception:
+                pass  # property missing in this engine version
+        try:
+            options.set_editor_property(
+                'mesh_type_to_import',
+                unreal.FBXImportType.FBXIT_ANIMATION)
+        except Exception:
+            pass
+        _log("[GenAnim] FBX anim-only import onto existing skeleton: "
+             "{}".format(target_skeleton.get_path_name()))
+        return options
+    except Exception as e:
+        _log_warning("[GenAnim] Could not configure anim-only FbxImportUI "
+                     "({}); importing with engine defaults".format(e))
+        return None
+
 
 def _build_fbx_skeletal_anim_options():
     """

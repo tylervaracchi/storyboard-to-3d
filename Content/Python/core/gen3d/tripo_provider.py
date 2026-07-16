@@ -227,14 +227,18 @@ class TripoProvider(Gen3DProvider):
                 _log_warning("[Gen3D] Tripo prerigcheck errored for '{}' "
                              "({}); attempting rig anyway".format(label, e))
 
-            # (2) Rig (paid). GLB keeps the download/import path identical
-            # to the base generation; Interchange imports skinned GLBs as
-            # SkeletalMesh assets.
+            # (2) Rig (paid). FBX, not GLB: retargeted CLIPS arrive as FBX,
+            # and the clip's anim-only import onto this rig's skeleton only
+            # works when mesh and clips share the identical bone set - the
+            # GLB Interchange path drops leaf end-bones the FBX clips carry
+            # ('Unable to retrieve bone index for track: R_Hand_end').
+            # spec stays at the server default (Tripo's own): preset
+            # retargets are authored against it (mixamo-spec rigs fail).
             _log("[Gen3D] Creating Tripo animate_rig task for '{}'".format(
                 label))
             rig_task_id = self._create_animate_task(
                 'animate_rig', model_task_id,
-                extra={'out_format': 'glb', 'spec': 'mixamo'})
+                extra={'out_format': 'fbx'})
             # Rigging on textured models routinely runs 2-4 minutes;
             # the generic 180s generation timeout is too tight.
             rig_timeout = max(420, self.get_timeout_seconds())

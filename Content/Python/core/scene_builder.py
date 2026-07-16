@@ -1827,11 +1827,6 @@ class SceneBuilder:
                     unreal.log(f"[AnimationPicker] No action/description text for '{name}'; skipping")
                     continue
 
-                anim_path = matcher.find_animation(action_text)
-                if not anim_path:
-                    unreal.log(f"[AnimationPicker] No animation match for '{name}' (action: '{action_text}')")
-                    continue
-
                 # Static characters can never animate - resolve the skeletal
                 # mesh (template or throwaway spawn; no live actor exists
                 # mid-build) BEFORE any track is added, so no junk track
@@ -1842,10 +1837,23 @@ class SceneBuilder:
                                f"(static character?); cannot animate")
                     continue
 
+                anim_path = matcher.find_animation(action_text)
+
                 # Skeleton-compatibility guard: a clip built for another
-                # character's skeleton must be an honest miss, not a
-                # 'successful' bind-pose track.
-                if not self._clip_matches_skeleton(anim_path, char_mesh, name):
+                # character's skeleton must not become a 'successful'
+                # bind-pose track. Treat it as a miss and try generation.
+                if anim_path and not self._clip_matches_skeleton(
+                        anim_path, char_mesh, name):
+                    anim_path = None
+
+                if not anim_path:
+                    # AI-generate a clip for THIS character: retarget a
+                    # preset onto its own rig (rig id persisted by the
+                    # auto-rig chain) and import onto its skeleton.
+                    anim_path = self._generate_character_animation(
+                        matcher, name, action_text, char_mesh)
+                if not anim_path:
+                    unreal.log(f"[AnimationPicker] No animation match for '{name}' (action: '{action_text}')")
                     continue
 
                 # Sequencer-native animation track first: binding-level, no
@@ -1961,6 +1969,51 @@ class SceneBuilder:
             except Exception:
                 continue
         return None
+
+    def _generate_character_animation(self, matcher: Any, name: str,
+                                      action_text: str,
+                                      char_mesh: Any) -> Optional[str]:
+        """
+        AI-generate a clip for one character via genanim: retarget a
+        preset onto the character's OWN rig (rig_task_id stored in its
+        show-library entry by the auto-rig chain) and import the result
+        onto its existing skeleton, so the clip passes the skeleton
+        guard. Returns the clip path or None. Never raises.
+        """
+        try:
+            rig_task_id = None
+            if hasattr(self.asset_matcher, 'show_library') and \
+                    isinstance(self.asset_matcher.show_library, dict):
+                entry = (self.asset_matcher.show_library
+                         .get('characters', {}) or {}).get(name)
+                if isinstance(entry, dict):
+                    rig_task_id = entry.get('rig_task_id')
+            if not rig_task_id:
+                return None  # no per-character rig; generic tier-5 already ran
+
+            skeleton_path = None
+            try:
+                skeleton = char_mesh.get_editor_property('skeleton')
+                if skeleton is not None:
+                    skeleton_path = str(skeleton.get_path_name())
+            except Exception:
+                skeleton_path = None
+
+            unreal.log(f"[AnimationPicker] Generating a clip for '{name}' on "
+                       f"its own rig (action: '{action_text}')")
+            clip = matcher.generate_animation_for_character(
+                action_text, rig_task_id=rig_task_id,
+                skeleton_path=skeleton_path)
+            if clip and not self._clip_matches_skeleton(clip, char_mesh, name):
+                unreal.log_warning(f"[AnimationPicker] Generated clip for "
+                                   f"'{name}' still targets a different "
+                                   f"skeleton; discarding")
+                return None
+            return clip
+        except Exception as e:
+            unreal.log_warning(f"[AnimationPicker] Character animation "
+                               f"generation failed for '{name}': {e}")
+            return None
 
     def _skeletal_mesh_for_spawnable(self, spawnable: Any,
                                      name: Optional[str] = None) -> Optional[Any]:
@@ -2326,8 +2379,19 @@ class SceneBuilder:
                     unreal.log(f"[Gen3D] match for {name} came from the "
                                f"library tiers, not generation; leaving it rejected")
                     continue
+                # The auto-rig chain remembers each character's rig task id;
+                # persist it so genanim can retarget clips onto THIS
+                # character later (the 'AI them in' animation path).
+                rig_task_id = None
+                try:
+                    rig_task_id = getattr(self.asset_matcher,
+                                          'last_rig_task_ids', {}).get(
+                        str(name).lower().strip())
+                except Exception:
+                    rig_task_id = None
                 if self._register_rescued_asset(name, asset_path, description,
-                                                category=category):
+                                                category=category,
+                                                rig_task_id=rig_task_id):
                     rescued.append(name)
                     unreal.log(f"[Gen3D] rescued {category[:-1]} '{name}' -> {asset_path}")
             except Exception as e:
@@ -2337,11 +2401,14 @@ class SceneBuilder:
 
     def _register_rescued_asset(self, name: str, asset_path: str,
                                 description: Optional[str] = None,
-                                category: str = 'characters') -> bool:
+                                category: str = 'characters',
+                                rig_task_id: Optional[str] = None) -> bool:
         """
         Write a rescued entity into the show's asset_library.json (the
         file the spawn steps resolve asset paths from) and mirror it
-        into the in-memory show_library used for validation.
+        into the in-memory show_library used for validation. rig_task_id
+        (from the auto-rig chain) enables per-character animation
+        retargeting via genanim.
         """
         if not self.show_name:
             return False
@@ -2361,6 +2428,8 @@ class SceneBuilder:
                 'description': description or 'AI-generated 3D asset (gen3d)',
                 'aliases': []
             }
+            if rig_task_id:
+                entry['rig_task_id'] = str(rig_task_id)
             library.setdefault(category, {})[name] = entry
             with open(library_path, 'w') as f:
                 json.dump(library, f, indent=2)
