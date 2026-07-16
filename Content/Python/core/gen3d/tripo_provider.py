@@ -235,7 +235,11 @@ class TripoProvider(Gen3DProvider):
             rig_task_id = self._create_animate_task(
                 'animate_rig', model_task_id,
                 extra={'out_format': 'glb', 'spec': 'mixamo'})
-            task_data = self._poll_until_done(rig_task_id)
+            # Rigging on textured models routinely runs 2-4 minutes;
+            # the generic 180s generation timeout is too tight.
+            rig_timeout = max(420, self.get_timeout_seconds())
+            task_data = self._poll_until_done(rig_task_id,
+                                              timeout_seconds=rig_timeout)
 
             url_info = self._model_url(task_data)
             if not url_info or not url_info[0]:

@@ -493,6 +493,22 @@ class GeminiProvider(BaseAIProvider):
                     'tokens': {'input': prompt_tokens, 'thinking': thought_tokens,
                                'output': output_tokens, 'total': total_tokens}
                 }
+            elif not response_text.strip():
+                # Empty answer with any other finishReason (safety block,
+                # thought filter stripped everything): fail closed too.
+                error_msg = (f"Gemini returned no answer text "
+                             f"(finishReason={finish_reason or 'unknown'})")
+                unreal.log_warning(f"[Gemini] {error_msg}")
+                return {
+                    'response': '',
+                    'confidence': 0.0,
+                    'cost': cost,
+                    'time': elapsed,
+                    'success': False,
+                    'error': error_msg,
+                    'tokens': {'input': prompt_tokens, 'thinking': thought_tokens,
+                               'output': output_tokens, 'total': total_tokens}
+                }
             elif finish_reason and finish_reason not in ('STOP', 'MAX_TOKENS'):
                 unreal.log_warning(f"[Gemini] Unusual finishReason: {finish_reason}")
 

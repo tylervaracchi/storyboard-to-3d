@@ -168,12 +168,23 @@ def import_generated_model(file_path, asset_name, prefer_skeletal=False):
                          "{}".format(fallback))
             return fallback
 
-        # Last resort: probe the expected destination paths.
+        # Last resort: probe the expected destination paths. On a rigged
+        # re-import the same destination holds the EARLIER static asset,
+        # so a prefer_skeletal probe must verify the class or it would
+        # return the stale static mesh as if it were the rigged model.
         for candidate in (
                 '{}/{}'.format(GENERATED_ASSET_PATH, name),
                 '{}/{}/{}'.format(GENERATED_ASSET_PATH, name, name)):
             if _asset_exists(candidate):
                 object_path = _normalize_object_path(candidate)
+                if prefer_skeletal:
+                    probed = _load_asset(object_path)
+                    if not (probed is not None and hasattr(unreal, 'SkeletalMesh')
+                            and isinstance(probed, unreal.SkeletalMesh)):
+                        _log_warning("[Gen3D] Probe found non-skeletal asset at "
+                                     "{} (stale earlier import?); not using it "
+                                     "for a rigged import".format(object_path))
+                        continue
                 _log("[Gen3D] Imported asset found by probing: {}".format(
                     object_path))
                 return object_path

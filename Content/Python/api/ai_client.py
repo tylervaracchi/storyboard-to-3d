@@ -675,7 +675,10 @@ class AIClient:
                 }],
                 "reasoning": {"effort": reasoning_effort},
                 "text": {"verbosity": "medium"},
-                "max_output_tokens": max_tokens
+                # Reasoning tokens count INSIDE max_output_tokens on
+                # gpt-5/o-series; small budgets (test_connection, config
+                # defaults) get eaten before any visible answer
+                "max_output_tokens": max(max_tokens, 8192)
             }
         else:
             # GPT-4 Chat Completions API format

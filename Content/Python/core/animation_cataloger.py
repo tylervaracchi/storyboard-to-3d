@@ -788,21 +788,13 @@ def build_show_animation_library_for_skeleton(show_name, skeletal_mesh_path,
         identity_tokens = {t for t, df in token_df.items()
                            if df >= identity_threshold}
 
+        refreshed = 0
         for asset_data in compatible:
             try:
                 asset_name = str(asset_data.asset_name)
                 package = str(asset_data.package_name)
                 key = asset_name.lower()
-                if key in animations:
-                    existing_path = str(animations[key].get('asset_path') or '')
-                    if existing_path == package:
-                        continue  # same clip, already in the library
-                    # Different clip sharing a base name (e.g. two packs
-                    # with 'Idle'): disambiguate instead of dropping it
-                    suffix = 2
-                    while f"{key}_{suffix}" in animations:
-                        suffix += 1
-                    key = f"{key}_{suffix}"
+
                 spaced = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', asset_name)
                 tokens = [t for t in _re.split(r'[^a-zA-Z0-9]+', spaced) if t]
                 token_set = {t.lower() for t in tokens if len(t) > 2}
@@ -812,6 +804,31 @@ def build_show_animation_library_for_skeleton(show_name, skeletal_mesh_path,
                 for family, verbs in motion_vocab:
                     if family in token_set:
                         aliases.update(verbs)
+
+                if key in animations:
+                    existing_path = str(animations[key].get('asset_path') or '')
+                    if existing_path == package:
+                        # Same clip: refresh aliases in place so libraries
+                        # built by older cataloger versions shed polluted
+                        # tokens ('farmer', 'start') and gain the motion
+                        # vocabulary. User-added aliases are kept unless
+                        # they are noise/identity tokens.
+                        entry = animations[key]
+                        old = {str(a).lower() for a in (entry.get('aliases') or [])
+                               if isinstance(a, str)}
+                        merged = sorted((old | aliases)
+                                        - noise_tokens - identity_tokens)
+                        if merged != sorted(old):
+                            entry['aliases'] = merged
+                            refreshed += 1
+                        continue
+                    # Different clip sharing a base name (e.g. two packs
+                    # with 'Idle'): disambiguate instead of dropping it
+                    suffix = 2
+                    while f"{key}_{suffix}" in animations:
+                        suffix += 1
+                    key = f"{key}_{suffix}"
+
                 animations[key] = {
                     'asset_path': package,
                     'aliases': sorted(aliases),
@@ -820,6 +837,18 @@ def build_show_animation_library_for_skeleton(show_name, skeletal_mesh_path,
                 result['added'] += 1
             except Exception:
                 continue
+
+        if refreshed:
+            _log('Animation library: refreshed aliases on {0} existing '
+                 'entr(y/ies)'.format(refreshed))
+        if refreshed and not result['added']:
+            # Alias-only refresh still needs to hit disk
+            try:
+                lib_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(str(lib_path), 'w') as f:
+                    json.dump(data, f, indent=2)
+            except Exception as e:
+                _error('Could not save refreshed library: {0}'.format(e))
 
         if result['added']:
             lib_path.parent.mkdir(parents=True, exist_ok=True)

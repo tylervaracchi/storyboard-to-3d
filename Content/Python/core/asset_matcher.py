@@ -266,22 +266,30 @@ class AssetMatcher:
             if asset:
                 return asset
 
-        # PRIORITY 2: Exact match in general cache
+        # PRIORITY 2: Exact match in general cache. The cache indexes every
+        # StaticMesh under /Game (including old generations), so it must
+        # honor the same static-generated-character skip as the show
+        # library, or the rigged regeneration can never trigger.
         if object_name_lower in self.asset_cache:
             asset = self.load_asset(self.asset_cache[object_name_lower])
             if asset:
-                _log(f"Matched '{object_name}' in general cache")
-                return asset
+                if self._should_regen_static_character(asset, category):
+                    _log(f"[Gen3D] Cache hit for character '{object_name}' is an "
+                         f"auto-generated StaticMesh (cannot animate); continuing "
+                         f"to the generative tier for rigged regeneration")
+                else:
+                    _log(f"Matched '{object_name}' in general cache")
+                    return asset
 
         # PRIORITY 3: Semantic (embedding) matching, optional.
         # Any failure inside returns None so we fall through to fuzzy.
         asset = self._semantic_match(object_name_lower)
-        if asset:
+        if asset and not self._should_regen_static_character(asset, category):
             return asset
 
         # PRIORITY 4: Fuzzy matching
         asset = self._fuzzy_match(object_name_lower)
-        if asset:
+        if asset and not self._should_regen_static_character(asset, category):
             return asset
 
         # PRIORITY 5: Generative text-to-3D (optional, off by default).
@@ -389,16 +397,37 @@ class AssetMatcher:
         asset = self.load_asset(asset_path)
         if asset is None:
             return None
-        if (category == 'characters'
-                and str(asset_path).startswith('/Game/StoryboardTo3D/Generated')
-                and self._rig_characters_enabled()
-                and self._is_static_mesh(asset)):
+        if self._should_regen_static_character(asset, category):
             _log(f"[Gen3D] Show entry '{asset_name}' for character "
                  f"'{object_name}' is an auto-generated StaticMesh (cannot "
                  f"animate); skipping so it regenerates rigged")
             return None
         _log(f"Matched '{object_name}'{via} to show asset: {asset_name}")
         return asset
+
+    def _should_regen_static_character(self, asset: Any,
+                                       category: Optional[str]) -> bool:
+        """
+        True when a matched asset is an auto-GENERATED StaticMesh for a
+        CHARACTER, rigging is enabled, AND a gen3d provider is configured
+        to actually regenerate it. Without a provider the static match is
+        kept - degrading a working match to a fallback cube helps no one.
+        """
+        if category != 'characters' or not self._is_static_mesh(asset):
+            return False
+        try:
+            path = str(asset.get_path_name())
+        except Exception:
+            return False
+        if not path.startswith('/Game/StoryboardTo3D/Generated'):
+            return False
+        if not self._rig_characters_enabled():
+            return False
+        try:
+            from core.gen3d import gen3d_factory
+            return gen3d_factory.get_configured() is not None
+        except Exception:
+            return False
 
     @staticmethod
     def _is_static_mesh(asset: Any) -> bool:
@@ -899,6 +928,11 @@ class AssetMatcher:
         rig_wanted = (category == 'characters'
                       and self._rig_characters_enabled())
 
+        # When the rigged regeneration of a cached STATIC character fails
+        # at any later step, fall back to that loadable static asset -
+        # never degrade a working (if unanimatable) match to a cube.
+        cached_static_fallback = None
+
         if cached_path:
             asset = self.load_asset(cached_path)
             if asset:
@@ -908,6 +942,7 @@ class AssetMatcher:
                 if (rig_wanted and self._is_static_mesh(asset)
                         and object_name not in self._rig_retry_attempted):
                     self._rig_retry_attempted.add(object_name)
+                    cached_static_fallback = asset
                     _log(f"[Gen3D] Cached generation for character "
                          f"'{object_name}' is a StaticMesh (cannot animate); "
                          f"regenerating with rigging")
@@ -920,6 +955,16 @@ class AssetMatcher:
                 _log_warning(f"[Gen3D] Previously generated asset failed to "
                              f"load: {cached_path}; regenerating")
 
+        def _regen_failed(reason):
+            """Failure exit: prefer the cached static asset over None."""
+            if cached_static_fallback is not None:
+                _log_warning(f"[Gen3D] Rigged regeneration for "
+                             f"'{object_name}' failed ({reason}); keeping "
+                             f"the cached static asset")
+                self._register_generated_asset(object_name, cached_path)
+                return cached_static_fallback
+            return None
+
         # (b) Per-run generation budget (counts attempts, so repeated
         # failures cannot spiral costs or stall a batch).
         max_per_run = self._get_gen3d_max_per_run()
@@ -927,7 +972,7 @@ class AssetMatcher:
             _log(f"[Gen3D] Skipping generation for '{object_name}': per-run "
                  f"budget of {max_per_run} exhausted (gen3d.max_per_run); "
                  f"using fallback shape")
-            return None
+            return _regen_failed('per-run budget exhausted')
 
         # (c) Generate, import, register, record.
         if description:
@@ -953,7 +998,7 @@ class AssetMatcher:
             except Exception as e:
                 # provider.generate() should never raise; belt and braces.
                 _log_warning(f"[Gen3D] Generation failed for '{object_name}': {e}")
-                return None
+                return _regen_failed(str(e))
 
         if (not isinstance(result, dict)
                 or result.get('status') != 'succeeded'
@@ -963,7 +1008,7 @@ class AssetMatcher:
                 error = result.get('error', error)
             _log_warning(f"[Gen3D] Generation failed for '{object_name}': "
                          f"{error}; using fallback shape")
-            return None
+            return _regen_failed(error)
 
         # Characters: auto-rig the generated model so it imports as a
         # SkeletalMesh and can be animated (a static character can never
@@ -1003,18 +1048,18 @@ class AssetMatcher:
                                                 prefer_skeletal=prefer_skeletal)
         except Exception as e:
             _log_warning(f"[Gen3D] Import failed for '{object_name}': {e}")
-            return None
+            return _regen_failed(f'import failed: {e}')
 
         if not asset_path:
             _log_warning(f"[Gen3D] Import produced no asset for "
                          f"'{object_name}'; using fallback shape")
-            return None
+            return _regen_failed('import produced no asset')
 
         asset = self.load_asset(asset_path)
         if not asset:
             _log_warning(f"[Gen3D] Imported asset failed to load: "
                          f"{asset_path}; using fallback shape")
-            return None
+            return _regen_failed('imported asset failed to load')
 
         self._register_generated_asset(object_name, asset_path)
 

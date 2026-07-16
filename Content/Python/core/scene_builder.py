@@ -290,6 +290,18 @@ class SceneBuilder:
             else:
                 unreal.log(f"All {len(validated_characters)} characters validated")
 
+        # Upgrade validated characters whose library entry is an
+        # auto-generated StaticMesh: static characters can never animate,
+        # and the primary spawn path resolves the library entry directly
+        # (never consulting the asset matcher's skip logic). Route them
+        # through the same pre-transaction gen3d rescue, which regenerates
+        # rigged and overwrites the entry with the skeletal path. Any
+        # failure keeps the old static entry - the scene still builds.
+        try:
+            self._upgrade_static_generated_characters(analysis)
+        except Exception as e:
+            unreal.log_warning(f"[Gen3D] Static-character upgrade check failed: {e}")
+
         # Drop props that are already attached to a spawned character
         # (e.g. the Farmer mesh holds its own scythe). MUST run before the
         # gen3d prop rescue below and before _spawn_props: an attached
@@ -1820,6 +1832,22 @@ class SceneBuilder:
                     unreal.log(f"[AnimationPicker] No animation match for '{name}' (action: '{action_text}')")
                     continue
 
+                # Static characters can never animate - resolve the skeletal
+                # mesh (template or throwaway spawn; no live actor exists
+                # mid-build) BEFORE any track is added, so no junk track
+                # lands on a static binding and the tally stays honest.
+                char_mesh = self._skeletal_mesh_for_spawnable(spawnable, name)
+                if char_mesh is None:
+                    unreal.log(f"[AnimationPicker] '{name}' has no skeletal mesh "
+                               f"(static character?); cannot animate")
+                    continue
+
+                # Skeleton-compatibility guard: a clip built for another
+                # character's skeleton must be an honest miss, not a
+                # 'successful' bind-pose track.
+                if not self._clip_matches_skeleton(anim_path, char_mesh, name):
+                    continue
+
                 # Sequencer-native animation track first: binding-level, no
                 # live-actor lookup, persists in the sequence, evaluates on
                 # every capture. Component single-node playback is the
@@ -1831,8 +1859,8 @@ class SceneBuilder:
 
                 target, component = self._skeletal_animation_target(spawnable, name)
                 if component is None:
-                    unreal.log(f"[AnimationPicker] '{name}' has no SkeletalMeshComponent "
-                               f"on its template or live actor (static character?); cannot animate")
+                    unreal.log(f"[AnimationPicker] '{name}': sequencer track failed and "
+                               f"no component target is reachable mid-build; not animated")
                     continue
 
                 if matcher.apply_animation_to_actor(target, anim_path):
@@ -1933,6 +1961,86 @@ class SceneBuilder:
             except Exception:
                 continue
         return None
+
+    def _skeletal_mesh_for_spawnable(self, spawnable: Any,
+                                     name: Optional[str] = None) -> Optional[Any]:
+        """
+        SkeletalMesh asset for a spawnable character WITHOUT a live actor.
+        None exists mid-build: spawnables only spawn during evaluation on
+        an editor tick, which cannot occur inside the synchronous build
+        call. Template component first; Blueprint templates carry no
+        constructed SCS components, so fall back to a THROWAWAY editor
+        spawn of the template's class, destroyed immediately.
+        """
+        template = None
+        if hasattr(spawnable, 'get_object_template'):
+            try:
+                template = spawnable.get_object_template()
+            except Exception:
+                template = None
+        mesh = self._skeletal_mesh_of_component(
+            self._skeletal_component_of(template))
+        if mesh is not None:
+            return mesh
+        if template is None:
+            return None
+        # Definitely-static templates (StaticMeshActor wraps) need no probe
+        try:
+            if getattr(template, 'static_mesh_component', None) is not None:
+                return None
+        except Exception:
+            pass
+        probe = None
+        try:
+            actor_sub = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+            probe = actor_sub.spawn_actor_from_class(
+                template.get_class(), unreal.Vector(0.0, 0.0, -100000.0),
+                unreal.Rotator(0.0, 0.0, 0.0))
+            mesh = self._skeletal_mesh_of_component(
+                self._skeletal_component_of(probe))
+            if mesh is not None:
+                unreal.log(f"[AnimationPicker] Resolved skeletal mesh for "
+                           f"'{name}' via throwaway spawn (Blueprint "
+                           f"template carries no components)")
+            return mesh
+        except Exception as e:
+            unreal.log(f"[AnimationPicker] Spawn probe failed for '{name}': {e}")
+            return None
+        finally:
+            try:
+                if probe is not None:
+                    probe.destroy_actor()
+            except Exception:
+                pass
+
+    def _clip_matches_skeleton(self, anim_path: str, mesh: Any,
+                               name: str) -> bool:
+        """
+        True when a clip's skeleton matches the character's. The show
+        library holds clips for EVERY character's skeleton and the
+        sequencer track API validates nothing - a mismatched clip
+        'plays' as bind pose while logs would claim success. Fails OPEN
+        when either skeleton cannot be read.
+        """
+        try:
+            clip = unreal.get_editor_subsystem(
+                unreal.EditorAssetSubsystem).load_asset(anim_path)
+            if clip is None:
+                unreal.log_warning(f"[AnimationPicker] Animation asset not "
+                                   f"found: {anim_path}")
+                return False
+            clip_skeleton = clip.get_editor_property('skeleton')
+            mesh_skeleton = mesh.get_editor_property('skeleton')
+            if clip_skeleton is None or mesh_skeleton is None:
+                return True  # cannot verify; fail open
+            if str(clip_skeleton.get_path_name()) == str(mesh_skeleton.get_path_name()):
+                return True
+            unreal.log(f"[AnimationPicker] '{name}': clip {anim_path} targets "
+                       f"skeleton '{clip_skeleton.get_name()}' but the character "
+                       f"uses '{mesh_skeleton.get_name()}'; skipping (honest miss)")
+            return False
+        except Exception:
+            return True  # cannot verify; fail open
 
     def _skeletal_animation_target(self, spawnable: Any,
                                    label: Optional[str] = None) -> Tuple[Any, Any]:
@@ -2083,14 +2191,12 @@ class SceneBuilder:
         for config, spawnable in pairs:
             try:
                 entity_name = config.get('name') if isinstance(config, dict) else None
-                target, component = self._skeletal_animation_target(
-                    spawnable, entity_name)
-                if component is None:
-                    continue  # static mesh character; nothing to discover
-
-                mesh = self._skeletal_mesh_of_component(component)
+                # Resolve the mesh from the template or a throwaway spawn -
+                # live actors do not exist mid-build, so the bound-actor
+                # lookup can never help here.
+                mesh = self._skeletal_mesh_for_spawnable(spawnable, entity_name)
                 if mesh is None:
-                    continue
+                    continue  # static mesh character; nothing to discover
 
                 mesh_path = str(mesh.get_path_name())
                 if not mesh_path or mesh_path in seen:
@@ -2109,6 +2215,58 @@ class SceneBuilder:
             except Exception as e:
                 unreal.log_warning(f"[AnimationPicker] Library self-heal "
                                    f"failed for one character: {e}")
+
+    def _upgrade_static_generated_characters(self, analysis: Dict[str, Any]) -> None:
+        """
+        Regenerate (rigged) any validated character whose show-library
+        entry points at an auto-GENERATED StaticMesh. Runs before the
+        build transaction (generation blocks for minutes). No-op unless
+        'gen3d.rig_characters' is on AND a gen3d provider is configured -
+        users who cannot regenerate keep their static match.
+        """
+        chars = [c for c in (analysis.get('characters') or []) if isinstance(c, str)]
+        if not chars or not self.show_name:
+            return
+        try:
+            from core.settings_manager import get_setting
+            if not get_setting('gen3d.rig_characters', True):
+                return
+        except Exception:
+            pass
+        try:
+            from core.gen3d import gen3d_factory
+            if gen3d_factory.get_configured() is None:
+                return
+        except Exception:
+            return
+
+        lib = {}
+        if hasattr(self.asset_matcher, 'show_library') and \
+                isinstance(self.asset_matcher.show_library, dict):
+            lib = self.asset_matcher.show_library.get('characters', {}) or {}
+
+        needs = []
+        for name in chars:
+            entry = lib.get(name)
+            path = entry.get('asset_path') if isinstance(entry, dict) else None
+            if not path or not str(path).startswith('/Game/StoryboardTo3D/Generated'):
+                continue
+            asset = self.asset_matcher.load_asset(str(path))
+            if asset is not None and hasattr(unreal, 'StaticMesh') \
+                    and isinstance(asset, unreal.StaticMesh):
+                needs.append(name)
+        if not needs:
+            return
+
+        unreal.log(f"[Gen3D] {len(needs)} character(s) carry auto-generated "
+                   f"STATIC meshes (cannot animate); regenerating rigged: {needs}")
+        rescued = self._gen3d_rescue(needs, analysis)
+        for name in needs:
+            if name in rescued:
+                unreal.log(f"[Gen3D] '{name}' upgraded to a rigged skeletal mesh")
+            else:
+                unreal.log_warning(f"[Gen3D] Rigged regeneration failed for "
+                                   f"'{name}'; keeping the static mesh")
 
     def _gen3d_rescue(self, rejected_names, analysis: Dict[str, Any],
                       category: str = 'characters') -> list:

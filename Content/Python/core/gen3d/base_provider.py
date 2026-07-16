@@ -199,13 +199,15 @@ class Gen3DProvider(object):
     # Shared plumbing
     # ------------------------------------------------------------------
 
-    def _poll_until_done(self, task_id):
-        # type: (str) -> Dict[str, Any]
+    def _poll_until_done(self, task_id, timeout_seconds=None):
+        # type: (str, Optional[float]) -> Dict[str, Any]
         """
         Poll the vendor task until it reaches a terminal state.
 
         Poll interval is POLL_INTERVAL_SECONDS (~5s); the overall timeout
-        comes from the 'gen3d.timeout_seconds' setting (default 180).
+        comes from the 'gen3d.timeout_seconds' setting (default 180)
+        unless the caller passes an explicit timeout_seconds (rig tasks
+        routinely need longer than generation).
 
         Returns:
             The final (succeeded) task record.
@@ -213,7 +215,8 @@ class Gen3DProvider(object):
         Raises:
             Gen3DError on task failure or timeout.
         """
-        timeout_seconds = self.get_timeout_seconds()
+        if not timeout_seconds:
+            timeout_seconds = self.get_timeout_seconds()
         deadline = time.time() + timeout_seconds
         last_state = None
 
