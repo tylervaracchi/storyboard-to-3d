@@ -143,6 +143,12 @@ def import_generated_model(file_path, asset_name, prefer_skeletal=False):
 
         imported_paths = _get_imported_paths(task)
 
+        # FORCE-SAVE to disk: Interchange imports do not reliably honor
+        # task.save, leaving assets memory-only - they then vanish on
+        # editor close/unattended exit ('Manifest entry points to a
+        # missing asset'). save_directory persists the whole import.
+        _save_generated_assets(imported_paths)
+
         # Rigged imports: a SkeletalMesh is the asset we want (Interchange
         # also creates the Skeleton, materials, and textures around it).
         if prefer_skeletal:
@@ -295,6 +301,34 @@ def _pick_skeletal_mesh_path(imported_paths):
         except Exception:
             continue
     return None
+
+
+def _save_generated_assets(imported_paths):
+    # type: (List[str]) -> None
+    """Persist imported packages to disk (guarded, never raises)."""
+    try:
+        api = _get_editor_asset_api()
+        if api is None:
+            return
+        saved = 0
+        for path in imported_paths or []:
+            try:
+                if api.save_asset(_normalize_object_path(path),
+                                  only_if_is_dirty=False):
+                    saved += 1
+            except Exception:
+                continue
+        # Belt and braces: sweep the whole Generated tree for stragglers
+        # (Interchange side-assets like skeletons/materials/textures)
+        try:
+            api.save_directory(GENERATED_ASSET_PATH, only_if_is_dirty=True,
+                               recursive=True)
+        except Exception:
+            pass
+        _log("[Gen3D] Saved {} imported asset(s) to disk".format(saved))
+    except Exception as e:
+        _log_warning("[Gen3D] Could not force-save imported assets: "
+                     "{}".format(e))
 
 
 def _get_imported_paths(task):

@@ -77,7 +77,9 @@ class Gen3DProvider(object):
     pricing_note = ''
 
     DEFAULT_QUALITY = 'standard'
-    DEFAULT_TIMEOUT_SECONDS = 180
+    # Standard-quality textured generation routinely runs 3-6 minutes;
+    # 180s abandoned tasks that were still running (and still billed)
+    DEFAULT_TIMEOUT_SECONDS = 600
     POLL_INTERVAL_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 30
     DOWNLOAD_TIMEOUT_SECONDS = 120

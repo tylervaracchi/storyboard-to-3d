@@ -182,6 +182,26 @@ def import_generated_animation(file_path, asset_name, skeleton_path=None):
 
         imported_paths = _get_imported_paths(task)
 
+        # FORCE-SAVE to disk: imports left memory-only vanish on editor
+        # close/unattended exit (matches the gen3d importer fix)
+        try:
+            api = _get_editor_asset_api()
+            if api is not None:
+                for p in imported_paths or []:
+                    try:
+                        api.save_asset(_normalize_object_path(p),
+                                       only_if_is_dirty=False)
+                    except Exception:
+                        continue
+                try:
+                    api.save_directory(GENERATED_ANIM_PATH,
+                                       only_if_is_dirty=True, recursive=True)
+                except Exception:
+                    pass
+        except Exception as e:
+            _log_warning("[GenAnim] Could not force-save imported clip: "
+                         "{}".format(e))
+
         # Prefer an AnimSequence among the imported objects (skeletal FBX
         # and glTF Interchange imports also create the mesh, skeleton, and
         # materials).
