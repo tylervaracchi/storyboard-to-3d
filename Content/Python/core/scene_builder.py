@@ -1812,7 +1812,16 @@ class SceneBuilder:
                     unreal.log(f"[AnimationPicker] No animation match for '{name}' (action: '{action_text}')")
                     continue
 
-                target, component = self._skeletal_animation_target(spawnable)
+                # Sequencer-native animation track first: binding-level, no
+                # live-actor lookup, persists in the sequence, evaluates on
+                # every capture. Component single-node playback is the
+                # fallback for engines/bindings where the track fails.
+                if self._add_animation_track_to_spawnable(spawnable, anim_path, name):
+                    applied += 1
+                    unreal.log(f"[AnimationPicker] Applied '{anim_path}' to '{name}' via sequencer track (action: '{action_text}')")
+                    continue
+
+                target, component = self._skeletal_animation_target(spawnable, name)
                 if component is None:
                     unreal.log(f"[AnimationPicker] '{name}' has no SkeletalMeshComponent "
                                f"on its template or live actor (static character?); cannot animate")
@@ -1864,15 +1873,18 @@ class SceneBuilder:
                 continue
         return None
 
-    def _skeletal_animation_target(self, spawnable: Any) -> Tuple[Any, Any]:
+    def _skeletal_animation_target(self, spawnable: Any,
+                                   label: Optional[str] = None) -> Tuple[Any, Any]:
         """
         Resolve (target, component) for animating a spawnable character.
 
         The object template is preferred (edits there survive respawns),
         but BLUEPRINT templates carry no constructed components - SCS
         components only exist on spawned instances - so fall back to the
-        LIVE bound actor (the sequence is open during builds). Returns
-        (None, None)-ish when neither side has a SkeletalMeshComponent
+        LIVE bound actor. Bound-actor lookup tries the binding-id API
+        first, then scans the level by actor label (UE 5.8's
+        get_bound_objects rejects a raw binding proxy). Returns
+        (None, None)-ish when nothing has a SkeletalMeshComponent
         (static characters).
         """
         template = None
@@ -1885,20 +1897,111 @@ class SceneBuilder:
         if component is not None:
             return template, component
 
+        # (1) Bound objects via a proper MovieSceneObjectBindingID
         bound = []
         try:
+            binding_id = unreal.MovieSceneSequenceExtensions.get_binding_id(
+                spawnable.sequence, spawnable)
             bound = unreal.LevelSequenceEditorBlueprintLibrary.get_bound_objects(
-                spawnable) or []
+                binding_id) or []
         except Exception as e:
-            unreal.log(f"[AnimationPicker] get_bound_objects unavailable ({e})")
+            unreal.log(f"[AnimationPicker] binding-id lookup unavailable ({e}); "
+                       f"falling back to level scan")
         for obj in bound:
             comp = self._skeletal_component_of(obj)
             if comp is not None:
-                unreal.log("[AnimationPicker] Using the LIVE spawned actor as "
+                unreal.log("[AnimationPicker] Using the LIVE bound actor as "
                            "animation target (Blueprint template has no "
-                           "components); re-applied on every build")
+                           "components)")
                 return obj, comp
+
+        # (2) Level scan by label: spawned spawnables carry their binding's
+        # display name as the actor label
+        wanted = None
+        try:
+            wanted = str(label or spawnable.get_display_name()).strip()
+        except Exception:
+            wanted = str(label or '').strip()
+        if wanted:
+            try:
+                actor_sub = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+                for actor in actor_sub.get_all_level_actors() or []:
+                    try:
+                        if str(actor.get_actor_label()).strip() != wanted:
+                            continue
+                    except Exception:
+                        continue
+                    comp = self._skeletal_component_of(actor)
+                    if comp is not None:
+                        unreal.log(f"[AnimationPicker] Found live actor "
+                                   f"'{wanted}' by level scan; using it as "
+                                   f"animation target")
+                        return actor, comp
+            except Exception as e:
+                unreal.log(f"[AnimationPicker] Level scan failed ({e})")
         return template, None
+
+    def _add_animation_track_to_spawnable(self, spawnable: Any,
+                                          anim_path: str,
+                                          name: str) -> bool:
+        """
+        Sequencer-native animation: a SkeletalAnimation track + section on
+        the character's binding. Preferred over component-level single-node
+        playback: it needs no live-actor lookup, persists in the sequence
+        asset, scrubs with the timeline, and re-applies on every
+        evaluation (so respawns cannot lose it). Never raises.
+        """
+        try:
+            if not hasattr(unreal, 'MovieSceneSkeletalAnimationTrack'):
+                return False
+            asset = unreal.get_editor_subsystem(
+                unreal.EditorAssetSubsystem).load_asset(anim_path)
+            if asset is None:
+                unreal.log_warning(f"[AnimationPicker] Animation asset not "
+                                   f"found: {anim_path}")
+                return False
+            if hasattr(unreal, 'AnimSequence') and not isinstance(
+                    asset, unreal.AnimSequence):
+                unreal.log_warning(f"[AnimationPicker] {anim_path} is not an "
+                                   f"AnimSequence")
+                return False
+
+            # Idempotent rebuilds: one animation track per character
+            try:
+                for track in list(spawnable.get_tracks() or []):
+                    if isinstance(track, unreal.MovieSceneSkeletalAnimationTrack):
+                        spawnable.remove_track(track)
+            except Exception:
+                pass
+
+            track = spawnable.add_track(unreal.MovieSceneSkeletalAnimationTrack)
+            section = track.add_section()
+
+            end_frame = 240
+            try:
+                end_frame = int(spawnable.sequence.get_playback_end())
+            except Exception:
+                pass
+            try:
+                section.set_range(0, max(end_frame, 1))
+            except Exception:
+                try:
+                    section.set_start_frame_bounded(True)
+                    section.set_end_frame_bounded(True)
+                except Exception:
+                    pass
+
+            params = section.get_editor_property('params')
+            params.set_editor_property('animation', asset)
+            section.set_editor_property('params', params)
+
+            unreal.log(f"[AnimationPicker] Animation track added for '{name}': "
+                       f"{anim_path} (frames 0-{end_frame})")
+            return True
+        except Exception as e:
+            unreal.log_warning(f"[AnimationPicker] Animation track failed for "
+                               f"'{name}' ({e}); trying component playback")
+            return False
 
     def _ensure_animation_library(self, pairs) -> None:
         """
@@ -1918,7 +2021,9 @@ class SceneBuilder:
         seen = set()
         for config, spawnable in pairs:
             try:
-                target, component = self._skeletal_animation_target(spawnable)
+                entity_name = config.get('name') if isinstance(config, dict) else None
+                target, component = self._skeletal_animation_target(
+                    spawnable, entity_name)
                 if component is None:
                     continue  # static mesh character; nothing to discover
 
