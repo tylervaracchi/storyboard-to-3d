@@ -1786,7 +1786,18 @@ class SceneBuilder:
             if not wanted:
                 return text
             clauses = [c.strip() for c in re.split(r'[.;,]', text) if c.strip()]
-            hits = [c for c in clauses if wanted in c.lower()]
+            # Trim each hit clause to start at most ONE word before the
+            # entity mention: 'swinging a stick at a startled ghost
+            # floating...' would otherwise hand the GHOST the farmer's
+            # 'swinging' verb (-> slash preset). One word is kept so an
+            # attributive participle ('floating ghost') survives.
+            hits = []
+            for c in clauses:
+                idx = c.lower().find(wanted)
+                if idx < 0:
+                    continue
+                before = c[:idx].split()
+                hits.append(((before[-1] + ' ') if before else '') + c[idx:].strip())
             if hits:
                 return '. '.join(hits)
         except Exception:
@@ -1837,7 +1848,13 @@ class SceneBuilder:
                                f"(static character?); cannot animate")
                     continue
 
-                anim_path = matcher.find_animation(action_text)
+                # Characters with their OWN rig get the per-rig generation
+                # path; the generic tier-5 fallback is disabled for them (a
+                # proxy-rig clip would be refused by the skeleton guard -
+                # generating one wastes credits by construction).
+                rig_task_id = self._rig_task_id_for(name)
+                anim_path = matcher.find_animation(
+                    action_text, allow_generation=not rig_task_id)
 
                 # Skeleton-compatibility guard: a clip built for another
                 # character's skeleton must not become a 'successful'
@@ -1846,12 +1863,11 @@ class SceneBuilder:
                         anim_path, char_mesh, name):
                     anim_path = None
 
-                if not anim_path:
+                if not anim_path and rig_task_id:
                     # AI-generate a clip for THIS character: retarget a
-                    # preset onto its own rig (rig id persisted by the
-                    # auto-rig chain) and import onto its skeleton.
+                    # preset onto its own rig and import onto its skeleton.
                     anim_path = self._generate_character_animation(
-                        matcher, name, action_text, char_mesh)
+                        matcher, name, action_text, char_mesh, rig_task_id)
                 if not anim_path:
                     unreal.log(f"[AnimationPicker] No animation match for '{name}' (action: '{action_text}')")
                     continue
@@ -1970,9 +1986,31 @@ class SceneBuilder:
                 continue
         return None
 
+    def _rig_task_id_for(self, name: str) -> Optional[str]:
+        """The character's own rig task id from its show-library entry
+        (case-insensitive key match), or None. Never raises."""
+        try:
+            if not hasattr(self.asset_matcher, 'show_library') or \
+                    not isinstance(self.asset_matcher.show_library, dict):
+                return None
+            chars = self.asset_matcher.show_library.get('characters', {}) or {}
+            entry = chars.get(name)
+            if not isinstance(entry, dict):
+                wanted = str(name).strip().lower()
+                for key, value in chars.items():
+                    if str(key).strip().lower() == wanted:
+                        entry = value
+                        break
+            if isinstance(entry, dict):
+                rig = entry.get('rig_task_id')
+                return str(rig) if rig else None
+        except Exception:
+            pass
+        return None
+
     def _generate_character_animation(self, matcher: Any, name: str,
-                                      action_text: str,
-                                      char_mesh: Any) -> Optional[str]:
+                                      action_text: str, char_mesh: Any,
+                                      rig_task_id: str) -> Optional[str]:
         """
         AI-generate a clip for one character via genanim: retarget a
         preset onto the character's OWN rig (rig_task_id stored in its
@@ -1981,15 +2019,8 @@ class SceneBuilder:
         guard. Returns the clip path or None. Never raises.
         """
         try:
-            rig_task_id = None
-            if hasattr(self.asset_matcher, 'show_library') and \
-                    isinstance(self.asset_matcher.show_library, dict):
-                entry = (self.asset_matcher.show_library
-                         .get('characters', {}) or {}).get(name)
-                if isinstance(entry, dict):
-                    rig_task_id = entry.get('rig_task_id')
             if not rig_task_id:
-                return None  # no per-character rig; generic tier-5 already ran
+                return None
 
             skeleton_path = None
             try:
@@ -2423,11 +2454,16 @@ class SceneBuilder:
                 with open(library_path, 'r') as f:
                     library = json.load(f)
 
-            entry = {
-                'asset_path': asset_path,
-                'description': description or 'AI-generated 3D asset (gen3d)',
-                'aliases': []
-            }
+            # MERGE with any existing entry: a re-rescue must not wipe
+            # previously persisted fields (rig_task_id, aliases, survey)
+            existing = (library.get(category, {}) or {}).get(name)
+            entry = dict(existing) if isinstance(existing, dict) else {}
+            entry['asset_path'] = asset_path
+            if description or not entry.get('description'):
+                entry['description'] = (description
+                                        or entry.get('description')
+                                        or 'AI-generated 3D asset (gen3d)')
+            entry.setdefault('aliases', [])
             if rig_task_id:
                 entry['rig_task_id'] = str(rig_task_id)
             library.setdefault(category, {})[name] = entry

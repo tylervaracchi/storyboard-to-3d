@@ -270,7 +270,10 @@ def _build_fbx_skeletal_mesh_options():
         for prop, value in (
                 ('import_mesh', True),
                 ('import_as_skeletal', True),
-                ('import_animations', True),
+                # No animations from RIG files: any take in the rig FBX is
+                # a bind/T-pose that would pollute the discovered animation
+                # library; real clips arrive via animate_retarget
+                ('import_animations', False),
                 ('import_materials', True),
                 ('import_textures', True),
                 ('create_physics_asset', False)):

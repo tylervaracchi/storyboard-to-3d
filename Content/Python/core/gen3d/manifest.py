@@ -113,6 +113,20 @@ def _asset_still_exists(asset_path):
         return False
 
 
+def lookup_rig_task_id(description):
+    # type: (str) -> Optional[str]
+    """The recorded rig task id for a description, or None. Lets cached
+    rigged meshes keep their per-character animation retarget capability
+    across shows. Never raises."""
+    try:
+        entry = _load_manifest().get(_manifest_key(description))
+        if isinstance(entry, dict) and entry.get('rig_task_id'):
+            return str(entry['rig_task_id'])
+    except Exception:
+        pass
+    return None
+
+
 def lookup(description):
     # type: (str) -> Optional[str]
     """
@@ -154,8 +168,8 @@ def lookup(description):
         return None
 
 
-def record(description, asset_path, provider):
-    # type: (str, str, str) -> bool
+def record(description, asset_path, provider, rig_task_id=None):
+    # type: (str, str, str, Optional[str]) -> bool
     """
     Record a generated asset in the manifest.
 
@@ -163,6 +177,8 @@ def record(description, asset_path, provider):
         description: The entity description used at generation time.
         asset_path: Imported asset path in the project.
         provider: Provider name that generated the model.
+        rig_task_id: Optional vendor rig task id (auto-rigged characters)
+            so cached meshes keep per-character animation retargeting.
 
     Returns:
         True when the manifest was written; False on failure (logged).
@@ -175,12 +191,15 @@ def record(description, asset_path, provider):
             return False
 
         manifest = _load_manifest()
-        manifest[_manifest_key(description)] = {
+        entry = {
             'description': _normalize_description(description),
             'asset_path': str(asset_path),
             'provider': str(provider or 'unknown'),
             'created': datetime.now().isoformat()
         }
+        if rig_task_id:
+            entry['rig_task_id'] = str(rig_task_id)
+        manifest[_manifest_key(description)] = entry
         return _save_manifest(manifest)
     except Exception as e:
         _log_warning("[Gen3D] Manifest record failed: {}".format(e))

@@ -954,6 +954,15 @@ class AssetMatcher:
                     _log(f"[Gen3D] reusing previously generated asset for "
                          f"'{object_name}': {cached_path}")
                     self._register_generated_asset(object_name, cached_path)
+                    # Cached rigged meshes keep their retarget capability:
+                    # surface the recorded rig id so rescuers persist it
+                    try:
+                        from core.gen3d import manifest as gen3d_manifest
+                        cached_rig = gen3d_manifest.lookup_rig_task_id(entity_text)
+                        if cached_rig:
+                            self.last_rig_task_ids[object_name] = cached_rig
+                    except Exception:
+                        pass
                     return asset
             else:
                 _log_warning(f"[Gen3D] Previously generated asset failed to "
@@ -1074,7 +1083,9 @@ class AssetMatcher:
 
         try:
             from core.gen3d import manifest as gen3d_manifest
-            gen3d_manifest.record(entity_text, asset_path, provider_name)
+            gen3d_manifest.record(entity_text, asset_path, provider_name,
+                                  rig_task_id=self.last_rig_task_ids.get(
+                                      object_name))
         except Exception as e:
             _log_warning(f"[Gen3D] Failed to record manifest entry: {e}")
 

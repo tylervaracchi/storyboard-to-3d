@@ -158,9 +158,15 @@ class TripoAnimProvider(GenAnimProvider):
         alternate retarget body shape. Failed Tripo tasks are not
         charged, so the retry costs nothing extra on failure."""
         result = GenAnimProvider.generate(self, action_text, **kwargs)
+        # Retry ONLY on genuine vendor task-state failures ('Task <id>
+        # failed: ...' from _poll_until_done). Transport/download errors
+        # also contain 'failed' but their task may have succeeded and
+        # been charged - a new task would double the spend.
+        error_text = str(result.get('error', '')) if isinstance(result, dict) else ''
         if (isinstance(result, dict) and result.get('status') == 'failed'
                 and not self._retarget_body_alt
-                and 'failed' in str(result.get('error', '')).lower()):
+                and error_text.startswith('Task ')
+                and ' failed' in error_text):
             _log_warning("[GenAnim] Tripo retarget failed with the primary "
                          "body shape; retrying once with the alternate "
                          "'animations' list form")
@@ -247,9 +253,11 @@ class TripoAnimProvider(GenAnimProvider):
             'original_model_task_id': rig_task_id,
             'out_format': 'fbx',
             'bake_animation': True,
-            # Clips import ANIMATION-ONLY onto the character's existing
-            # skeleton; shipping the mesh again just slows the download
-            'export_with_geometry': False
+            # Geometry MUST ship: the standalone import paths (generic
+            # global-rig tier, and the fallback when the target skeleton
+            # fails to load) import mesh+skeleton+anim; the anim-only
+            # import simply ignores the mesh (import_mesh=False)
+            'export_with_geometry': True
         }
         if self._retarget_body_alt:
             body['animations'] = [preset]

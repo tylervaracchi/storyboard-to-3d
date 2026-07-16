@@ -203,9 +203,15 @@ class AnimationMatcher:
              "'animation_library.json' and the samples fallback); "
              "find_animation will return None")
 
-    def find_animation(self, action_text: str) -> Optional[str]:
+    def find_animation(self, action_text: str,
+                       allow_generation: bool = True) -> Optional[str]:
         """
         Find the best animation asset path for free action text.
+
+        allow_generation=False runs only the lookup tiers (1-4): callers
+        that have a BETTER generation path (per-character rig retarget)
+        disable the generic tier-5 fallback so no proxy-rig clip is
+        generated that the skeleton guard would refuse anyway.
 
         Order: exact key match, alias/key containment in the text, the
         optional semantic (embedding) match (off by default; cosine
@@ -228,7 +234,8 @@ class AnimationMatcher:
             # Empty library: skip the lookup tiers (1-4) but still reach the
             # tier-5 generative fallback - it exists precisely for shows with
             # no animation library ('genanim.enabled' gates it internally).
-            return self._generative_animation(action_text)
+            return (self._generative_animation(action_text)
+                    if allow_generation else None)
 
         # 1. Exact key match (also with punctuation normalized to '_')
         compact = re.sub(r'[^a-z0-9]+', '_', text).strip('_')
@@ -341,7 +348,8 @@ class AnimationMatcher:
         # 5. Generative fallback (optional, off by default; see
         # core/genanim). Every failure inside returns None, so callers
         # see exactly the legacy miss behavior.
-        return self._generative_animation(action_text)
+        return (self._generative_animation(action_text)
+                if allow_generation else None)
 
     # ------------------------------------------------------------------
     # Semantic (embedding) tier (optional; mirrors core/asset_matcher.py)
@@ -740,6 +748,33 @@ class AnimationMatcher:
 
         provider_name = getattr(provider, 'name', 'unknown')
 
+        # (a0) FREE pre-flight: skip attempts that cannot possibly succeed
+        # BEFORE the budget check, so doomed calls never consume the
+        # per-run slots the per-character retarget path needs.
+        get_rig = getattr(provider, 'get_rig_task_id', None)
+        if callable(get_rig):
+            # Retarget provider (Tripo): a rig-less generic attempt with
+            # no global rig id fails at task creation - skip for free.
+            if not rig_task_id:
+                try:
+                    has_global_rig = bool(get_rig())
+                except Exception:
+                    has_global_rig = False
+                if not has_global_rig:
+                    _log("[GenAnim] Skipping generic generation for '{0}': "
+                         "'{1}' needs a rig task id and none is configured "
+                         "(budget not consumed)".format(
+                             str(action_text)[:60], provider_name))
+                    return None
+        elif rig_task_id:
+            # Per-character retarget requested but the configured provider
+            # has no rig support (e.g. DeepMotion): its clip would target
+            # a foreign skeleton and be refused by the guard - skip free.
+            _log("[GenAnim] Skipping per-rig generation for '{0}': provider "
+                 "'{1}' cannot retarget onto a specific rig".format(
+                     str(action_text)[:60], provider_name))
+            return None
+
         # (a) Reuse a previously generated clip when possible. Per-rig
         # generations are cached under a rig-scoped key so one
         # character's clip is never handed to another.
@@ -798,7 +833,16 @@ class AnimationMatcher:
         try:
             from core.genanim.importer import (import_generated_animation,
                                                sanitize_asset_name)
-            asset_name = sanitize_asset_name(action_text)[:60]
+            # Rig-scoped package name: clips import with replace_existing,
+            # so two characters generating for the same action text would
+            # overwrite each other without the rig tag.
+            base_name = sanitize_asset_name(action_text)[:48]
+            if rig_task_id:
+                rig_tag = re.sub(r'[^A-Za-z0-9]', '',
+                                 str(rig_task_id))[:8] or 'rig'
+                asset_name = '{0}_{1}'.format(base_name, rig_tag)
+            else:
+                asset_name = base_name + '_generic'
             asset_path = import_generated_animation(result['file_path'],
                                                     asset_name,
                                                     skeleton_path=skeleton_path)
