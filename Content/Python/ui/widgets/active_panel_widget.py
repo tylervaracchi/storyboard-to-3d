@@ -298,6 +298,11 @@ class ActivePanelWidget(QWidget):
         # CRITICAL: Workflow cancellation flag to prevent crashed from orphaned timers
         self.capture_workflow_active = False  # Set True when workflow starts, False on cleanup
 
+        # Editor auto-save state captured while the capture run suspends it
+        # (a map save serializing while a deferred capture step calls into
+        # UObject lookups is a fatal engine assert - see _set_editor_autosave)
+        self._autosave_prior = None
+
         # [AdaptiveViews] Per-iteration latch for reduced refinement views
         # (setting 'performance.reduced_refinement_views', OFF by default).
         # Latched once at iteration start so the capture chain and the AI
@@ -1830,6 +1835,35 @@ class ActivePanelWidget(QWidget):
             return True
         return False
 
+    def _set_editor_autosave(self, enabled):
+        """
+        Suspend/restore the editor's auto-save around a capture run.
+
+        Auto-save serializing the level while a deferred capture step
+        calls into UObject lookups crashes the editor with 'Illegal call
+        to StaticFindObjectFast() while serializing object data!'. The
+        prior setting is remembered and restored; never raises.
+        """
+        try:
+            settings = unreal.get_default_object(unreal.EditorLoadingSavingSettings)
+            if enabled:
+                if self._autosave_prior is None:
+                    return  # nothing suspended
+                settings.set_editor_property('auto_save_enable',
+                                             bool(self._autosave_prior))
+                unreal.log(f"[Autosave] Restored editor auto-save "
+                           f"({bool(self._autosave_prior)})")
+                self._autosave_prior = None
+            else:
+                if self._autosave_prior is None:
+                    self._autosave_prior = bool(
+                        settings.get_editor_property('auto_save_enable'))
+                settings.set_editor_property('auto_save_enable', False)
+                unreal.log("[Autosave] Suspended editor auto-save for the "
+                           "capture run (map saves race timer callbacks)")
+        except Exception as e:
+            unreal.log_warning(f"[Autosave] Toggle failed: {e}")
+
     def _abort_capture_run(self, reason):
         """[AbortFix] Abort the current capture run cleanly.
 
@@ -1843,6 +1877,7 @@ class ActivePanelWidget(QWidget):
         unreal.log_error(f"Capture run aborted: {reason}")
         self.capture_workflow_active = False
         self.auto_iterate = False
+        self._set_editor_autosave(True)
         try:
             if getattr(self, 'iteration_progress_widget', None) is not None:
                 self.iteration_progress_widget.set_cost_text(f"Aborted: {reason}")
@@ -2059,6 +2094,13 @@ class ActivePanelWidget(QWidget):
 
         # CRITICAL: Activate workflow flag to allow delayed callbacks
         self.capture_workflow_active = True
+
+        # Editor auto-save races the timer-driven capture steps: a map
+        # save serializing while a deferred step runs UObject lookups is
+        # FATAL ('Illegal call to StaticFindObjectFast() while serializing
+        # object data'). Suspend it for the run; restored at every
+        # terminal path (complete / stop / abort / cancel).
+        self._set_editor_autosave(False)
 
         # [SeamFix] Fresh run: forget AI failures from any previous run
         self._consecutive_ai_failures = 0
@@ -6245,6 +6287,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
         # Reset iteration state
         self.auto_iterate = False
         self.capture_workflow_active = False
+        self._set_editor_autosave(True)
         self.current_iteration = 0
 
         # [Guidance] Run complete: banner shows the "Done - review..." state
@@ -6398,6 +6441,7 @@ Remember: Be specific, use realistic values, and show your calculation reasoning
 
             self.capture_workflow_active = False
             self.auto_iterate = False
+            self._set_editor_autosave(True)
             if getattr(self, 'batch_capture_mode', False):
                 self.batch_capture_mode = False
                 self.batch_capture_queue = []
@@ -8191,6 +8235,7 @@ You can edit them before generating the scene.{available_info}"""
 
         # CRITICAL: Deactivate workflow to cancel any pending timer callbacks
         self.capture_workflow_active = False
+        self._set_editor_autosave(True)
         unreal.log("Workflow cancelled - pending timers will be ignored")
 
         # ============================================================
@@ -8428,6 +8473,7 @@ You can edit them before generating the scene.{available_info}"""
 
         # Reset batch mode and clear results
         self.capture_workflow_active = False
+        self._set_editor_autosave(True)
         self.batch_capture_mode = False
         self.batch_capture_queue = []
         self.batch_capture_results = []
