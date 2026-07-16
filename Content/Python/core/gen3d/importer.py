@@ -116,6 +116,14 @@ def import_generated_model(file_path, asset_name, prefer_skeletal=False):
             task.replace_existing = True
         except Exception:
             pass  # older engines may lack the property; re-import prompts
+        # SYNCHRONOUS import is mandatory: Interchange defaults to async,
+        # imported_object_paths comes back empty, and the background
+        # import completing while the capture workflow renders crashes
+        # the editor (null vertex-factory resource assert).
+        try:
+            task.set_editor_property('async_', False)
+        except Exception:
+            pass
 
         if extension == '.fbx':
             options = (_build_fbx_skeletal_mesh_options() if prefer_skeletal

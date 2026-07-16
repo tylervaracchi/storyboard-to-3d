@@ -1845,7 +1845,13 @@ class ActivePanelWidget(QWidget):
         prior setting is remembered and restored; never raises.
         """
         try:
-            settings = unreal.get_default_object(unreal.EditorLoadingSavingSettings)
+            # UE 5.8 does not expose EditorLoadingSavingSettings as a
+            # python attribute; resolve the UClass by path instead.
+            settings_class = getattr(unreal, 'EditorLoadingSavingSettings', None)
+            if settings_class is None:
+                settings_class = unreal.load_class(
+                    None, '/Script/UnrealEd.EditorLoadingSavingSettings')
+            settings = unreal.get_default_object(settings_class)
             if enabled:
                 if self._autosave_prior is None:
                     return  # nothing suspended

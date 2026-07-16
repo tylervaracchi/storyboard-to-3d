@@ -141,6 +141,14 @@ def import_generated_animation(file_path, asset_name, skeleton_path=None):
             task.replace_existing = True
         except Exception:
             pass  # older engines may lack the property; re-import prompts
+        # SYNCHRONOUS import is mandatory: Interchange defaults to async,
+        # imported_object_paths comes back empty (the picker sees a miss),
+        # and the background import completing mid-capture crashes the
+        # editor (null vertex-factory resource assert).
+        try:
+            task.set_editor_property('async_', False)
+        except Exception:
+            pass
 
         target_skeleton = None
         if skeleton_path:
