@@ -200,9 +200,8 @@ class CameraSystem:
         # Look at target
         self.look_at(camera, origin)
 
-        # Set focal distance
+        # Focus stays DISABLED (plugin-wide policy); only framing changes here
         camera_component = camera.get_cine_camera_component()
-        camera_component.focus_settings.manual_focus_distance = camera_distance
 
         # Set focal length
         focal_length = self.FOCAL_LENGTH_MAP.get(shot_type, 35)
@@ -361,17 +360,15 @@ class CameraSystem:
 
         camera_component = camera.get_cine_camera_component()
 
-        # Enable DOF
-        camera_component.focus_settings.focus_method = unreal.CameraFocusMethod.TRACKING
-        camera_component.focus_settings.tracking_focus_settings.actor_to_track = focus_target
-
-        # Set aperture
+        # Plugin-wide policy: focus/DOF stays DISABLED on every camera
+        # (autofocus blur breaks AI storyboard comparisons). Aperture is
+        # still set for exposure; tracking focus is NOT enabled.
+        unreal.log_warning("[CameraSystem] create_depth_of_field: focus is "
+                           "disabled plugin-wide; setting aperture only")
+        focus_settings = camera_component.focus_settings
+        focus_settings.focus_method = unreal.CameraFocusMethod.DISABLE
+        camera_component.set_editor_property('focus_settings', focus_settings)
         camera_component.current_aperture = aperture
-
-        # Update post process
-        post_process = camera_component.post_process_settings
-        post_process.override_depth_of_field_fstop = True
-        post_process.depth_of_field_fstop = aperture
 
     def focal_to_fov(self, focal_length: float, sensor_width: float = 36.0) -> float:
         """

@@ -1711,6 +1711,14 @@ class SceneBuilder:
         except Exception as e:
             unreal.log_warning(f"[AnimationPicker] Failed (scene build unaffected): {e}")
 
+        # (c) Focus policy sweep - ALWAYS on. Per-creation-site disables
+        # cannot reach cameras that already exist (a sequence keeps its
+        # camera template across runs), so enforce on everything.
+        try:
+            self._disable_focus_on_all_cameras()
+        except Exception as e:
+            unreal.log_warning(f"[FocusSweep] Failed (scene build unaffected): {e}")
+
     def _get_entity_action_text(self, analysis: Dict[str, Any],
                                 entity_name: str) -> Optional[str]:
         """
@@ -1836,6 +1844,59 @@ class SceneBuilder:
                 unreal.log_warning(f"[AnimationPicker] Error animating one actor: {e}")
 
         unreal.log(f"[AnimationPicker] Animations applied: {applied}/{len(pairs)}")
+
+    def _disable_focus_on_all_cameras(self) -> None:
+        """
+        Plugin-wide policy: NO camera focuses (autofocus blur breaks the
+        AI's storyboard comparisons). Sweeps every CineCameraActor in the
+        level AND every camera spawnable template in the open sequence,
+        forcing focus_method=DISABLE - covering cameras created before the
+        per-creation-site disables existed. Never raises.
+        """
+        def _disable(component):
+            try:
+                if component is None:
+                    return False
+                fs = component.focus_settings
+                if fs.focus_method == unreal.CameraFocusMethod.DISABLE:
+                    return False
+                fs.focus_method = unreal.CameraFocusMethod.DISABLE
+                component.set_editor_property('focus_settings', fs)
+                return True
+            except Exception:
+                return False
+
+        fixed = 0
+        # Level cameras (scout cameras, hand-placed cine cameras)
+        try:
+            actor_sub = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+            for actor in actor_sub.get_all_level_actors() or []:
+                if isinstance(actor, unreal.CineCameraActor):
+                    if _disable(actor.get_cine_camera_component()):
+                        fixed += 1
+        except Exception as e:
+            unreal.log_warning(f"[FocusSweep] Level scan failed: {e}")
+
+        # Sequence camera templates (persist across builds in the asset)
+        try:
+            sequence = unreal.LevelSequenceEditorBlueprintLibrary.get_current_level_sequence()
+            bindings = sequence.get_bindings() if sequence else []
+            for binding in bindings or []:
+                try:
+                    template = binding.get_object_template()
+                except Exception:
+                    template = None
+                if template is not None and isinstance(template, unreal.CineCameraActor):
+                    if _disable(template.get_cine_camera_component()):
+                        fixed += 1
+        except Exception as e:
+            unreal.log_warning(f"[FocusSweep] Sequence scan failed: {e}")
+
+        if fixed:
+            unreal.log(f"[FocusSweep] Disabled focus on {fixed} camera(s) "
+                       f"(plugin-wide no-focus policy)")
+        else:
+            unreal.log("[FocusSweep] All cameras already have focus disabled")
 
     @staticmethod
     def _skeletal_component_of(actor: Any) -> Optional[Any]:
