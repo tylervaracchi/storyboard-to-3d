@@ -730,6 +730,64 @@ def build_show_animation_library_for_skeleton(show_name, skeletal_mesh_path,
             data['animations'] = animations
 
         import re as _re
+
+        # Name tokens that carry no motion meaning (pack prefixes,
+        # direction/variant suffixes). They polluted aliases: 'as' matched
+        # the word "as" in any sentence, 'start' matched "startled".
+        noise_tokens = {'as', 'anim', 'sequence', 'demo', 'full', 'inplace',
+                        'fwd', 'bwd', 'left', 'right', 'loop', 'start',
+                        'end', 'skm', 'sk'}
+
+        # Motion vocabulary: clip names say 'idle'/'walk'; storyboard
+        # action text says 'stands'/'strolling'. Detected per name token;
+        # the matched family's verbs become aliases so the animation
+        # picker can bridge the two vocabularies.
+        motion_vocab = (
+            ('idle', ('stand', 'stands', 'standing', 'wait', 'waits',
+                      'waiting', 'still', 'stationary', 'look', 'looks',
+                      'looking', 'stare', 'stares', 'staring', 'watch',
+                      'watches', 'watching')),
+            ('walk', ('walks', 'walking', 'stroll', 'strolling', 'wander',
+                      'wandering', 'pace', 'pacing', 'march', 'marching')),
+            ('run', ('runs', 'running', 'sprint', 'sprinting', 'jog',
+                     'jogging', 'dash', 'chase', 'chasing', 'flee',
+                     'fleeing')),
+            ('jump', ('jumps', 'jumping', 'leap', 'leaping', 'hop',
+                      'hopping')),
+            ('fall', ('falls', 'falling', 'collapse', 'collapsing',
+                      'stumble', 'stumbling', 'tumble', 'tumbling')),
+            ('land', ('lands', 'landing')),
+            ('death', ('die', 'dies', 'dying', 'dead', 'killed')),
+            ('gethit', ('hit', 'hurt', 'wounded', 'injured', 'flinch',
+                        'flinching', 'stagger', 'staggering', 'recoil')),
+            ('attack', ('attacks', 'attacking', 'fight', 'fights',
+                        'fighting', 'strike', 'strikes', 'striking',
+                        'swing', 'swings', 'swinging', 'punch',
+                        'punching', 'slash', 'slashing')),
+        )
+
+        # Pack-identity tokens ('Maniac', 'Farmer' from ManiacFarmer_*)
+        # appear in (nearly) every compatible clip's name and say nothing
+        # about motion - as aliases they made 'A farmer stands' match the
+        # first clip alphabetically (a death anim). Drop tokens present in
+        # >= 80% of the compatible set (only meaningful from 3+ clips).
+        token_df = {}
+        clip_token_sets = []
+        for asset_data in compatible:
+            try:
+                spaced = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ',
+                                 str(asset_data.asset_name))
+                tset = {t.lower() for t in
+                        _re.split(r'[^a-zA-Z0-9]+', spaced) if len(t) > 2}
+            except Exception:
+                tset = set()
+            clip_token_sets.append(tset)
+            for t in tset:
+                token_df[t] = token_df.get(t, 0) + 1
+        identity_threshold = max(3, int(0.8 * len(compatible)))
+        identity_tokens = {t for t, df in token_df.items()
+                           if df >= identity_threshold}
+
         for asset_data in compatible:
             try:
                 asset_name = str(asset_data.asset_name)
@@ -747,10 +805,16 @@ def build_show_animation_library_for_skeleton(show_name, skeletal_mesh_path,
                     key = f"{key}_{suffix}"
                 spaced = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', asset_name)
                 tokens = [t for t in _re.split(r'[^a-zA-Z0-9]+', spaced) if t]
-                aliases = sorted({t.lower() for t in tokens if len(t) > 2})
+                token_set = {t.lower() for t in tokens if len(t) > 2}
+                aliases = {t for t in token_set
+                           if t not in noise_tokens
+                           and t not in identity_tokens}
+                for family, verbs in motion_vocab:
+                    if family in token_set:
+                        aliases.update(verbs)
                 animations[key] = {
                     'asset_path': package,
-                    'aliases': aliases,
+                    'aliases': sorted(aliases),
                     'description': '',
                 }
                 result['added'] += 1

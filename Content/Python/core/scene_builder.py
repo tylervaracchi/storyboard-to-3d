@@ -22,7 +22,7 @@ The build order follows production logic:
 import re
 
 import unreal
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from core.error_handler import OperationErrorCollector
 
 
@@ -1812,14 +1812,13 @@ class SceneBuilder:
                     unreal.log(f"[AnimationPicker] No animation match for '{name}' (action: '{action_text}')")
                     continue
 
-                template = None
-                if hasattr(spawnable, 'get_object_template'):
-                    template = spawnable.get_object_template()
-                if template is None:
-                    unreal.log(f"[AnimationPicker] No object template for '{name}'; cannot animate spawnable")
+                target, component = self._skeletal_animation_target(spawnable)
+                if component is None:
+                    unreal.log(f"[AnimationPicker] '{name}' has no SkeletalMeshComponent "
+                               f"on its template or live actor (static character?); cannot animate")
                     continue
 
-                if matcher.apply_animation_to_actor(template, anim_path):
+                if matcher.apply_animation_to_actor(target, anim_path):
                     applied += 1
                     unreal.log(f"[AnimationPicker] Applied '{anim_path}' to '{name}' (action: '{action_text}')")
                 else:
@@ -1828,6 +1827,78 @@ class SceneBuilder:
                 unreal.log_warning(f"[AnimationPicker] Error animating one actor: {e}")
 
         unreal.log(f"[AnimationPicker] Animations applied: {applied}/{len(pairs)}")
+
+    @staticmethod
+    def _skeletal_component_of(actor: Any) -> Optional[Any]:
+        """SkeletalMeshComponent of an actor/template, or None. Guarded."""
+        if actor is None:
+            return None
+        component = getattr(actor, 'skeletal_mesh_component', None)
+        if component is None and hasattr(actor, 'get_component_by_class') \
+                and hasattr(unreal, 'SkeletalMeshComponent'):
+            try:
+                component = actor.get_component_by_class(
+                    unreal.SkeletalMeshComponent)
+            except Exception:
+                component = None
+        return component
+
+    @staticmethod
+    def _skeletal_mesh_of_component(component: Any) -> Optional[Any]:
+        """SkeletalMesh asset assigned to a component, or None. Guarded."""
+        if component is None:
+            return None
+        if hasattr(component, 'get_skeletal_mesh_asset'):
+            try:
+                mesh = component.get_skeletal_mesh_asset()
+                if mesh is not None:
+                    return mesh
+            except Exception:
+                pass
+        for prop in ('skeletal_mesh_asset', 'skeletal_mesh'):
+            try:
+                mesh = component.get_editor_property(prop)
+                if mesh is not None:
+                    return mesh
+            except Exception:
+                continue
+        return None
+
+    def _skeletal_animation_target(self, spawnable: Any) -> Tuple[Any, Any]:
+        """
+        Resolve (target, component) for animating a spawnable character.
+
+        The object template is preferred (edits there survive respawns),
+        but BLUEPRINT templates carry no constructed components - SCS
+        components only exist on spawned instances - so fall back to the
+        LIVE bound actor (the sequence is open during builds). Returns
+        (None, None)-ish when neither side has a SkeletalMeshComponent
+        (static characters).
+        """
+        template = None
+        if hasattr(spawnable, 'get_object_template'):
+            try:
+                template = spawnable.get_object_template()
+            except Exception:
+                template = None
+        component = self._skeletal_component_of(template)
+        if component is not None:
+            return template, component
+
+        bound = []
+        try:
+            bound = unreal.LevelSequenceEditorBlueprintLibrary.get_bound_objects(
+                spawnable) or []
+        except Exception as e:
+            unreal.log(f"[AnimationPicker] get_bound_objects unavailable ({e})")
+        for obj in bound:
+            comp = self._skeletal_component_of(obj)
+            if comp is not None:
+                unreal.log("[AnimationPicker] Using the LIVE spawned actor as "
+                           "animation target (Blueprint template has no "
+                           "components); re-applied on every build")
+                return obj, comp
+        return template, None
 
     def _ensure_animation_library(self, pairs) -> None:
         """
@@ -1847,36 +1918,11 @@ class SceneBuilder:
         seen = set()
         for config, spawnable in pairs:
             try:
-                template = None
-                if hasattr(spawnable, 'get_object_template'):
-                    template = spawnable.get_object_template()
-                if template is None:
-                    continue
-
-                component = getattr(template, 'skeletal_mesh_component', None)
-                if component is None and hasattr(template, 'get_component_by_class') \
-                        and hasattr(unreal, 'SkeletalMeshComponent'):
-                    component = template.get_component_by_class(
-                        unreal.SkeletalMeshComponent)
+                target, component = self._skeletal_animation_target(spawnable)
                 if component is None:
                     continue  # static mesh character; nothing to discover
 
-                mesh = None
-                for getter in ('get_skeletal_mesh_asset',):
-                    if hasattr(component, getter):
-                        try:
-                            mesh = getattr(component, getter)()
-                            break
-                        except Exception:
-                            mesh = None
-                if mesh is None:
-                    for prop in ('skeletal_mesh_asset', 'skeletal_mesh'):
-                        try:
-                            mesh = component.get_editor_property(prop)
-                            if mesh is not None:
-                                break
-                        except Exception:
-                            mesh = None
+                mesh = self._skeletal_mesh_of_component(component)
                 if mesh is None:
                     continue
 

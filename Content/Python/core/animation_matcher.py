@@ -74,6 +74,33 @@ SAMPLE_LIBRARY_PATH = (Path(__file__).resolve().parents[3]
 # Generative text-to-animation configuration (see core/genanim)
 GENANIM_DEFAULT_MAX_PER_RUN = 2
 
+# Motion families for ranked matching: family name as it appears in clip
+# names, plus the action-text verbs that request it. Kept in sync with the
+# alias vocabulary in core/animation_cataloger.py (motion_vocab).
+MOTION_FAMILIES = (
+    ('idle', frozenset(('stand', 'stands', 'standing', 'wait', 'waits',
+                        'waiting', 'still', 'stationary', 'look', 'looks',
+                        'looking', 'stare', 'stares', 'staring', 'watch',
+                        'watches', 'watching'))),
+    ('walk', frozenset(('walks', 'walking', 'stroll', 'strolling', 'wander',
+                        'wandering', 'pace', 'pacing', 'march', 'marching'))),
+    ('run', frozenset(('runs', 'running', 'sprint', 'sprinting', 'jog',
+                       'jogging', 'dash', 'chase', 'chasing', 'flee',
+                       'fleeing'))),
+    ('jump', frozenset(('jumps', 'jumping', 'leap', 'leaping', 'hop',
+                        'hopping'))),
+    ('fall', frozenset(('falls', 'falling', 'collapse', 'collapsing',
+                        'stumble', 'stumbling', 'tumble', 'tumbling'))),
+    ('land', frozenset(('lands', 'landing'))),
+    ('death', frozenset(('die', 'dies', 'dying', 'dead', 'killed'))),
+    ('gethit', frozenset(('hit', 'hurt', 'wounded', 'injured', 'flinch',
+                          'flinching', 'stagger', 'staggering', 'recoil'))),
+    ('attack', frozenset(('attacks', 'attacking', 'fight', 'fights',
+                          'fighting', 'strike', 'strikes', 'striking',
+                          'swing', 'swings', 'swinging', 'punch',
+                          'punching', 'slash', 'slashing'))),
+)
+
 # Optional semantic (embedding) tier, mirroring core/asset_matcher.py.
 # Active only when 'asset_library.semantic_matching' is truthy and an
 # embeddings backend (OpenAI/Gemini/Ollama, see utils/embeddings.py) is
@@ -214,7 +241,22 @@ class AnimationMatcher:
 
         tokens = set(t for t in re.split(r'[^a-z0-9]+', text) if t)
 
-        # 2. Alias / key containment in the action text
+        # 2. Alias / key containment in the action text.
+        # WORD-BOUNDARY matching only: a raw substring test let alias
+        # 'start' (from Run_Bwd_Start) match 'startled' and sent an idle
+        # farmer sprinting backwards. Single-word aliases must appear as
+        # a whole token; multi-word aliases as a token subset.
+        # RANKED, not first-hit: with vocabulary aliases several clips can
+        # match ('runs' hits Run_Fwd AND Run_Attack1); prefer the most
+        # alias hits, then the fewest unrequested motion families in the
+        # clip name, then the shortest name.
+        stop_aliases = {'as', 'the', 'and', 'for', 'with', 'a', 'an'}
+        requested_families = set()
+        for family, verbs in MOTION_FAMILIES:
+            if family in tokens or tokens.intersection(verbs):
+                requested_families.add(family)
+
+        best = None  # (score tuple, key, asset_path, via)
         for key, entry in self.animations.items():
             if not isinstance(entry, dict):
                 continue
@@ -223,14 +265,33 @@ class AnimationMatcher:
                 continue
             aliases = entry.get('aliases') or []
             names = [key] + [str(a) for a in aliases]
+            hits = []
             for candidate in names:
                 cand = candidate.strip().lower()
-                if not cand:
+                if not cand or cand in stop_aliases:
                     continue
-                if cand == text or cand in tokens or (len(cand) > 3 and cand in text):
-                    _log("Matched action '{0}' to animation '{1}' via "
-                         "'{2}'".format(action_text, key, candidate))
-                    return asset_path
+                cand_tokens = set(
+                    t for t in re.split(r'[^a-z0-9]+', cand) if t)
+                matched = (
+                    cand == text
+                    or (len(cand) >= 3 and cand in tokens)
+                    or (len(cand) > 3 and len(cand_tokens) > 1
+                        and cand_tokens.issubset(tokens)))
+                if matched:
+                    hits.append(cand)
+            if not hits:
+                continue
+            foreign = sum(
+                1 for family, _verbs in MOTION_FAMILIES
+                if family in key and family not in requested_families)
+            score = (-len(set(hits)), foreign, len(key))
+            if best is None or score < best[0]:
+                best = (score, key, asset_path, hits[0])
+
+        if best is not None:
+            _log("Matched action '{0}' to animation '{1}' via '{2}' "
+                 "(ranked)".format(action_text, best[1], best[3]))
+            return best[2]
 
         # 3. Semantic (embedding) match, optional and off by default.
         # Mirrors asset_matcher's embedding tier; every failure inside
@@ -845,14 +906,10 @@ class AnimationMatcher:
                 _log_warning("apply_animation_to_actor called with missing "
                              "actor or asset path")
                 return False
-            if not hasattr(unreal, 'SkeletalMeshActor'):
-                _log_warning("SkeletalMeshActor class unavailable in this "
-                             "engine version; skipping animation")
-                return False
-            if not isinstance(actor, unreal.SkeletalMeshActor):
-                _log("Actor is not a SkeletalMeshActor; skipping animation "
-                     "'{0}'".format(anim_asset_path))
-                return False
+            # No actor-class gate: Blueprint characters are plain Actors
+            # whose SkeletalMeshComponent only exists on the spawned
+            # instance. The component lookup below is the real capability
+            # check for every actor shape.
 
             asset = self._load_asset(anim_asset_path)
             if asset is None:
