@@ -4,6 +4,7 @@
 
 [![UE5](https://img.shields.io/badge/Unreal_Engine-5.4+-0E1128?logo=unrealengine)](https://www.unrealengine.com/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Status](https://img.shields.io/badge/status-open_beta-FF8C2E)](https://github.com/tylervaracchi/storyboard-to-3d)
 [![Thesis](https://img.shields.io/badge/MS_Thesis-Drexel_2025-07294D)](https://drexel.edu/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -73,6 +74,7 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 4. **AI Evaluation** — Model compares captures to reference, suggests adjustments
 5. **Refinement** — Positions updated based on feedback
 6. **Repeat** — Loop continues until convergence or max iterations
+7. **Finish** — Mood lighting is applied and each character's action ("running", "floats beside the barn") is animated: a matching library clip if one exists, an AI-generated motion clip if not. Animations land as Sequencer tracks on the shot; a character that doesn't exist in the project at all can be generated, rigged, and animated on the spot
 
 <p align="center">
   <img src="docs/stb-pipeline.webp" alt="System Pipeline" width="90%">
@@ -95,12 +97,15 @@ An **iterative AI feedback loop** refines positioning until the scene converges 
 - **Script Breakdown** — Text-only LLM pass turning a script into a numbered shot list (`core/script_breakdown.py`)
 - **Headless Batch Mode** — Single-pass analyze+generate over a whole episode from the UE Python console (`core/batch_runner.py`)
 - **Semantic Asset Matching** — Optional embedding-based matching so "canine" finds the dog asset (off by default; `asset_library.semantic_matching`)
-- **Generative 3D Fallback** — When the library has no match at all, optionally generate the missing asset via Meshy or Tripo3D, import it, and add it to the show library so it is reused, not re-bought (off by default; `gen3d.enabled`, capped by `gen3d.max_per_run`)
-- **Mood Lighting** — Maps the panel's analyzed mood (night, golden hour, noir, tense...) to directional/sky light and fog presets (off by default; `scene.apply_mood_lighting`)
-- **Animation Picker** — Matches each character's action text ("running", "sits on a bench") to a tagged animation library and plays it on skeletal actors (off by default; `scene.auto_animation`, see `samples/animation_library.sample.json`)
-- **Generative Animation Fallback** — When the animation library has no clip for an action, optionally generate one via Tripo (preset animate-retarget) or DeepMotion SayMotion (true text-to-motion), import it to `/Game/StoryboardTo3D/GeneratedAnims`, and add it to the show library so it is reused, not regenerated (off by default; `genanim.enabled`, capped by `genanim.max_per_run`; clips arrive on the provider's skeleton and retarget via UE's IK Retargeter)
+- **Generative 3D Fallback — now rigged and animation-ready** — When the library has no match at all, optionally generate the missing asset via Meshy or Tripo3D, import it, and add it to the show library so it is reused, not re-bought (off by default; `gen3d.enabled`, capped by `gen3d.max_per_run`). With Tripo3D, generated *characters* now come in **rigged**: the pipeline runs generate → rig-check → rig and imports the result as a Skeletal Mesh, and the character's rig ID is stored in the show library so later animation requests are generated on that character's own skeleton. Characters generated as static meshes before rig support existed are automatically re-generated as rigged the next time they appear in a panel
+- **Mood Lighting** — Maps the panel's analyzed mood (night, golden hour, noir, tense...) to directional/sky light and fog presets (**on by default**; `scene.apply_mood_lighting`)
+- **Animation Picker** — Matches each character's action text ("running", "sits on a bench") to a tagged animation library and applies it to skeletal actors (**on by default**; `scene.auto_animation`, see `samples/animation_library.sample.json`). Clips are written as **skeletal animation tracks on the Sequencer binding** — they survive spawnable respawns and show up as editable tracks in the shot — with direct component playback as a fallback. A skeleton-compatibility guard makes sure a character never plays a clip authored for a different skeleton
+- **Animation Library Self-Heal** — If auto-animation is on but the show has no animation library yet, the build catalogs the project's animation sequences on the spot instead of silently skipping animation
+- **Generative Animation Fallback** — When the animation library has no clip for an action, optionally generate one via Tripo (animate-retarget) or DeepMotion SayMotion (true text-to-motion), import it to `/Game/StoryboardTo3D/GeneratedAnims`, and add it to the show library so it is reused, not regenerated (off by default; `genanim.enabled`, capped by `genanim.max_per_run`). For AI-generated characters, clips are retargeted onto **that character's own rig** and cached per rig, so a ghost's hover and a farmer's walk never share bones they don't have; clips for library characters arrive on the provider's skeleton and retarget via UE's IK Retargeter
 - **AI Librarian** — Auto-catalog the show library with the configured vision provider: assets are described from their thumbnails (one small image call each; "AI Describe" / "AI Describe All" buttons, `core/asset_cataloger.py`) and animations from three sampled poses composed into a contact sheet (`core/animation_cataloger.py`, MCP tool `catalog_animations`), filling descriptions and aliases so matching survives badly named assets and clips; the same semantic-matching toggle also adds an embedding tier to animation matching
 - **Camera Moves** — Shot type drives a subtle camera move in the shot sequence: close-ups push in, mediums drift, wides pan (off by default; `sequence.camera_moves`)
+- **Clean Camera Focus** — Every camera the plugin creates, plus any CineCamera it finds in the level or sequence bindings, gets focus set to Disabled at the end of a build, so captures and animatics never come out accidentally defocused by auto-focus DOF
+- **Editor-Safe Builds** — Editor auto-save is suspended during capture/refinement runs and restored afterward (closes a save-during-capture crash race), and generated assets import synchronously and are force-saved to disk so nothing vanishes when the editor exits
 - **Cost Controls** — Pre-run cost estimates (`utils/cost_estimator.py`), cheap-model re-scoring, Files API image reuse, and a 50%-off Batch API client
 - **Live Iteration Progress** — Score sparkline, pre-run cost estimate, running spend, and a Cancel button shown next to the refinement loop while it runs (`ui/widgets/iteration_progress.py`)
 - **First-Run Welcome** — When no shows exist yet, the main window offers one-click actions: create a first show, load a bundled sample show (sample panels plus starter asset library), or open the Quick Start
@@ -134,7 +139,8 @@ Enable it globally via the `validation.external_validation` setting (default `of
 
 - Unreal Engine 5.4 - 5.8 (Python plugin layer; the C++ module compiles against each engine's toolchain)
 - **Visual Studio 2022** with the "Game Development with C++" workload (the plugin has a small C++ module; UE will prompt to build it on first launch)
-- API key for Claude or OpenAI (optional: Ollama for local inference)
+- One vision AI key: Claude (recommended), OpenAI, or Google Gemini — or run fully local with LLaVA via Ollama at no cost
+- Optional: Tripo3D or Meshy key for generative 3D characters, DeepMotion for text-to-motion animation
 
 #### Engine version support
 
@@ -313,10 +319,11 @@ If you reference this work in academic research:
 
 ## Limitations
 
-- **Asset library required** — Models cannot create assets, only position existing ones
+- **Works best with a curated asset library** — Positioning quality comes from matching against assets you already have; the generative 3D fallback can fill gaps (including rigged characters) but generation quality varies and spends provider credits
 - **Simplified scenes** — Best results with 2-4 characters, clear compositions
-- **API costs** — Cloud models incur per-request charges (~$0.01-0.05/panel)
+- **API costs** — Cloud models incur per-request charges (~$0.01-0.05/panel; a full refined scene typically lands under $1)
 - **Local inference** — LLaVA requires 16GB+ RAM, significantly slower
+- **Open beta** — The core pipeline is functional and live-tested, but this is research software under active development; expect rough edges and report issues on GitHub
 
 ---
 
